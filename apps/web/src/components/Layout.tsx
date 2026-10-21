@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { useOffers } from '../pages/Requests';
 import { useMe, useResetSession } from '../auth';
+import { useOnboarding } from './GettingStarted';
 
 const links = [
   { to: '/projects', label: 'Projects' },
@@ -17,6 +18,7 @@ const links = [
 export function Layout() {
   const me = useMe().data;
   const pending = useOffers().data?.length ?? 0;
+  const onboarding = useOnboarding().data?.steps;
   const navigate = useNavigate();
   const reset = useResetSession();
   const logout = useMutation({
@@ -42,6 +44,15 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+        {onboarding && (
+          <NavLink
+            to="/projects"
+            className="progress-pill"
+            aria-label={`Getting started: ${onboarding.filter((x) => x.done).length} of ${onboarding.length} steps done`}
+          >
+            {onboarding.filter((x) => x.done).length}/{onboarding.length}
+          </NavLink>
+        )}
         {me && (
           <div className="user">
             {me.avatarUrl ? (

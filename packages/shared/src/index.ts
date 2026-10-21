@@ -10,3 +10,4 @@ export * from './api/dispatch';
 export * from './api/m4';
 export * from './protocol';
 export * from './api/m5';
+export * from './api/onboarding';

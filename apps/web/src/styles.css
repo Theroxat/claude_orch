@@ -327,3 +327,33 @@ ul.plain {
   margin-left: 6px;
   text-decoration: none;
 }
+
+.progress-pill {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+.getting-started ol {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.getting-started li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.getting-started .check {
+  width: 1.2em;
+  text-align: center;
+}
+.getting-started .step-body {
+  flex: 1;
+}
+.getting-started .done .step-title {
+  text-decoration: line-through;
+  opacity: 0.7;
+}

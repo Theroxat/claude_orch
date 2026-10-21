@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { createEnrollmentToken } from '../api/endpoints';
 
-export const LOGIN_COMMAND = 'docker compose -f ~/orch/compose.yaml exec agent orch login';
+export const LOGIN_COMMAND = 'orch login';
 
 export function formatCountdown(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
@@ -45,8 +45,7 @@ export function InstallAgentCard() {
     <section className="card" aria-label="Install the agent">
       <h2>Install the agent</h2>
       <p className="hint">
-        Run the generated command on the machine that has your Claude subscription. Docker is
-        required.
+        Run one command on the machine that has your Claude subscription. Docker is required.
       </p>
       <button
         className="primary"
@@ -65,6 +64,10 @@ export function InstallAgentCard() {
             Shown once: this command contains a single-use token. Copy it now, it cannot be
             displayed again.
           </div>
+          <p className="hint">
+            This installs the agent, connects your Claude account, and adds the <code>orch</code>{' '}
+            command.
+          </p>
           <pre className="code" data-testid="install-command">
             {data.installCommand}
           </pre>
@@ -83,9 +86,11 @@ export function InstallAgentCard() {
           )}
         </div>
       )}
-      <h3>Next step</h3>
-      <p className="hint">Once the agent is running, sign in to Claude once on that machine:</p>
-      <pre className="code">{LOGIN_COMMAND}</pre>
+      <h3>Afterwards</h3>
+      <p className="hint">
+        Use <code>orch status</code> to check the agent, <code>orch take &lt;n&gt;</code> to take a
+        task, and <code>{LOGIN_COMMAND}</code> if you need to sign in to Claude again.
+      </p>
     </section>
   );
 }

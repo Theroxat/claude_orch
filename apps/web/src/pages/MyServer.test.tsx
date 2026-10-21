@@ -43,10 +43,13 @@ describe('My server', () => {
       }),
     });
     renderApp('/my-server');
-    expect(await screen.findByText(/exec agent orch login/)).toBeTruthy();
+    expect(await screen.findByText(/orch status/)).toBeTruthy();
+    expect(screen.queryByText(/docker compose/)).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: 'Generate install command' }));
     expect((await screen.findByTestId('install-command')).textContent).toBe(cmd);
     expect(screen.getByText(/Shown once/)).toBeTruthy();
+    expect(screen.getByText(/connects your Claude account, and adds the/)).toBeTruthy();
+    expect(screen.getAllByTestId('install-command')).toHaveLength(1);
     expect(screen.getByRole('timer').textContent).toMatch(/Expires in 1[45]:\d\d/);
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(cmd));

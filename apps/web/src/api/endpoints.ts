@@ -11,6 +11,7 @@ import {
   TaskBoardSchema,
   TaskViewSchema,
   OfferListResponseSchema,
+  OnboardingResponseSchema,
   OfferViewSchema,
   ParticipantItemSchema,
   PoolResponseSchema,
@@ -80,3 +81,6 @@ export const fetchTokens = () => api('GET', '/tokens', { schema: PersonalTokenLi
 export const createToken = (body: CreatePersonalTokenRequest) =>
   api('POST', '/tokens', { body, schema: CreatePersonalTokenResponseSchema });
 export const revokeToken = (id: string) => api<unknown>('DELETE', `/tokens/${id}`);
+
+export const fetchOnboarding = () =>
+  api('GET', '/onboarding', { schema: OnboardingResponseSchema });

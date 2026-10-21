@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { fetchMyProjects } from '../api/endpoints';
 import { AddRepoDialog } from '../components/AddRepoDialog';
+import { GettingStarted } from '../components/GettingStarted';
 import { ProjectCard } from '../components/ProjectCard';
 
 export function Projects() {
@@ -15,6 +16,7 @@ export function Projects() {
           Add repository
         </button>
       </div>
+      <GettingStarted />
       {q.isPending && <p className="hint">Loading...</p>}
       {q.error && <p className="error">{q.error.message}</p>}
       {q.isSuccess && q.data.length === 0 && (
