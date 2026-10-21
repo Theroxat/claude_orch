@@ -1,0 +1,21 @@
+# Optional override for a cloudflared that runs in Docker on this host.
+#
+#   docker compose -f compose.yaml -f compose.cloudflared.yaml up -d
+#
+# Joins Caddy to cloudflared's Docker network (alias `orch-caddy`) and publishes no host
+# port for it. Set the tunnel service URL to http://orch-caddy:80 (requires ORCH_TLS_MODE=tunnel).
+# Network name: CLOUDFLARED_NETWORK (default cloudflared_default). It must already exist.
+# `!reset` needs Docker Compose >= 2.24.
+services:
+  caddy:
+    ports: !reset []
+    networks:
+      default: {}
+      cloudflared:
+        aliases:
+          - orch-caddy
+
+networks:
+  cloudflared:
+    name: ${CLOUDFLARED_NETWORK:-cloudflared_default}
+    external: true

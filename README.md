@@ -150,6 +150,8 @@ ingress:
   - service: http_status:404
 ```
 
+**`cloudflared` in Docker on another Compose project.** If `cloudflared` runs in Docker, use the optional override `deploy/server/compose.cloudflared.yaml`: `docker compose -f compose.yaml -f compose.cloudflared.yaml up -d` and set the tunnel service URL to `http://orch-caddy:80`. It attaches Caddy to the external network named by `CLOUDFLARED_NETWORK` (default `cloudflared_default`, which must exist) under the alias `orch-caddy`, and publishes no host port for Caddy (`ports: !reset []`, needs Docker Compose 2.24 or later). Without a GitHub App yet, create an empty `secrets/github-app.pem` so Docker does not create a directory there; GitHub routes answer 503 until all `GITHUB_*` values are set.
+
 If `cloudflared` runs in Docker on the same Compose network, use `service: http://caddy:80` (the Caddy container name or service name) instead. If it runs in another container on a different network or on another host, set `ORCH_BIND_ADDR=0.0.0.0` so it can reach the port, and firewall that port so only `cloudflared` can connect: with `trusted_proxies` on private ranges, anyone who can reach the port directly could forge `X-Forwarded-For`.
 
 Notes:
