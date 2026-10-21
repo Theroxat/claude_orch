@@ -660,10 +660,7 @@ describe('consent is absolute', () => {
     const ownerAgent = await onlineAgent(owner);
     await report(ownerAgent, { projectId: p.id });
     const t = await createTask(owner, p.id);
-    const offer = await ownerAgent.client.next(
-      'task.offer',
-      (o) => o.payload.task.taskId === t.id,
-    );
+    const offer = await ownerAgent.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
     expect(offer.payload.kind).toBe('AUTO_OFFER');
   });
 

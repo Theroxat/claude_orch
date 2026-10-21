@@ -83,8 +83,7 @@ export function registerParticipation(
       const before = await tx.participation.findUnique({
         where: { userId_projectId: { userId: user.id, projectId: project.id } },
       });
-      reapplied =
-        body.participating && !!before?.rejectedAt && !before.approvedAt && !isOwner;
+      reapplied = body.participating && !!before?.rejectedAt && !before.approvedAt && !isOwner;
       const others = await tx.participation.aggregate({
         where: { userId: user.id, active: true, projectId: { not: project.id } },
         _sum: { percent: true },
