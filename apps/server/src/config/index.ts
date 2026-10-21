@@ -22,13 +22,13 @@ const ConfigSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-  ORCH_BASE_URL: z.string().url().default('http://localhost:8470'),
+  ORCH_BASE_URL: z.url().default('http://localhost:8470'),
   /**
    * Public URL users and agents reach orch at (for example https://orch.selfhostr.io). When set it
    * wins over ORCH_BASE_URL. Behind Cloudflare Tunnel the request reaches the server over plain
    * HTTP, so OAuth callbacks, install commands and the Secure cookie flag derive from this value.
    */
-  ORCH_PUBLIC_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  ORCH_PUBLIC_URL: z.preprocess(emptyToUndefined, z.url().optional()),
   /**
    * Which peers may set X-Forwarded-* headers (Fastify trustProxy): `true`, `false`, or a
    * comma-separated list of addresses, CIDRs or the aliases loopback, linklocal, uniquelocal.
@@ -63,7 +63,6 @@ const ConfigSchema = z.object({
   GITHUB_API_URL: z.preprocess(
     emptyToUndefined,
     z
-      .string()
       .url()
       .default('https://api.github.com')
       .transform((u) => u.replace(/\/+$/, '')),
@@ -72,7 +71,6 @@ const ConfigSchema = z.object({
   GITHUB_WEB_URL: z.preprocess(
     emptyToUndefined,
     z
-      .string()
       .url()
       .default('https://github.com')
       .transform((u) => u.replace(/\/+$/, '')),

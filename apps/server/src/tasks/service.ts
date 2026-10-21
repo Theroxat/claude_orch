@@ -1492,7 +1492,7 @@ export class TaskService {
   ): Promise<void> {
     const { prisma } = this;
     if (status === 'SUCCEEDED' && !agent.claudeAuthValid) {
-      // A run went through: the login works again.
+      // A real run went through: the login works again.
       await prisma.agent.update({
         where: { id: agent.id },
         data: { claudeAuthValid: true, claudeAuthInvalidAt: null },

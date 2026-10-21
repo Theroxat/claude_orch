@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@orch/shared": "workspace:*",
+    "@xterm/headless": "5.5.0",
     "tsx": "^4.23.15",
     "ws": "^8.22.0",
     "yaml": "^2.9.1",
