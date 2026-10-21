@@ -301,4 +301,28 @@ describe('update.status', () => {
     ).toBe(1);
     back.close();
   });
+
+  it('a queued update.status done after the reconnect is not audited twice (#31)', async () => {
+    const ag = await online('0.4.1');
+    await post(ag.user, ag.agentId);
+    const { payload } = await ag.client.next('agent.update');
+    ag.client.close();
+    // The agent restarts on the target version (hello sets done), then flushes its outbox.
+    const back = await connect(ag.credential);
+    await back.hello('0.4.3', true);
+    const done = agentMessage('update.status', {
+      updateId: payload.updateId,
+      targetVersion: '0.4.3',
+      status: 'done',
+    });
+    back.send(done);
+    expect((await back.next('ack', (a) => a.replyTo === done.id)).payload).toMatchObject({
+      ok: true,
+    });
+    expect(
+      await prisma.auditLog.count({ where: { agentId: ag.agentId, action: 'agent.update_done' } }),
+    ).toBe(1);
+    expect((await view(app, ag.user, ag.agentId)).update?.status).toBe('done');
+    back.close();
+  });
 });

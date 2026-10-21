@@ -1,8 +1,9 @@
 /** Auto mode (M4): consent guard, headless claude -p run, timeout, cancel, requests, restart. */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { serverMessage, type ServerMessage, type TaskOfferPayload } from '@orch/shared';
+import { ClaudeAuthState, CLAUDE_AUTH_REJECT_PREFIX } from '../../src/claude-auth';
 import { MAX_TURNS, buildAutoArgv, parseResultEvent } from '../../src/exec/claude-run';
 import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
 import { silentLogger } from '../../src/log';
@@ -171,6 +172,23 @@ describe('auto mode: local consent guard', () => {
     expect(t.ex.store.all()).toEqual([]);
   });
 
+  it('a replayed refusal (duplicate ack) starts nothing', async () => {
+    const t = setup();
+    t.ex.handle(msg(autoOffer()));
+    await t.ex.idle();
+    const accept = t.of('offer.accept')[0]!;
+    // First reply lost on reconnect: the server replays its refusal for the resent id.
+    t.ex.onAck(accept.id, {
+      ok: false,
+      duplicate: true,
+      error: { code: 'paused', message: 'The agent is paused' },
+    });
+    await t.ex.idle();
+    expect(t.ex.store.get('asg_1')).toBeUndefined();
+    expect(t.git.calls).toEqual([]);
+    expect(t.ex.running()).toEqual([]);
+  });
+
   it('starts nothing until the server acks the accept, and drops a late accept', async () => {
     const t = setup();
     t.ex.handle(msg(autoOffer()));
@@ -319,6 +337,29 @@ describe('auto mode: headless run', () => {
     expect(t.of('task.finished').map((s) => s.payload.outcome)).toEqual(['cancelled']);
     expect(t.of('task.pushed')).toEqual([]);
     expect(t.docker.containers.size).toBe(0);
+  });
+
+  it('a cancel during the push reports only the cancel (no task.pushed, no succeeded)', async () => {
+    const t = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const push = t.git.push.bind(t.git);
+    let pushing = false;
+    t.git.push = async (...a: Parameters<typeof push>) => {
+      pushing = true;
+      await gate;
+      return push(...a);
+    };
+    t.proc.script = finishOk;
+    acceptAndAck(t, autoOffer());
+    await waitFor(() => pushing, { what: 'push started' });
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'mode_changed' }));
+    await waitFor(() => t.of('task.finished').length === 1, { what: 'cancel reported' });
+    release();
+    await t.ex.idle();
+    expect(t.of('task.finished').map((s) => s.payload.outcome)).toEqual(['cancelled']);
+    expect(t.of('task.pushed')).toEqual([]);
+    expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
   });
 
   it('runs an accepted CONSENT_REQUEST like an auto offer (approval-mode participation)', async () => {
@@ -494,5 +535,93 @@ describe('claude -p helpers', () => {
       usage: { input: 100, output: 50, cacheWrite: 10, cacheRead: 1000 },
     });
     expect(parseResultEvent(resultLine({ subtype: 'error_during_execution' }))?.isError).toBe(true);
+  });
+});
+
+const AUTH_ERROR = 'Failed to authenticate. API Error: 401 OAuth access token is invalid.';
+const ENV_ERROR = 'docker compose failed: env file /some/path/.env not found';
+
+describe('failure classification and Claude login state', () => {
+  const authFailure = (t: ReturnType<typeof setup>) => {
+    t.proc.script = (run) => {
+      run.stdout(resultLine({ is_error: true, subtype: 'success', result: AUTH_ERROR }));
+      run.finish(1);
+    };
+  };
+
+  it('sends failureClass env for a setup failure', async () => {
+    const t = setup();
+    t.docker.createNetwork = async () => {
+      throw new Error(ENV_ERROR);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({
+      outcome: 'failed',
+      failureClass: 'env',
+    });
+    expect(t.of('task.finished')[0]!.payload.rateLimitedUntil).toBeUndefined();
+    expect(t.ex.claudeAuth.isValid()).toBe(true);
+  });
+
+  it('sends failureClass timeout', async () => {
+    const t = setup();
+    acceptAndAck(t, autoOffer({ timeoutSec: 30 }));
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({ failureClass: 'timeout' });
+  });
+
+  it('sends failureClass rate_limited with rateLimitedUntil when a reset time is given', async () => {
+    const t = setup();
+    t.proc.script = (run) => {
+      run.stdout(
+        resultLine({ is_error: true, result: 'Claude AI usage limit reached|1900000000' }),
+      );
+      run.finish(1);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({
+      failureClass: 'rate_limited',
+      rateLimitedUntil: new Date(1900000000 * 1000).toISOString(),
+    });
+  });
+
+  it('classifies claude_auth, persists the flag and refuses AUTO offers locally until login', async () => {
+    const t = setup({ max: 2 });
+    authFailure(t);
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({
+      failureClass: 'claude_auth',
+      error: expect.stringContaining('Failed to authenticate'),
+    });
+    const file = join(t.cfg.dataDir, 'claude-auth.json');
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ valid: false });
+    expect(readFileSync(file, 'utf8')).not.toContain(CLAUDE_TOKEN);
+
+    t.ex.handle(msg(autoOffer({ assignmentId: 'asg_2', issueNumber: 8 })));
+    const rej = t.of('offer.reject').find((s) => s.payload.assignmentId === 'asg_2')!;
+    expect(rej.payload.reason).toBe('error');
+    expect(String(rej.payload.detail).startsWith(CLAUDE_AUTH_REJECT_PREFIX)).toBe(true);
+    expect(CLAUDE_AUTH_REJECT_PREFIX).toBe('claude_auth: Claude login expired: run "orch login"');
+    expect(t.of('offer.accept').filter((s) => s.payload.assignmentId === 'asg_2')).toEqual([]);
+
+    // A manual take fails with a clear message too.
+    expect(() => t.ex.take(9, 'acme/widgets')).toThrow(/Claude login expired/);
+
+    // `orch login` (another process) resets the state; the next offer is accepted.
+    new ClaudeAuthState(t.cfg.dataDir).markValid();
+    expect(t.ex.claudeAuth.isValid()).toBe(true);
+    t.proc.script = undefined as never;
+    t.ex.handle(msg(autoOffer({ assignmentId: 'asg_3', issueNumber: 9 })));
+    expect(t.of('offer.accept').some((s) => s.payload.assignmentId === 'asg_3')).toBe(true);
+  });
+
+  it('treats a corrupt state file as valid', () => {
+    const t = setup();
+    mkdirSync(t.cfg.dataDir, { recursive: true });
+    writeFileSync(join(t.cfg.dataDir, 'claude-auth.json'), 'not json');
+    expect(t.ex.claudeAuth.isValid()).toBe(true);
   });
 });

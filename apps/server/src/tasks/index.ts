@@ -5,10 +5,11 @@ import {
   type ImportTasksResponse,
   type TaskBoard,
   type TaskView,
+  type WhyNotRunningResponse,
 } from '@orch/shared';
 import { requireUser, type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
-import { parseBody } from '../http/errors';
+import { HttpError, parseBody } from '../http/errors';
 import { TaskService } from './service';
 
 export { TaskService } from './service';
@@ -78,6 +79,25 @@ export function registerTasks(
       deps.dispatcher.kick();
     }
     return svc.view(updated, access, user);
+  });
+
+  app.post('/api/tasks/:id/retry', async (req): Promise<TaskView> => {
+    const user = requireUser(req);
+    const { id } = req.params as { id: string };
+    const [t, access] = await svc.getVisible(id, user);
+    const retried = await svc.retry(t, user, access, 'web', req.ip);
+    deps.dispatcher?.kick();
+    return svc.view(retried, access, user);
+  });
+
+  app.get('/api/tasks/:id/why-not-running', async (req): Promise<WhyNotRunningResponse> => {
+    const user = requireUser(req);
+    const { id } = req.params as { id: string };
+    await svc.getVisible(id, user);
+    if (!deps.dispatcher) {
+      throw new HttpError(503, 'dispatcher_unavailable', 'The dispatcher is not running');
+    }
+    return deps.dispatcher.whyNotRunning(id);
   });
 
   return svc;

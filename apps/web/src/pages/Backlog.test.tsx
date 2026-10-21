@@ -296,4 +296,68 @@ describe('Backlog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New task' });
     expect(within(dialog).getByText(/will be created as Proposed/)).toBeTruthy();
   });
+
+  it('shows failures, needs-attention and retries only when canRetry', async () => {
+    const calls = mockApi(
+      base({
+        'GET /tasks': () => ({
+          json: board({
+            TODO: [
+              task({
+                failedAttempts: 2,
+                lastError: 'boom happened',
+                needsAttention: true,
+                needsAttentionReason: 'Repo setup failed: env file .env not found',
+                canRetry: true,
+              }),
+              task({ id: 't9', issueNumber: 9, title: 'Other', canRetry: false }),
+            ],
+          }),
+        }),
+        'POST /tasks/t1/retry': () => ({ json: task({ status: 'TODO' }) }),
+      }),
+    );
+    renderApp('/backlog');
+    const card = await screen.findByRole('article', { name: 'Task #1' });
+    const line = within(card).getByText(/Failed 2 times: last error: boom happened/);
+    expect(line.getAttribute('title')).toContain('boom happened');
+    expect(within(card).getByText(/Repo setup failed: env file/)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry #1' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST' && c.path === '/tasks/t1/retry')).toBe(true),
+    );
+  });
+
+  it('lazily loads why-not-running when the disclosure opens', async () => {
+    const calls = mockApi(
+      base({
+        'GET /tasks': () => ({ json: board({ TODO: [task()] }) }),
+        'GET /tasks/t1/why-not-running': () => ({
+          json: {
+            taskId: 't1',
+            status: 'TODO',
+            taskReasons: [{ code: 'dependencies', message: 'Waiting on #5' }],
+            members: [
+              {
+                user,
+                eligible: false,
+                reasons: [{ code: 'member_paused', message: 'Agents are paused' }],
+              },
+              { user: { ...user, id: 'u3', githubLogin: 'bob' }, eligible: true, reasons: [] },
+            ],
+          },
+        }),
+      }),
+    );
+    renderApp('/backlog');
+    const card = await screen.findByRole('article', { name: 'Task #1' });
+    expect(calls.some((c) => c.path.includes('why-not-running'))).toBe(false);
+    const details = card.querySelector('details')!;
+    details.open = true;
+    fireEvent(details, new Event('toggle'));
+    expect(await within(card).findByText('Waiting on #5')).toBeTruthy();
+    expect(within(card).getByText(/@alice:/).textContent).toContain('Agents are paused');
+    expect(within(card).getByText(/@bob:/).textContent).toContain('eligible');
+  });
 });

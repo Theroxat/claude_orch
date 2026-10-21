@@ -16,10 +16,16 @@
  *   POST   /api/tasks/:id/approve           -> TaskView    (PROPOSED -> TODO; submitters and owner)
  *   PATCH  /api/tasks/:id                   UpdateTaskRequest -> TaskView  (creator or owner)
  *          Only while the task is PROPOSED or TODO (409 `task_locked` otherwise).
+ *   POST   /api/tasks/:id/retry             -> TaskView    (project owner or task creator; v0.5.1)
+ *          Sets `retryResetAt`: earlier failures no longer count (shut-out, backoff, env counter),
+ *          clears `needsAttention` and re-dispatches. History is kept. Audited `task.retried`.
+ *          409 `not_retryable` unless the task is TODO.
+ *   GET    /api/tasks/:id/why-not-running   -> WhyNotRunningResponse (anyone who sees the task)
  *
  * Errors: HTTP status + `{ error: { code, message } }` (see ApiErrorSchema in m1).
  */
 import { z } from 'zod';
+import { FailureClass } from '../domain/failure';
 import { Model } from '../domain/enums';
 import { TaskSize } from '../protocol/messages';
 import { DispatchRequestSchema, DispatchViewSchema } from './dispatch';
@@ -86,10 +92,74 @@ export const TaskViewSchema = z.object({
   canApprove: z.boolean(),
   /** M4 (additive): dispatch targeting. */
   dispatch: DispatchViewSchema.optional(),
+  /** v0.5.1 (additive): FAILED runs since the last retry (or ever). */
+  failedAttempts: z.number().int().nonnegative().optional(),
+  /** Last failed run's error, redacted and truncated (null when none). */
+  lastError: z.string().nullable().optional(),
+  /** Class of the last failed run (env, claude_auth, rate_limited, timeout, task). */
+  lastFailureClass: FailureClass.nullable().optional(),
+  /** Not dispatched until a retry: the repository setup failed repeatedly. */
+  needsAttention: z.boolean().optional(),
+  needsAttentionReason: z.string().nullable().optional(),
+  /** The caller may retry it (project owner or task creator; TODO tasks). */
+  canRetry: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type TaskView = z.infer<typeof TaskViewSchema>;
+
+/**
+ * "Why isn't this running?" (`GET /api/tasks/:id/why-not-running`). Computed by the dispatcher's
+ * own eligibility code. `until` is set for time-bound reasons (shut-out, backoff, rate limit).
+ */
+export const BlockReasonCode = z.enum([
+  // task-level
+  'not_todo',
+  'dependencies',
+  'needs_attention',
+  'project_unavailable',
+  'pending_offer',
+  'no_member',
+  // member-level
+  'not_targeted',
+  'member_paused',
+  'model_not_allowed',
+  'declined',
+  'shut_out',
+  'backoff',
+  'no_agent_online',
+  'agents_paused',
+  'concurrency',
+  'claude_login_expired',
+  'access_denied',
+  'rate_limited',
+  'budget_exhausted',
+  'no_usage_report',
+]);
+export type BlockReasonCode = z.infer<typeof BlockReasonCode>;
+
+export const BlockReasonSchema = z.object({
+  code: BlockReasonCode,
+  message: z.string(),
+  until: z.string().nullable().optional(),
+});
+export type BlockReason = z.infer<typeof BlockReasonSchema>;
+
+export const WhyNotRunningResponseSchema = z.object({
+  taskId: z.string(),
+  status: z.string(),
+  /** Reasons that apply to the task as a whole (empty when it can be offered). */
+  taskReasons: z.array(BlockReasonSchema),
+  /** One row per active participant: `eligible` (no reason) or the current blocking reason. */
+  members: z.array(
+    z.object({
+      user: TaskUserSchema,
+      eligible: z.boolean(),
+      reasons: z.array(BlockReasonSchema),
+    }),
+  ),
+});
+export type WhyNotRunningResponse = z.infer<typeof WhyNotRunningResponseSchema>;
 
 /** The caller's rights on one project, so the UI does not infer them. */
 export const ProjectTaskAccessSchema = z.object({

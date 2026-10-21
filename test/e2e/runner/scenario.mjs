@@ -1079,6 +1079,66 @@ async function main() {
       );
     },
   );
+
+  await step(
+    'h. Claude login expired: 401 run -> agent flagged, no auto offer -> orch login -> the task runs',
+    async () => {
+      const relogin = (token) => {
+        const r = compose(['exec', '-T', 'alice', 'orch', 'login', '--token-stdin', '--no-setup'], {
+          input: `${token}\n`,
+          allowFail: true,
+        });
+        assert(r.status === 0, 'orch login on alice', r.stderr);
+      };
+      relogin('fake-e2e-claude-token-expired-not-a-real-credential');
+      const t = await createTask('Runs after a fresh Claude login');
+      const n = t.issueNumber;
+      await waitFor(
+        'alice flagged: Claude login expired',
+        async () => {
+          await bobDeclinesRequests(t.id);
+          const v = await agentView('alice', 'alice-laptop');
+          return v?.claudeAuthValid === false ? v : null;
+        },
+        300_000,
+        2000,
+      );
+      const failed = psql(
+        `select "failureClass" from "Assignment" where "taskId"='${t.id}' and status='FAILED'`,
+      );
+      assert(
+        failed.length >= 1 && failed.every(([c]) => c === 'claude_auth'),
+        'the failed run is classified claude_auth',
+        failed,
+      );
+      const why = await users.olivia.get(`/api/tasks/${t.id}/why-not-running`);
+      const alice = why.members.find((m) => m.user.githubLogin === 'alice');
+      assert(
+        alice?.reasons[0]?.code === 'claude_login_expired',
+        'why-not-running: Claude login expired for alice',
+        why,
+      );
+      const status = orch('alice', ['status'], { allowFail: true });
+      assert(/login expired/i.test(status.stdout), 'orch status shows the expired login', status);
+      const card = await taskByIssue(n);
+      assert(card.failedAttempts >= 1 && /401/.test(card.lastError ?? ''), 'card shows it', card);
+
+      relogin(FAKE_CLAUDE_TOKEN);
+      await waitFor(
+        'alice login valid again on the server',
+        async () => (await agentView('alice', 'alice-laptop'))?.claudeAuthValid === true,
+        60_000,
+      );
+      await waitStatus(n, ['IN_REVIEW'], 300_000, () => bobDeclinesRequests(t.id));
+      const runs = assignmentsOf(t.id);
+      assert(
+        runs.some((a) => a.login === 'alice' && a.status === 'SUCCEEDED'),
+        'ran on alice after the login',
+        runs,
+      );
+      for (const a of runs) recordAssignment(a.id);
+    },
+  );
 }
 
 main()

@@ -94,6 +94,9 @@ export const GIT_SAFETY_ENV: Record<string, string> = {
   GIT_NO_REPLACE_OBJECTS: '1',
 };
 
+/** Branches the agent creates for tasks (`orch/issue-<n>-<slug>`): the only ones it forces. */
+const TASK_BRANCH_PREFIX = 'orch/';
+
 /** Keys allowed in a private task config (all written by `git clone` or `setIdentity`). */
 const ALLOWED_CONFIG_KEY =
   /^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge)|user\.(name|email)|extensions\.(objectformat|refstorage))$/i;
@@ -388,8 +391,21 @@ export class CliGit implements GitOps {
     return (await this.git(['rev-parse', 'HEAD'], { repo })).trim();
   }
 
+  /**
+   * A task branch (`orch/...`) belongs to the task: a re-run replaces what an earlier attempt
+   * pushed, so it is forced, with a lease on the value seen at clone time (empty: must not exist)
+   * so commits pushed by someone else since are never overwritten. Other branches never force.
+   */
   async push(repo: GitRepo, branch: string, token: string): Promise<void> {
-    await this.git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`], {
+    const lease: string[] = [];
+    if (branch.startsWith(TASK_BRANCH_PREFIX)) {
+      const seen = await this.git(
+        ['for-each-ref', '--format=%(objectname)', `refs/remotes/origin/${branch}`],
+        { repo },
+      );
+      lease.push(`--force-with-lease=refs/heads/${branch}:${seen.trim()}`);
+    }
+    await this.git(['push', '--no-verify', ...lease, 'origin', `HEAD:refs/heads/${branch}`], {
       repo,
       token,
     });

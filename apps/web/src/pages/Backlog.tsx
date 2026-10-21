@@ -7,6 +7,7 @@ import {
   fetchMyProjects,
   fetchTaskBoard,
   importTasks,
+  retryTask,
 } from '../api/endpoints';
 import { NewTaskDialog, type BoardProject } from '../components/NewTaskDialog';
 import { POLL_MS } from '../time';
@@ -39,6 +40,10 @@ export function Backlog() {
   const access = board.data?.access ?? {};
   const approve = useMutation({
     mutationFn: approveTask,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+  });
+  const retry = useMutation({
+    mutationFn: retryTask,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   });
   const imp = useMutation({
@@ -93,6 +98,7 @@ export function Backlog() {
       {notice && <p className="hint">{notice}</p>}
       {imp.error && <p className="error">{imp.error.message}</p>}
       {approve.error && <p className="error">{approve.error.message}</p>}
+      {retry.error && <p className="error">{retry.error.message}</p>}
       {board.isPending && <p className="hint">Loading...</p>}
       {board.error && <p className="error">{board.error.message}</p>}
       {board.data && (
@@ -109,6 +115,8 @@ export function Backlog() {
                   canApprove={access[t.projectId]?.canApprove ?? false}
                   approving={approve.isPending}
                   onApprove={(id) => approve.mutate(id)}
+                  retrying={retry.isPending}
+                  onRetry={(id) => retry.mutate(id)}
                 />
               ))}
             </div>
