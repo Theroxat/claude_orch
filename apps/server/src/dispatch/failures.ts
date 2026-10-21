@@ -5,8 +5,9 @@
  * - `env` (repository setup): per-member backoff, never the shut-out; after
  *   ENV_FAILURES_BEFORE_ATTENTION of them the task is marked `needsAttention` and is not offered
  *   until the owner or the creator retries it.
- * - `claude_auth`: the agent is flagged (`claudeAuthValid = false`) and gets no offer until a
- *   fresh `orch login` or a successful run; the task is not held against the member.
+ * - `claude_auth`: the agent is flagged (`claudeAuthValid = false`) and gets no offer until the
+ *   agent's real Claude check passes (`claude.auth` valid, after `orch login`) or a run succeeds
+ *   (a reported `claudeAuthValid: true` in hello/usage.report never clears it); the task is not held against the member.
  * - `rate_limited`: the member's `rateLimitedUntil` is set; nothing is held against the member.
  *
  * Failures (FAILED and LOST runs) that ended before the task's `retryResetAt` are ignored.

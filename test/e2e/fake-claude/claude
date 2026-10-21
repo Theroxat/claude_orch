@@ -2,8 +2,14 @@
 # Fake Claude Code CLI for the E2E test (./dev e2e). Never talks to Anthropic.
 #   claude --version             prints a version
 #   claude setup-token           no-op (orch login --no-setup skips it anyway)
+#   claude -p ... --output-format json
+#                                the login check (`orch login` / `orch doctor` / token change):
+#                                one JSON `result`, like the real CLI
 #   claude -p ... (auto mode)    reads the prompt on stdin, writes and commits a file in the
 #                                working dir, then emits stream-json events and a `result`
+# Tokens: Claude accepts a token only when it contains `VALID`; every other token (including the
+# `expired` ones the runner uses on purpose) gets the real CLI's 401. A token containing both
+# `VALID` and `expired` passes the check but gets a 401 on a task run (revoked after the check).
 #   claude [--model m] [prompt]  (manual mode, in screen) just sleeps: the test edits the clone
 set -eu
 
@@ -14,10 +20,12 @@ esac
 
 print=0
 model=unknown
+format=
 prev=
 for a in "$@"; do
   [ "$a" = "-p" ] && print=1
   [ "$prev" = "--model" ] && model="$a"
+  [ "$prev" = "--output-format" ] && format="$a"
   prev="$a"
 done
 
@@ -26,23 +34,39 @@ if [ "$print" -eq 0 ]; then
   exec sleep infinity
 fi
 
-prompt="$(cat)"
 emit() { printf '%s\n' "$1"; }
+token="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+
+# The login check: `claude -p "reply with: ok" ... --output-format json` (a single JSON result).
+if [ "$format" = "json" ]; then
+  case "$token" in
+    *VALID*)
+      emit '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+      exit 0
+      ;;
+  esac
+  emit '{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid.","terminal_reason":"api_error"}'
+  exit 1
+fi
+
+prompt="$(cat)"
 emit '{"type":"system","subtype":"init","session_id":"fake-session","model":"'"$model"'","tools":[]}'
 
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+if [ -z "$token" ]; then
   emit '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"no CLAUDE_CODE_OAUTH_TOKEN in the sandbox","num_turns":0}'
   exit 1
 fi
 
-# An expired / revoked login (the runner logs in with such a token on purpose): what the real
-# CLI prints on a 401.
-case "$CLAUDE_CODE_OAUTH_TOKEN" in
-  *expired*)
-    emit '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid.","num_turns":0}'
-    exit 1
-    ;;
+# A rejected / expired / revoked login (the runner logs in with such tokens on purpose): what
+# the real CLI prints on a 401.
+case "$token" in
+  *VALID*) case "$token" in *expired*) unauthorized=1 ;; *) unauthorized=0 ;; esac ;;
+  *) unauthorized=1 ;;
 esac
+if [ "$unauthorized" -eq 1 ]; then
+  emit '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Failed to authenticate. API Error: 401 OAuth access token is invalid.","num_turns":0}'
+  exit 1
+fi
 
 # A trace of what the run saw, committed with the change (no secret values).
 title="$(printf '%s\n' "$prompt" | grep -m1 -i '^title:' || true)"

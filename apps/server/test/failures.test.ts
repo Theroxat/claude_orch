@@ -343,7 +343,7 @@ describe('shut-out counts only task and timeout failures', () => {
 });
 
 describe('claude_auth failures', () => {
-  it('flag the agent, exclude it from auto offers, and clear on a fresh login report', async () => {
+  it('flag the agent, exclude it from auto offers, and clear only on a real claude.auth check', async () => {
     const { owner, project: p } = await project();
     const m = await member(p.id);
     const t = await createTask(owner, p.id);
@@ -372,7 +372,7 @@ describe('claude_auth failures', () => {
       reason: 'claude_login_expired',
     });
 
-    // `orch login` on a v0.5.1 agent: the next report says the login is valid again.
+    // A usage.report with claudeAuthValid true (a token merely being present) never clears it.
     const rep = agentMessage('usage.report', {
       estimate: true,
       windowStart: new Date(Date.now() - 3600_000).toISOString(),
@@ -388,12 +388,95 @@ describe('claude_auth failures', () => {
     });
     expect((await m.client.call(rep)).ok).toBe(true);
     agent = await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } });
-    expect(agent.claudeAuthValid).toBe(true);
+    expect(agent.claudeAuthValid).toBe(false);
+    await tickAt(0);
+    await settle();
+    expect(autoOffers(m, t.id)).toHaveLength(1); // still no offer
+
+    // Inconclusive checks leave the flag alone.
+    const check = (over: Record<string, unknown>) =>
+      m.client.call(
+        agentMessage('claude.auth', { valid: false, checkedAt: new Date().toISOString(), ...over }),
+      );
+    expect((await check({ errorClass: 'timeout' })).ok).toBe(true);
+    agent = await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } });
+    expect(agent).toMatchObject({ claudeAuthValid: false, claudeAuthError: 'timeout' });
+    expect(agent.claudeAuthCheckedAt).not.toBeNull();
+
+    // A definitive 401 keeps the original invalid-since date.
+    const since = agent.claudeAuthInvalidAt!.getTime();
+    expect((await check({ errorClass: 'unauthorized' })).ok).toBe(true);
+    agent = await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } });
+    expect(agent).toMatchObject({ claudeAuthValid: false, claudeAuthError: 'unauthorized' });
+    expect(agent.claudeAuthInvalidAt!.getTime()).toBe(since);
+
+    // Only a real check that passed clears it, and the dispatcher offers again.
+    expect((await check({ valid: true })).ok).toBe(true);
+    agent = await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } });
+    expect(agent).toMatchObject({
+      claudeAuthValid: true,
+      claudeAuthInvalidAt: null,
+      claudeAuthError: null,
+    });
     await tickAt(0);
     await until(() => autoOffers(m, t.id).length === 2);
   });
 
-  it('a claude_auth failure never counts toward the shut-out, and a successful run clears the flag', async () => {
+  it('claude.auth unauthorized flags a valid agent; a hello reporting true does not clear it', async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id);
+    const checkedAt = new Date().toISOString();
+    expect(
+      (
+        await m.client.call(
+          agentMessage('claude.auth', { valid: false, errorClass: 'unauthorized', checkedAt }),
+        )
+      ).ok,
+    ).toBe(true);
+    expect(
+      (await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } })).claudeAuthValid,
+    ).toBe(false);
+    const hello = (claudeAuthValid?: boolean) =>
+      m.client.send(
+        agentMessage('hello', {
+          agentVersion: '0.5.2',
+          capabilities: ['auto', 'manual'],
+          localPaused: false,
+          maxConcurrent: 1,
+          running: [],
+          claudeTokenPresent: true,
+          ...(claudeAuthValid !== undefined && { claudeAuthValid }),
+        }),
+      );
+    hello(true);
+    hello(); // old agent: nothing reported
+    await settle();
+    const agent = await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } });
+    expect(agent.claudeAuthValid).toBe(false);
+    const t = await createTask(owner, p.id);
+    await settle();
+    expect(autoOffers(m, t.id)).toHaveLength(0);
+    const mine = (await api(app, m.user)('GET', '/api/agents/mine')).json() as Array<{
+      id: string;
+      claudeAuthError?: string;
+      claudeAuthCheckedAt?: string;
+    }>;
+    expect(mine.find((x) => x.id === m.agentId)).toMatchObject({
+      claudeAuthError: 'unauthorized',
+      claudeAuthCheckedAt: checkedAt,
+    });
+    // Reports of false still set the flag on a valid agent.
+    await m.client.call(
+      agentMessage('claude.auth', { valid: true, checkedAt: new Date().toISOString() }),
+    );
+    hello(false);
+    await until(
+      async () =>
+        !(await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } })).claudeAuthValid,
+    );
+  });
+
+  it('a claude_auth failure never counts toward the shut-out, and a passing claude.auth check clears the flag', async () => {
     const { owner, project: p } = await project();
     const m = await member(p.id);
     const t = await createTask(owner, p.id);
@@ -401,19 +484,9 @@ describe('claude_auth failures', () => {
     expect(
       (await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } })).claudeAuthValid,
     ).toBe(false);
-    // An old agent (no claudeAuthValid in hello) gets another chance on reconnect.
-    m.client.send(
-      agentMessage('hello', {
-        agentVersion: '0.4.2',
-        capabilities: ['auto', 'manual'],
-        localPaused: false,
-        maxConcurrent: 1,
-        running: [],
-      }),
-    );
-    await until(
-      async () =>
-        (await prisma.agent.findUniqueOrThrow({ where: { id: m.agentId } })).claudeAuthValid,
+    // A succeeded run clears it: here the member's own claude.auth check passes.
+    await m.client.call(
+      agentMessage('claude.auth', { valid: true, checkedAt: new Date().toISOString() }),
     );
     await tickAt(0);
     await until(() => autoOffers(m, t.id).length === 2);

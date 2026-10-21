@@ -95,7 +95,7 @@ export const AgentUpdateInfoSchema = z.object({
 });
 export type AgentUpdateInfo = z.infer<typeof AgentUpdateInfoSchema>;
 
-export const AgentUpdateRequestSchema = z.object({ whenIdle: z.boolean().optional() }).strict();
+export const AgentUpdateRequestSchema = z.strictObject({ whenIdle: z.boolean().optional() });
 export type AgentUpdateRequest = z.infer<typeof AgentUpdateRequestSchema>;
 
 export const OutdatedCountResponseSchema = z.object({ count: z.number().int().nonnegative() });
@@ -114,6 +114,10 @@ export const AgentViewSchema = z.object({
   claudeTokenPresent: z.boolean().nullish(),
   /** False after a run failed on Claude authentication: "Claude login expired: run `orch login`". */
   claudeAuthValid: z.boolean().optional(),
+  /** When the agent last ran a real Claude check (`claude.auth`); null/absent: never (older agents). */
+  claudeAuthCheckedAt: z.string().nullish(),
+  /** Class of the last check's failure (unauthorized, no_token, rate_limited, timeout, network, error). */
+  claudeAuthError: z.string().nullish(),
   /** Version agents should run (the server's release version); null when the server is `dev`. */
   latestAgentVersion: z.string().nullable().optional(),
   /** True when `version` is a release older than `latestAgentVersion` (never for `dev`). */

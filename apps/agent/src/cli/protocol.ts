@@ -1,5 +1,6 @@
 /** Control socket protocol between `orch` and the daemon: newline-delimited JSON. */
 import { z } from 'zod';
+import { ClaudeAuthPayloadSchema } from '@orch/shared';
 
 const Issue = z.number().int().positive();
 
@@ -27,6 +28,11 @@ export const ControlRequestSchema = z.discriminatedUnion('cmd', [
     /** Target release; default: the version the server announced in `welcome`. */
     version: z.string().min(1).max(64).optional(),
     whenIdle: z.boolean().optional(),
+  }),
+  /** Runs the real Claude login check now (`orch doctor`, `orch login`). */
+  z.object({
+    cmd: z.literal('claude.check'),
+    reason: z.string().min(1).max(64).optional(),
   }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
@@ -114,6 +120,8 @@ export const ControlResultSchema = z.object({
   message: z.string().optional(),
   /** `update`: the resulting update state. */
   update: UpdateStateSchema.optional(),
+  /** `claude.check`: result of the real Claude login check. */
+  claudeAuth: ClaudeAuthPayloadSchema.optional(),
 });
 export type ControlResult = z.infer<typeof ControlResultSchema>;
 

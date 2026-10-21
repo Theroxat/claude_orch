@@ -9,16 +9,15 @@ const big = (n: number) => BigInt(Math.round(n));
 
 /**
  * Agent fields for a reported `claudeAuthValid` (v0.5.1 agents; absent = unchanged). A report of
- * true after `orch login` clears the flag the server set on a `claude_auth` failure.
+ * false sets the flag; a report of true NEVER clears it (a token being present proves nothing):
+ * only a `claude.auth` check that passed, or a succeeded run, does.
  */
 export function claudeAuthUpdate(
   current: { claudeAuthValid: boolean } | null,
   reported: boolean | undefined,
 ): { claudeAuthValid?: boolean; claudeAuthInvalidAt?: Date | null } {
-  if (reported === undefined || current?.claudeAuthValid === reported) return {};
-  return reported
-    ? { claudeAuthValid: true, claudeAuthInvalidAt: null }
-    : { claudeAuthValid: false, claudeAuthInvalidAt: new Date() };
+  if (reported !== false || current?.claudeAuthValid === false) return {};
+  return { claudeAuthValid: false, claudeAuthInvalidAt: new Date() };
 }
 
 /** Stores one usage report and bumps Agent.lastUsageAt. */
