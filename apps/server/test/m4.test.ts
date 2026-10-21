@@ -649,6 +649,50 @@ describe('consent is absolute', () => {
     for (const m of nonAuto) expect(autoOffers(m)).toHaveLength(0);
   });
 
+  it('an owner who joins their own pool in auto mode gets auto offers like any member', async () => {
+    const { owner, project: p } = await project();
+    const put = await api(app, owner)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(put.json().status).toBe('active');
+    const ownerAgent = await onlineAgent(owner);
+    await report(ownerAgent, { projectId: p.id });
+    const t = await createTask(owner, p.id);
+    const offer = await ownerAgent.client.next(
+      'task.offer',
+      (o) => o.payload.task.taskId === t.id,
+    );
+    expect(offer.payload.kind).toBe('AUTO_OFFER');
+  });
+
+  it('a rejected member gets no offer until the owner undoes the rejection', async () => {
+    const { owner, project: p, repo } = await project();
+    const u = await loginAs(app, gh);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${u.login}`, 'READ');
+    const put = await api(app, u)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(put.statusCode).toBe(200);
+    const path = `/api/projects/${p.id}/participants/${u.userId}`;
+    const rej = await api(app, owner)('POST', `${path}/reject`, { reason: 'not yet' });
+    expect(rej.json().status).toBe('rejected');
+    const m = await onlineAgent(u);
+    await report(m, { projectId: p.id });
+    const t = await createTask(owner, p.id);
+    await tickAt();
+    expect(autoOffers(m, t.id)).toHaveLength(0);
+    expect(await assignmentsOf(t.id)).toHaveLength(0);
+
+    const undo = await api(app, owner)('POST', `${path}/undo-rejection`, { to: 'approved' });
+    expect(undo.json().status).toBe('active');
+    const offer = await m.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    expect(offer.payload.kind).toBe('AUTO_OFFER');
+  });
+
   it('the owner cannot change a member mode or accept for them; leaving auto mode withdraws pending auto offers', async () => {
     const { owner, project: p, repo } = await project();
     const m = await member(p.id, { mode: 'AUTO' });

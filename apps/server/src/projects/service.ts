@@ -31,6 +31,7 @@ export function participationStatus(
 }
 
 export function toParticipationView(p: Participation, requireApproval: boolean): ParticipationView {
+  const status = participationStatus(p, requireApproval);
   return {
     id: p.id,
     projectId: p.projectId,
@@ -38,8 +39,12 @@ export function toParticipationView(p: Participation, requireApproval: boolean):
     participating: p.active,
     budgetPercent: p.percent,
     mode: p.mode === 'AUTO' ? 'auto' : 'approval',
-    status: participationStatus(p, requireApproval),
+    status,
     approvedAt: p.approvedAt ? p.approvedAt.toISOString() : null,
+    rejectionReason: p.rejectionReason,
+    // While rejected the rejection is current, not "previous".
+    previouslyRejectedAt:
+      status !== 'rejected' && p.lastRejectedAt ? p.lastRejectedAt.toISOString() : null,
   };
 }
 

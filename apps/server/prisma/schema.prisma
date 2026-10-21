@@ -209,6 +209,8 @@ model Participation {
   active        Boolean           @default(false)
   approvedAt    DateTime? // set by an owner when approval is required; null = pending
   rejectedAt    DateTime? // set when an owner rejects the request; cleared when the member asks again
+  rejectionReason String? // optional owner note on the latest rejection, shown to the member
+  lastRejectedAt  DateTime? // latest rejection; kept on re-application so the owner sees the history
   percent       Int // 0..100; the app enforces sum(active) <= 100 per user
   mode          ParticipationMode
   allowedModels Model[]           @default([SONNET, OPUS])

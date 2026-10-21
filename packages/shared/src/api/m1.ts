@@ -17,7 +17,8 @@
  *   PUT    /api/projects/:id/participation UpsertParticipationRequest -> ParticipationView
  *   GET    /api/projects/:id/participants                   ParticipantItem[]    (owner only)
  *   POST   /api/projects/:id/participants/:userId/approve   ParticipationView    (owner only)
- *   POST   /api/projects/:id/participants/:userId/reject    ParticipationView    (owner only)
+ *   POST   /api/projects/:id/participants/:userId/reject    RejectParticipantRequest? -> ParticipationView (owner only)
+ *   POST   /api/projects/:id/participants/:userId/undo-rejection UndoRejectionRequest -> ParticipationView (owner only)
  *
  * Errors: HTTP status + `{ error: { code, message } }`.
  */
@@ -103,8 +104,26 @@ export const ParticipationViewSchema = z.object({
   mode: ApiParticipationMode,
   status: ParticipationStatus,
   approvedAt: z.string().nullable(),
+  /** Additive: the owner's note on the latest rejection (shown while rejected or re-applying). */
+  rejectionReason: z.string().nullable().default(null),
+  /** Additive: ISO time of an earlier rejection, set while a re-application is pending/active. */
+  previouslyRejectedAt: z.string().nullable().default(null),
 });
 export type ParticipationView = z.infer<typeof ParticipationViewSchema>;
+
+export const REJECTION_REASON_MAX = 500;
+
+/** Body of the owner's reject call; the body itself is optional. */
+export const RejectParticipantRequestSchema = z.object({
+  reason: z.string().trim().max(REJECTION_REASON_MAX).optional(),
+});
+export type RejectParticipantRequest = z.infer<typeof RejectParticipantRequestSchema>;
+
+/** Owner takes back a rejection: the request returns to pending, or is approved outright. */
+export const UndoRejectionRequestSchema = z.object({
+  to: z.enum(['pending', 'approved']),
+});
+export type UndoRejectionRequest = z.infer<typeof UndoRejectionRequestSchema>;
 
 export const UpsertParticipationRequestSchema = z.object({
   participating: z.boolean(),
