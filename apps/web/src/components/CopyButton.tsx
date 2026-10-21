@@ -1,4 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Icon } from '../ui/Icon';
+
+const RESET_MS = 2500;
 
 /** Copies `text` to the clipboard; shows an inline hint when the clipboard is unavailable. */
 export function CopyButton({
@@ -14,13 +17,18 @@ export function CopyButton({
   disabled?: boolean;
   big?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(0);
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(0), RESET_MS);
+    return () => clearTimeout(t);
+  }, [copied]);
   const copy = async () => {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
+      setCopied((n) => n + 1);
       setFailed(false);
     } catch {
       setFailed(true);
@@ -29,11 +37,14 @@ export function CopyButton({
   return (
     <>
       <button
-        className={big ? 'primary big' : undefined}
+        type="button"
+        className={`copy-button${big ? ' primary big' : ''}`}
+        data-copied={copied > 0 || undefined}
         onClick={() => void copy()}
         disabled={disabled || !text}
       >
-        {copied ? copiedLabel : label}
+        <Icon key={copied} name={copied ? 'check' : 'copy'} />
+        <span aria-live="polite">{copied ? copiedLabel : label}</span>
       </button>
       {failed && <p className="error">Copy failed. Select the command and copy it by hand.</p>}
     </>

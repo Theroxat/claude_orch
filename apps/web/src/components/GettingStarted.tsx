@@ -73,7 +73,9 @@ export function GettingStarted() {
   if (dismissed && canDismiss) {
     return (
       <div className="row">
-        <button onClick={() => dismiss(false)}>Show getting started</button>
+        <button className="ghost" onClick={() => dismiss(false)}>
+          Show getting started
+        </button>
       </div>
     );
   }
@@ -101,7 +103,7 @@ export function GettingStarted() {
           <>
             <button className="primary" onClick={() => setAdding(true)}>
               Add a repository
-            </button>{' '}
+            </button>
             <Link className="btn" to="/discover">
               Join a project
             </Link>
@@ -126,7 +128,7 @@ export function GettingStarted() {
               Connect Claude on your machine
             </button>
             {showLogin && (
-              <p>
+              <p className="reveal">
                 Run <code>orch login</code> on that machine.
               </p>
             )}
@@ -143,29 +145,33 @@ export function GettingStarted() {
 
   return (
     <section className="card getting-started" aria-label="Getting started">
-      <div className="row between">
+      <div className="card-head">
         <h2>Getting started</h2>
-        <span className="hint">
-          {done}/{steps.length} done
-        </span>
+        <div className="row">
+          <span className="badge ok">
+            {done}/{steps.length} done
+          </span>
+          {!allDone && (
+            <Link className="btn" to="/welcome">
+              Open the setup wizard
+            </Link>
+          )}
+        </div>
       </div>
       {allDone && <p className="hint">All set. You can hide this card.</p>}
-      {!allDone && (
-        <p>
-          <Link className="btn" to="/welcome">
-            Open the setup wizard
-          </Link>
-        </p>
-      )}
       <ol>
-        {steps.map((s) => (
-          <li key={s.id} className={s.done ? 'done' : ''} data-testid={`step-${s.id}`}>
+        {steps.map((s, i) => (
+          <li
+            key={s.id}
+            className={s.done ? 'done' : s.state === 'unknown' ? 'unknown' : ''}
+            data-testid={`step-${s.id}`}
+          >
             <span
               className="check"
               role="img"
               aria-label={s.done ? 'Done' : s.state === 'unknown' ? 'Unknown' : 'To do'}
             >
-              {s.done ? '✓' : s.state === 'unknown' ? '?' : '○'}
+              {s.done ? '✓' : s.state === 'unknown' ? '?' : i + 1}
             </span>
             <div className="step-body">
               <strong className="step-title">{TITLES[s.id]}</strong>
@@ -177,13 +183,17 @@ export function GettingStarted() {
                     Claude login expired: run <code>orch login</code>
                   </p>
                 )}
-              {!s.done && <div>{actions(s)}</div>}
+              {!s.done && <div className="step-actions">{actions(s)}</div>}
             </div>
           </li>
         ))}
       </ol>
       {installError && <p className="error">{installError}</p>}
-      {canDismiss && <button onClick={() => dismiss(true)}>Hide</button>}
+      {canDismiss && (
+        <button className="ghost" onClick={() => dismiss(true)}>
+          Hide
+        </button>
+      )}
       {adding && <AddRepoDialog onClose={() => setAdding(false)} />}
     </section>
   );

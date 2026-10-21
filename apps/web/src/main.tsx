@@ -3,7 +3,12 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import { App } from './App';
+import '@fontsource-variable/overpass';
+import '@fontsource-variable/overpass-mono';
 import './styles.css';
+import { applyStoredTheme } from './ui/theme';
+
+applyStoredTheme();
 
 const queryClient = new QueryClient();
 const root = document.getElementById('root');
