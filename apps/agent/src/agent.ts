@@ -19,6 +19,7 @@ import type { ControlResult, StatusInfo } from './cli/protocol';
 import { ManualExecutor, type ExecutorConfig, type ExecutorDeps } from './exec/executor';
 import { TokenBroker } from './exec/tokens';
 import { startControlServer, type ControlServer } from './control/server';
+import { ClaudeAuthState } from './claude-auth';
 import { InboundDedup } from './dedup';
 import { errorMessage, type Logger } from './log';
 import { Outbox } from './outbox';
@@ -94,19 +95,23 @@ export class Agent {
   private agentId: string | null;
   private lastUsageReportAt: string | null = null;
   private readonly log: Logger;
+  private readonly claudeAuth: ClaudeAuthState;
 
-  private tokenFlag(): { claudeTokenPresent?: boolean } {
-    if (!this.opts.claudeTokenPresent) return {};
+  /** `claudeTokenPresent` (file exists) and `claudeAuthValid` (last task did not fail on auth). */
+  private tokenFlag(): { claudeTokenPresent?: boolean; claudeAuthValid: boolean } {
+    const claudeAuthValid = this.claudeAuth.isValid();
+    if (!this.opts.claudeTokenPresent) return { claudeAuthValid };
     try {
-      return { claudeTokenPresent: this.opts.claudeTokenPresent() };
+      return { claudeTokenPresent: this.opts.claudeTokenPresent(), claudeAuthValid };
     } catch {
-      return {};
+      return { claudeAuthValid };
     }
   }
 
   constructor(private readonly opts: AgentOptions) {
     this.log = opts.logger;
     this.agentId = opts.agentId;
+    this.claudeAuth = new ClaudeAuthState(opts.dataDir);
     this.pause = new PauseState(join(opts.dataDir, 'state.json'));
     this.outbox = new Outbox(join(opts.dataDir, 'outbox.json'), {
       retryMs: opts.outboxRetryMs,
@@ -349,6 +354,7 @@ export class Agent {
       maxConcurrent: this.executor?.maxConcurrent ?? 1,
       latestAgentVersion: this.latestAgentVersion,
       update: this.updater?.current() ?? null,
+      claudeAuthValid: this.claudeAuth.isValid(),
     };
   }
 

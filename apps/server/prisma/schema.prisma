@@ -258,6 +258,10 @@ model Agent {
   lastSeenAt   DateTime?
   lastUsageAt  DateTime?
   claudeTokenPresent Boolean? // null = never reported
+  // False after a run failed on Claude authentication (401, expired login): no auto offers until
+  // the agent reports a fresh login (claudeAuthValid true) or a run succeeds.
+  claudeAuthValid     Boolean   @default(true)
+  claudeAuthInvalidAt DateTime?
   paused       Boolean   @default(false)
   pausedAt     DateTime?
   pauseSource  String? // "web" | "agent"
@@ -360,6 +364,12 @@ model Task {
   prUrl              String?
   headSha            String?
   dispatchMode       DispatchMode @default(POOL)
+  /// Retry (owner or creator): failures before this time are ignored by the dispatcher.
+  retryResetAt         DateTime?
+  /// Set after repeated `env` failures (repository setup): not dispatched until a retry.
+  needsAttention       Boolean      @default(false)
+  needsAttentionReason String?
+  needsAttentionAt     DateTime?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
@@ -424,6 +434,8 @@ model Assignment {
   status         AssignmentStatus
   execMode       ExecMode?
   reason         String?
+  /// FAILED runs: env | claude_auth | rate_limited | timeout | task (see @orch/shared classifyFailure).
+  failureClass   String?
   offeredAt      DateTime         @default(now())
   /// PENDING offers and consent requests expire at this time.
   expiresAt      DateTime?

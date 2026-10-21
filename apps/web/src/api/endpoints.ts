@@ -11,6 +11,7 @@ import {
   InstallUrlResponseSchema,
   TaskBoardSchema,
   TaskViewSchema,
+  WhyNotRunningResponseSchema,
   OfferListResponseSchema,
   OnboardingResponseSchema,
   OfferViewSchema,
@@ -71,6 +72,11 @@ export const importTasks = (projectId: string) =>
   api('POST', `/projects/${projectId}/tasks/import`, { schema: ImportTasksResponseSchema });
 export const approveTask = (id: string) =>
   api('POST', `/tasks/${id}/approve`, { schema: TaskViewSchema });
+
+export const retryTask = (id: string) =>
+  api('POST', `/tasks/${id}/retry`, { schema: TaskViewSchema });
+export const fetchWhyNotRunning = (id: string) =>
+  api('GET', `/tasks/${id}/why-not-running`, { schema: WhyNotRunningResponseSchema });
 
 export const fetchPool = (projectId?: string) =>
   api('GET', projectId ? `/pool?projectId=${encodeURIComponent(projectId)}` : '/pool', {

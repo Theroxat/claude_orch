@@ -4,6 +4,7 @@ import { loadCliConfig } from '../config';
 import { parseIssueRef } from '../exec/naming';
 import { errorMessage } from '../log';
 import { sendControl } from './client';
+import { ClaudeAuthState } from '../claude-auth';
 import { login, type LoginIo } from './login';
 import type {
   ControlRequest,
@@ -74,6 +75,7 @@ export function formatStatus(s: StatusInfo): string {
     ...(s.latestAgentVersion && s.latestAgentVersion !== s.version
       ? [`Latest:       v${s.latestAgentVersion} (run "orch update")`]
       : []),
+    ...(s.claudeAuthValid === false ? ['Claude:       login expired: run `orch login`'] : []),
     ...(s.update
       ? [
           `Update:       ${s.update.status} v${s.update.targetVersion}${s.update.detail ? ` (${s.update.detail})` : ''}`,
@@ -290,6 +292,8 @@ export async function runCli(
           },
           io,
         );
+        // The daemon re-reads this state file, so it resumes taking AUTO offers by itself.
+        new ClaudeAuthState(cfg.dataDir).markValid();
         out(`Claude token saved to ${path} (mode 0600). It never leaves this machine.`);
         return 0;
       }

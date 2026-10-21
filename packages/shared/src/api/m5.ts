@@ -11,7 +11,7 @@
  *   Create and revoke are written to the audit log (`token.created`, `token.revoked`).
  *
  * MCP endpoint: Streamable HTTP at `/mcp`, `Authorization: Bearer orch_pat_<...>` (401 otherwise).
- * Tools: view_pool, list_tasks, submit_task, take_task, task_status (inputs below). Each tool runs
+ * Tools: view_pool, list_tasks, submit_task, take_task, task_status, retry_task (inputs below). Each tool runs
  * the same permission and consent checks as the REST API, as the token's user.
  *
  * Errors: HTTP status + `{ error: { code, message } }` (see ApiErrorSchema in m1). Tool errors are
@@ -152,10 +152,15 @@ export type TakeTaskInput = z.infer<typeof TakeTaskInputSchema>;
 export const TaskStatusInputSchema = TakeTaskInputSchema;
 export type TaskStatusInput = z.infer<typeof TaskStatusInputSchema>;
 
+/** v0.5.1: same semantics and rights as `POST /api/tasks/:id/retry` (owner or creator). */
+export const RetryTaskInputSchema = TakeTaskInputSchema;
+export type RetryTaskInput = z.infer<typeof RetryTaskInputSchema>;
+
 export const MCP_TOOL_NAMES = [
   'view_pool',
   'list_tasks',
   'submit_task',
   'take_task',
   'task_status',
+  'retry_task',
 ] as const;

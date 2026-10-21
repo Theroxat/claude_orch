@@ -112,6 +112,8 @@ export const AgentViewSchema = z.object({
   revokedAt: z.string().nullable(),
   /** Reported by the agent: has the member run `orch login`? Null/absent = unknown. */
   claudeTokenPresent: z.boolean().nullish(),
+  /** False after a run failed on Claude authentication: "Claude login expired: run `orch login`". */
+  claudeAuthValid: z.boolean().optional(),
   /** Version agents should run (the server's release version); null when the server is `dev`. */
   latestAgentVersion: z.string().nullable().optional(),
   /** True when `version` is a release older than `latestAgentVersion` (never for `dev`). */

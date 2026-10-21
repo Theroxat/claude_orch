@@ -85,6 +85,7 @@ export function registerAgents(
       paused: a.paused,
       revokedAt: a.revokedAt?.toISOString() ?? null,
       claudeTokenPresent: a.claudeTokenPresent,
+      claudeAuthValid: a.claudeAuthValid,
       latestAgentVersion,
       updateAvailable: !a.revokedAt && isOutdated(a.agentVersion, latestAgentVersion),
       canSelfUpdate: !a.revokedAt && gateway.canSelfUpdate(a.id),

@@ -170,6 +170,13 @@ export function GettingStarted() {
             <div className="step-body">
               <strong className="step-title">{TITLES[s.id]}</strong>
               <div className="hint">{EXPLAIN[s.id]}</div>
+              {s.id === 'claude_connected' &&
+                s.state === 'todo' &&
+                s.reason === 'claude_login_expired' && (
+                  <p className="warning">
+                    Claude login expired: run <code>orch login</code>
+                  </p>
+                )}
               {!s.done && <div>{actions(s)}</div>}
             </div>
           </li>

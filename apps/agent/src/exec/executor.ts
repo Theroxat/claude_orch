@@ -20,6 +20,7 @@
  */
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { classifyFailure } from '@orch/shared';
 import type {
   AckPayload,
   AgentMessage,
@@ -67,6 +68,8 @@ import {
   screenName,
   taskLabels,
 } from './naming';
+import { ClaudeAuthState, CLAUDE_AUTH_REJECT_PREFIX } from '../claude-auth';
+import { parseResetTime } from '../usage/ratelimit';
 import { buildAutoPrompt, buildManualPrompt } from './prompt';
 import { CLAUDE_TOKEN_ENV, TASK_CLAUDE_CONFIG_DIR, buildCreateArgs } from './sandbox';
 import type { ScreenOps } from './screen';
@@ -185,6 +188,8 @@ export class ManualExecutor {
   private readonly proc: ProcessOps;
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly log: Logger;
+  /** Persisted Claude login state; re-read on each check (`orch login` is another process). */
+  readonly claudeAuth: ClaudeAuthState;
 
   constructor(
     private readonly cfg: ExecutorConfig,
@@ -192,6 +197,7 @@ export class ManualExecutor {
   ) {
     this.store = new TaskStore(join(cfg.dataDir, 'tasks.json'));
     this.log = deps.logger;
+    this.claudeAuth = new ClaudeAuthState(cfg.dataDir);
     this.proc = deps.proc ?? spawnProcessOps;
   }
 
@@ -289,6 +295,9 @@ export class ManualExecutor {
     this.guard(this.claims.size);
     if (!this.deps.readClaudeToken()) {
       throw new ExecError('no_claude_token', 'No Claude token. Run "orch login" first.');
+    }
+    if (!this.claudeAuth.isValid()) {
+      throw new ExecError('claude_auth', 'Claude login expired: run "orch login".');
     }
     const fullName = this.resolveProject(project);
     const existing = this.store.byIssue(issueNumber, fullName);
@@ -480,6 +489,10 @@ export class ManualExecutor {
     }
     if (!this.deps.readClaudeToken()) {
       return { reason: 'error', detail: 'No Claude token on this machine (run "orch login")' };
+    }
+    if (!this.claudeAuth.isValid()) {
+      // The server recognizes the `claude_auth:` prefix and does not count it as a shut-out.
+      return { reason: 'error', detail: CLAUDE_AUTH_REJECT_PREFIX };
     }
     return null;
   }
@@ -927,12 +940,21 @@ export class ManualExecutor {
     this.runs.get(id)?.kill();
     const rec = this.store.update(id, { state: 'failed', error: message, prompt: null });
     await this.teardown(rec);
+    const failureClass = classifyFailure(message);
+    if (failureClass === 'claude_auth') this.claudeAuth.markInvalid(message.slice(0, 200));
+    let rateLimitedUntil: string | undefined;
+    if (failureClass === 'rate_limited') {
+      const reset = parseResetTime(message, this.now());
+      if (reset !== null) rateLimitedUntil = new Date(reset).toISOString();
+    }
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'failed',
       usage,
       error: message,
+      failureClass,
+      ...(rateLimitedUntil ? { rateLimitedUntil } : {}),
     });
   }
 

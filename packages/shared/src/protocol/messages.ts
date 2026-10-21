@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import { Model, ParticipationMode } from '../domain/enums';
 import { ReleaseVersionSchema } from '../domain/version';
+import { FailureClass } from '../domain/failure';
 import {
   AckMessageSchema,
   EnvelopeBaseSchema,
@@ -67,6 +68,11 @@ export const HelloPayloadSchema = z.object({
   running: z.array(RunningTaskSchema),
   /** True when the member ran `orch login` (the token file exists and is non-empty). */
   claudeTokenPresent: z.boolean().optional(),
+  /**
+   * False after a run failed on Claude authentication (401, expired login), true again after a
+   * successful `orch login` (v0.5.1+). Absent: unknown (older agents).
+   */
+  claudeAuthValid: z.boolean().optional(),
   /** True when the agent understands `agent.update` (one-click update). Absent = no. */
   selfUpdate: z.boolean().optional(),
 });
@@ -104,6 +110,8 @@ export const UsageReportPayloadSchema = z.object({
   source: z.enum(['jsonl', 'stream', 'mixed']),
   /** Recomputed on each report; flips to true right after `orch login`. */
   claudeTokenPresent: z.boolean().optional(),
+  /** See `hello.claudeAuthValid`. */
+  claudeAuthValid: z.boolean().optional(),
 });
 export type UsageReportPayload = z.infer<typeof UsageReportPayloadSchema>;
 
@@ -170,6 +178,13 @@ export const TaskFinishedPayloadSchema = z.object({
     output: z.number().int().nonnegative(),
   }),
   error: z.string().max(4000).optional(),
+  /**
+   * Why a `failed` run failed (v0.5.1+, additive). Absent (older agents): the server classifies
+   * `error` with `classifyFailure`.
+   */
+  failureClass: FailureClass.optional(),
+  /** `rate_limited` failures: when the limit resets, if the message said so. */
+  rateLimitedUntil: IsoDateTime.optional(),
 });
 
 export const TokenRequestPayloadSchema = z.object({
