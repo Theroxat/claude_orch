@@ -74,6 +74,10 @@ export class FakeDocker implements DockerOps {
   /** Thrown by `composeConfig` when set. */
   composeConfigError: Error | null = null;
   paused = new Set<string>();
+  /** Running sidecar containers per compose project. */
+  sidecars = new Map<string, string[]>();
+  /** Containers whose `pause` fails although they are running. */
+  pauseFails = new Set<string>();
   createEnv: Record<string, string>[] = [];
   usageJsonl = '';
 
@@ -118,10 +122,22 @@ export class FakeDocker implements DockerOps {
   async exists(container: string) {
     return this.containers.has(container);
   }
+  private isSidecar(c: string) {
+    return [...this.sidecars.values()].some((l) => l.includes(c));
+  }
   async pause(container: string) {
     this.calls.push(['pause', container]);
-    if (!this.containers.has(container)) throw new Error('No such container');
+    if (!this.containers.has(container) && !this.isSidecar(container)) {
+      throw new Error('No such container');
+    }
+    if (this.pauseFails.has(container)) throw new Error('cannot pause');
     this.paused.add(container);
+  }
+  async isRunning(container: string) {
+    return this.containers.has(container) || this.isSidecar(container);
+  }
+  async composeRunning(project: string) {
+    return (this.sidecars.get(project) ?? []).filter((c) => !this.paused.has(c));
   }
   async unpause(container: string) {
     this.calls.push(['unpause', container]);

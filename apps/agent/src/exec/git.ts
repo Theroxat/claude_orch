@@ -10,8 +10,9 @@
  *    attributes, and forces every config key that could run a program or leak a token
  *    (`GIT_SAFETY_FLAGS`). Only the allowed transport protocols are enabled.
  *  - the private config is checked against an allowlist before staging (so no filter, textconv,
- *    fsmonitor, include, ... can be configured), nested `.git` entries are refused, and staged
- *    symlinks pointing outside the worktree and gitlinks are refused.
+ *    fsmonitor, include, ... can be configured), nested `.git` entries and staged gitlinks
+ *    are refused, and every symlink of the staged tree (read from the index) must resolve
+ *    inside it.
  *  - the task gets its own throwaway copy of the git dir at `<worktree>/.git` (so `git diff` and
  *    `git commit` work inside the container). The agent never reads it and deletes it before
  *    staging: the task's own commits are squashed into one agent commit.
@@ -136,6 +137,44 @@ export function symlinkStaysInside(path: string, target: string): boolean {
   if (target === '' || posix.isAbsolute(target) || target.includes('\0')) return false;
   const resolved = posix.normalize(posix.join(posix.dirname(path), target));
   return resolved !== '..' && !resolved.startsWith('../') && !/(^|\/)\.git(\/|$)/i.test(resolved);
+}
+
+/**
+ * True when the symlink at `path` resolves inside the tree, following the tree's OTHER symlinks
+ * the way the kernel would after a checkout: text normalization alone is not enough (with
+ * `s -> .`, the target `s/x/../..` normalizes to `.` but resolves to the worktree's parent).
+ * `links` maps every symlink path of the tree (read from the index, never the disk) to its
+ * target. Lookups ignore case, as a case-insensitive checkout (macOS, Windows) would; two links
+ * differing only by case are refused. Absolute targets, a climb above the root, more than 40 hops
+ * (ELOOP) and a result inside `.git` are refused.
+ */
+export function symlinkResolvesInTree(links: ReadonlyMap<string, string>, path: string): boolean {
+  const folded = new Map<string, string | null>();
+  for (const [p, t] of links) {
+    const k = p.toLowerCase();
+    folded.set(k, folded.has(k) && folded.get(k) !== t ? null : t);
+  }
+  const out: string[] = [];
+  let rest = path.split('/');
+  let hops = 0;
+  while (rest.length > 0) {
+    const c = rest.shift()!;
+    if (c === '' || c === '.') continue;
+    if (c === '..') {
+      if (out.length === 0) return false;
+      out.pop();
+      continue;
+    }
+    out.push(c);
+    const target = folded.get(out.join('/').toLowerCase());
+    if (target === undefined) continue; // a directory, a file or nothing: a plain name
+    if (target === null) return false; // ambiguous on a case-insensitive checkout
+    if (++hops > 40) return false; // ELOOP
+    if (target === '' || posix.isAbsolute(target) || target.includes('\0')) return false;
+    out.pop();
+    rest = [...target.split('/'), ...rest];
+  }
+  return !out.some((c) => /^\.git$/i.test(c));
 }
 
 export class CliGit implements GitOps {
@@ -281,22 +320,32 @@ export class CliGit implements GitOps {
     return true;
   }
 
-  /** Staged (changed) entries: no `.git` path, no gitlink, no symlink leaving the worktree. */
+  /**
+   * The staged tree, read from the index (never the disk, which a task process may still
+   * change): changed entries may not be a `.git` path or a gitlink, and EVERY symlink of the tree,
+   * not only the changed ones, must resolve inside it through the tree's other symlinks.
+   * Otherwise a link committed earlier (`esc -> s/x/../..` while `s/` is a directory) escapes
+   * once a later commit turns `s` into `s -> .`.
+   */
   private async checkStaged(repo: GitRepo, changed: Set<string>): Promise<void> {
     const problems: string[] = [];
+    const links = new Map<string, string>();
     const entries = (await this.git(['ls-files', '-s', '-z'], { repo })).split('\0');
     for (const entry of entries) {
       const m = /^(\d{6}) ([0-9a-f]{40,64}) \d\t([\s\S]+)$/.exec(entry);
       if (!m) continue;
       const [, mode, sha, path] = m as unknown as [string, string, string, string];
-      if (!changed.has(path)) continue;
-      if (path.split('/').some((c) => /^\.git$/i.test(c))) problems.push(`${path}: .git path`);
-      else if (mode === '160000') problems.push(`${path}: nested repository (gitlink)`);
-      else if (mode === '120000') {
-        const target = await this.git(['cat-file', 'blob', sha], { repo });
-        if (!symlinkStaysInside(path, target)) {
-          problems.push(`${path}: symlink to ${JSON.stringify(target.slice(0, 200))}`);
-        }
+      if (changed.has(path)) {
+        if (path.split('/').some((c) => /^\.git$/i.test(c))) problems.push(`${path}: .git path`);
+        else if (mode === '160000') problems.push(`${path}: nested repository (gitlink)`);
+      }
+      if (mode === '120000') links.set(path, await this.git(['cat-file', 'blob', sha], { repo }));
+    }
+    for (const [path, target] of links) {
+      if (!symlinkStaysInside(path, target) || !symlinkResolvesInTree(links, path)) {
+        problems.push(
+          `${path}: symlink to ${JSON.stringify(target.slice(0, 200))} leaves the tree`,
+        );
       }
     }
     if (problems.length > 0) {

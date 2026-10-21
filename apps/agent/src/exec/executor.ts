@@ -879,7 +879,7 @@ export class ManualExecutor {
     } catch (err) {
       throw sidecarError(file, 'config', err);
     }
-    const problems = checkComposeModel(model, r.cloneDir, project);
+    const problems = checkComposeModel(model, r.cloneDir, project, r.network);
     if (problems.length > 0) throw new ComposeGuardError(problems);
     const safe = sanitizeComposeModel(model, labels);
     if (safe.stripped.length > 0) {
@@ -1053,11 +1053,9 @@ export class ManualExecutor {
     // subjects are read inside the sandbox, and the result is squashed into one agent commit.
     const taskSubjects = await this.taskSubjects(rec);
     const body = taskSubjects.map((t) => `- ${t}`).join('\n');
-    // Freeze the task while staging so it cannot swap files between the checks and the commit.
-    const paused = await this.deps.docker.pause(rec.container).then(
-      () => true,
-      () => false,
-    );
+    // Freeze the task AND its sidecars (they mount the clone too) while staging, so nothing can
+    // swap files between the checks and the commit. Fails closed when one cannot be frozen.
+    const paused = await this.freeze(rec);
     try {
       await git.commitAll(
         repo,
@@ -1065,7 +1063,7 @@ export class ManualExecutor {
         this.cfg.identity,
       );
     } finally {
-      if (paused) await this.deps.docker.unpause(rec.container).catch(() => undefined);
+      for (const c of paused) await this.deps.docker.unpause(c).catch(() => undefined);
     }
     const ahead = await git.commitsAhead(repo, rec.baseBranch);
     if (ahead === 0) {
@@ -1102,6 +1100,39 @@ export class ManualExecutor {
       outcome: 'succeeded',
       usage,
     });
+  }
+
+  /**
+   * Pauses the task container and every running sidecar of the task's compose project. A
+   * container that is not running (stopped, removed) cannot write and is skipped; any other pause
+   * failure, or a sidecar still running afterwards, unpauses everything and throws.
+   */
+  private async freeze(rec: TaskRecord): Promise<string[]> {
+    const docker = this.deps.docker;
+    const paused: string[] = [];
+    try {
+      const sidecars = rec.composeProject ? await docker.composeRunning(rec.composeProject) : [];
+      for (const c of [rec.container, ...sidecars]) {
+        try {
+          await docker.pause(c);
+          paused.push(c);
+        } catch (err) {
+          if (await docker.isRunning(c).catch(() => true)) {
+            throw new Error(`could not pause ${c} before committing: ${errorMessage(err)}`);
+          }
+        }
+      }
+      if (rec.composeProject) {
+        const still = await docker.composeRunning(rec.composeProject);
+        if (still.length > 0) {
+          throw new Error(`sidecars still running after pause: ${still.join(', ')}`);
+        }
+      }
+      return paused;
+    } catch (err) {
+      for (const c of paused) await docker.unpause(c).catch(() => undefined);
+      throw err;
+    }
   }
 
   /**

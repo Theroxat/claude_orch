@@ -473,6 +473,52 @@ describe('ManualExecutor cleanup and restart', () => {
     expect(rec.warnings.join(' ')).toContain('published ports');
   });
 
+  describe('freeze before commit', () => {
+    const sidecarTask = async () => {
+      const t = setup({ files: { 'compose.yaml': 'services: {}\n' } });
+      t.docker.composeModel = { name: 'p', services: { db: { image: 'postgres' } } };
+      t.ex.handle(offerMsg());
+      await t.ex.idle();
+      const rec = t.ex.store.get('asg_1')!;
+      expect(rec.state).toBe('running');
+      t.docker.sidecars.set('orch-task-asg-1', ['orch-task-asg-1-db-1']);
+      return { t, rec };
+    };
+
+    it('pauses the sidecars too (they mount the clone), then unpauses everything', async () => {
+      const { t, rec } = await sidecarTask();
+      await t.ex.done(42);
+      const pauses = t.docker.calls.filter((c) => c[0] === 'pause').map((c) => c[1]);
+      expect(pauses).toEqual([rec.container, 'orch-task-asg-1-db-1']);
+      expect(t.git.calls.some((c) => c[0] === 'commitAll')).toBe(true);
+      expect(t.docker.paused.size).toBe(0);
+    });
+
+    it('fails closed when a running sidecar cannot be paused', async () => {
+      const { t } = await sidecarTask();
+      t.docker.pauseFails.add('orch-task-asg-1-db-1');
+      await expect(t.ex.done(42)).rejects.toThrow(/could not pause orch-task-asg-1-db-1/);
+      expect(t.git.calls.some((c) => c[0] === 'commitAll')).toBe(false);
+      expect(t.git.calls.some((c) => c[0] === 'push')).toBe(false);
+      expect(t.docker.paused.size).toBe(0);
+    });
+
+    it('fails closed when the task container cannot be paused', async () => {
+      const { t, rec } = await sidecarTask();
+      t.docker.pauseFails.add(rec.container);
+      await expect(t.ex.done(42)).rejects.toThrow(/could not pause/);
+      expect(t.git.calls.some((c) => c[0] === 'commitAll')).toBe(false);
+    });
+
+    it('skips a container that is no longer running', async () => {
+      const { t, rec } = await sidecarTask();
+      t.docker.containers.delete(rec.container);
+      t.docker.sidecars.set('orch-task-asg-1', []);
+      await t.ex.done(42);
+      expect(t.git.calls.some((c) => c[0] === 'commitAll')).toBe(true);
+    });
+  });
+
   it('a missing env_file in the clone is dropped with a warning; compose gets an override', async () => {
     const t = setup({
       files: { 'compose.yaml': 'services:\n  db:\n    image: x\n    env_file: .env\n' },
