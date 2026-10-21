@@ -926,7 +926,8 @@ export class ManualExecutor {
     this.log.error('task failed', { assignmentId: id, error: message });
     this.runs.get(id)?.kill();
     const rec = this.store.update(id, { state: 'failed', error: message, prompt: null });
-    await this.teardown(rec);
+    // Report first: the outbox persists at once, so a stop during the teardown cannot lose it
+    // (the record is no longer active, a restart would not report it again).
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
@@ -934,6 +935,7 @@ export class ManualExecutor {
       usage,
       error: message,
     });
+    await this.teardown(rec);
   }
 
   // ---------- auto mode: headless run ----------
@@ -1339,13 +1341,13 @@ export class ManualExecutor {
       prompt: null,
     });
     this.runs.get(id)?.kill();
-    await this.teardown(after);
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'cancelled',
       usage: { weighted: 0, input: 0, output: 0 },
     });
+    await this.teardown(after);
   }
 
   /** Stops the session, the task container, the sidecars and the network. Keeps the clone. */
@@ -1468,6 +1470,7 @@ export class ManualExecutor {
     }
   }
 
+  /** Kills the runs; their jobs then report and tear down (await `idle()` for that). */
   close(): void {
     for (const p of this.runs.values()) p.kill();
     for (const resolve of this.userAccepts.values()) {

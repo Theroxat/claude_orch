@@ -364,7 +364,11 @@ describe('Agent: participation sync for auto offers', () => {
       participations,
     });
 
-  async function boot(participations: ReturnType<typeof part>[], configRequestTimeoutMs = 2_000) {
+  async function boot(
+    participations: ReturnType<typeof part>[],
+    configRequestTimeoutMs = 2_000,
+    fakes: { docker?: FakeDocker; proc?: FakeProc } = {},
+  ) {
     const server = await new FakeServer({
       credential: CREDENTIAL,
       config: { participations },
@@ -402,9 +406,9 @@ describe('Agent: participation sync for auto offers', () => {
         },
         deps: {
           git: new FakeGit(),
-          docker: new FakeDocker(),
+          docker: fakes.docker ?? new FakeDocker(),
           screen: new FakeScreen(),
-          proc: new FakeProc(),
+          proc: fakes.proc ?? new FakeProc(),
           fs: recordingFs(),
           readClaudeToken: () => CLAUDE_TOKEN,
         },
@@ -415,6 +419,39 @@ describe('Agent: participation sync for auto offers', () => {
     await waitFor(() => agent.client.ready, { what: 'welcome' });
     return { server, agent };
   }
+
+  it('stopping (SIGTERM) during an auto run still sends task.finished before going offline', async () => {
+    const docker = new FakeDocker();
+    const proc = new FakeProc();
+    const { server, agent } = await boot([part()], 2_000, { docker, proc });
+    server.onFrame = (msg) => {
+      if (msg.type !== 'token.request') return;
+      const p = msg.payload as { requestId: string; purpose: string };
+      server.send(
+        serverMessage('token.grant', {
+          requestId: p.requestId,
+          token: GH_TOKEN,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          repository: 'acme/widgets',
+          permissions: { contents: 'read' },
+        }),
+      );
+    };
+    server.send(autoOffer('asg_stop'));
+    await waitFor(() => proc.runs.length === 1, { what: 'claude -p started' });
+    // Teardown takes a while (docker rm, compose down).
+    const remove = docker.remove.bind(docker);
+    docker.remove = async (name: string) => {
+      await new Promise((r) => setTimeout(r, 200));
+      return remove(name);
+    };
+    await agent.stop();
+    expect(proc.runs[0]!.killed).toBe(true);
+    expect(server.ofType('task.finished')[0]?.payload).toMatchObject({
+      assignmentId: 'asg_stop',
+      outcome: 'failed',
+    });
+  });
 
   it('joined after connecting: config.update applies at once and the AUTO offer is accepted', async () => {
     const { server } = await boot([]);
