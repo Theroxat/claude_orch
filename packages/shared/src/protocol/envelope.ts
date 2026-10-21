@@ -82,7 +82,7 @@ export function envelopeOf<T extends string, P extends z.ZodTypeAny>(type: T, pa
 /** Payload of `ack`. `ok: false` means the receiver processed the message and refused it. */
 export const AckPayloadSchema = z.object({
   ok: z.boolean(),
-  /** True when the message id was already seen (dedupe hit). */
+  /** True when the message id was already seen (dedupe hit). `ok`/`error` then replay the first answer. */
   duplicate: z.boolean().optional(),
   error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
