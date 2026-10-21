@@ -23,7 +23,7 @@ import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { participationStatus } from '../projects/service';
 import { TaskService } from '../tasks/service';
-import { purgeRetention, recordUsage } from '../usage';
+import { claudeAuthUpdate, purgeRetention, recordUsage } from '../usage';
 
 interface Conn {
   agentId: string;
@@ -596,6 +596,9 @@ export class AgentGateway {
         ...(m.payload.claudeTokenPresent !== undefined && {
           claudeTokenPresent: m.payload.claudeTokenPresent,
         }),
+        // Agents older than v0.5.1 do not report it: a reconnect (restart after `orch login`,
+        // update) gives them another chance; a new claude_auth failure flags them again.
+        ...claudeAuthUpdate(prev, m.payload.claudeAuthValid ?? true),
       },
     });
     if (updated) {
@@ -723,6 +726,16 @@ export class AgentGateway {
         const local = p.updateId.startsWith('local-');
         // Stale ids are acked and ignored. Only progress is stored: never the image or anything else.
         if (p.updateId !== agent.updateId && !local) return { ok: true };
+        // Already done for this update and version (set by `hello` when the agent reconnected on
+        // the target version): the queued `done` is a replay, not a second completion (#31).
+        if (
+          p.status === 'done' &&
+          agent.updateStatus === 'done' &&
+          p.updateId === agent.updateId &&
+          normalizeVersion(p.targetVersion) === normalizeVersion(agent.updateTargetVersion)
+        ) {
+          return { ok: true };
+        }
         const now = new Date();
         const fresh = p.updateId !== agent.updateId;
         await prisma.agent.update({

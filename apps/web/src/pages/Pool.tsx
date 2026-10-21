@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { PoolMember } from '@orch/shared';
 import { useState } from 'react';
-import { fetchDiscover, fetchMyProjects, fetchPool } from '../api/endpoints';
+import { fetchDiscover, fetchMyAgents, fetchMyProjects, fetchPool } from '../api/endpoints';
 import { POLL_MS, relative } from '../time';
 
 function MemberCard({ m }: { m: PoolMember }) {
@@ -88,6 +88,12 @@ export function Pool() {
     queryFn: () => fetchPool(filter || undefined),
     refetchInterval: POLL_MS,
   });
+  const agents = useQuery({
+    queryKey: ['agents', 'mine'],
+    queryFn: fetchMyAgents,
+    refetchInterval: POLL_MS,
+  });
+  const expired = (agents.data ?? []).filter((a) => !a.revokedAt && a.claudeAuthValid === false);
   const names = new Map<string, string>();
   for (const p of mine.data ?? []) names.set(p.id, p.fullName);
   for (const d of discover.data ?? []) {
@@ -109,6 +115,12 @@ export function Pool() {
           </select>
         </label>
       </div>
+      {expired.map((a) => (
+        <p key={a.id} className="warning" role="alert">
+          Claude login expired on {a.machineName}: run <code>orch login</code>. No task is offered
+          to that machine until then.
+        </p>
+      ))}
       <p className="hint">All usage figures are estimates.</p>
       {pool.isLoading && <p>Loading...</p>}
       {pool.error && <p className="error">{pool.error.message}</p>}

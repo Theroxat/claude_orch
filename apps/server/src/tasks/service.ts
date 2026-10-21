@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, type Agent, type Assignment, type Project, type User } from '@prisma/client';
 import {
   TASK_STATUSES,
+  classifyFailure,
   serverMessage,
+  summarizeFailure,
+  type FailureClass,
   type AckPayload,
   type GithubRole,
   type ServerMessage,
@@ -22,6 +25,13 @@ import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
 import { getRoleInfo, participationStatus } from '../projects/service';
 import { bodyHash, branchNameFor, buildIssueBody, parseIssueBody } from './meta';
+import {
+  ENV_FAILURES_BEFORE_ATTENTION,
+  RATE_LIMIT_FALLBACK_MS,
+  attentionReason,
+  beforeRetry,
+  failureClassOf,
+} from '../dispatch/failures';
 
 export interface TaskDeps {
   prisma: PrismaClient;
@@ -38,6 +48,12 @@ export const taskInclude = {
   assigneeAgent: true,
   dependsOn: { include: { dependsOn: true } },
   targets: true,
+  // Failed runs, for "Failed N times: last error" on the card.
+  assignments: {
+    where: { status: 'FAILED' },
+    orderBy: { finishedAt: 'desc' },
+    select: { reason: true, failureClass: true, finishedAt: true, updatedAt: true },
+  },
 } satisfies Prisma.TaskInclude;
 export type TaskRow = Prisma.TaskGetPayload<{ include: typeof taskInclude }>;
 
@@ -122,8 +138,23 @@ export function toTaskView(
       mode: DISPATCH_VIEW[t.dispatchMode],
       memberIds: t.targets.map((x) => x.userId),
     },
+    ...failureView(t),
+    needsAttention: t.needsAttention,
+    needsAttentionReason: t.needsAttentionReason,
+    canRetry: t.status === 'TODO' && (access.isOwner || t.createdById === viewer.id),
     createdAt: t.createdAt.toISOString(),
     updatedAt: t.updatedAt.toISOString(),
+  };
+}
+
+/** Failed runs since the last retry, and the last one's error (redacted, truncated). */
+function failureView(t: TaskRow) {
+  const failed = t.assignments.filter((a) => !beforeRetry(a, t.retryResetAt));
+  const last = failed[0];
+  return {
+    failedAttempts: failed.length,
+    lastError: last ? summarizeFailure(last.reason) || null : null,
+    lastFailureClass: last ? failureClassOf(last) : null,
   };
 }
 
@@ -988,6 +1019,42 @@ export class TaskService {
     return this.getRow(t.id);
   }
 
+  /**
+   * Retry (project owner or task creator): earlier failures no longer count for the dispatcher
+   * (shut-out, backoff, env counter), `needsAttention` is cleared. History is kept.
+   */
+  async retry(t: TaskRow, user: User, access: Access, via: 'web' | 'mcp', ip?: string) {
+    if (!(access.isOwner || t.createdById === user.id)) {
+      throw new HttpError(403, 'forbidden', 'Only the creator or the project owner can retry');
+    }
+    const now = new Date();
+    const res = await this.prisma.task.updateMany({
+      where: { id: t.id, status: 'TODO' },
+      data: {
+        retryResetAt: now,
+        needsAttention: false,
+        needsAttentionReason: null,
+        needsAttentionAt: null,
+      },
+    });
+    if (res.count !== 1) {
+      throw new HttpError(409, 'not_retryable', 'Only a task waiting in To do can be retried');
+    }
+    await audit(this.prisma, {
+      actorUserId: user.id,
+      action: 'task.retried',
+      projectId: t.projectId,
+      taskId: t.id,
+      ip,
+      data: {
+        via,
+        failedAttempts: failureView(t).failedAttempts,
+        ...(t.needsAttention ? { clearedNeedsAttention: true } : {}),
+      },
+    });
+    return this.getRow(t.id);
+  }
+
   // ---------- agent side: list ----------
 
   /** Tasks the agent's member can take right now. */
@@ -1367,6 +1434,8 @@ export class TaskService {
       outcome: 'succeeded' | 'failed' | 'cancelled' | 'no_changes';
       usage: { weighted: number; input: number; output: number };
       error?: string;
+      failureClass?: FailureClass;
+      rateLimitedUntil?: string;
     },
   ): Promise<AckPayload> {
     const t = await this.progressTarget(agent, p.assignmentId, p.seq);
@@ -1374,6 +1443,14 @@ export class TaskService {
     const a = t.a;
     const status =
       p.outcome === 'succeeded' ? 'SUCCEEDED' : p.outcome === 'cancelled' ? 'CANCELLED' : 'FAILED';
+    // Older agents send no class: classify their error text the same way.
+    const failureClass: FailureClass | null =
+      status !== 'FAILED'
+        ? null
+        : p.outcome === 'no_changes'
+          ? 'task'
+          : (p.failureClass ?? classifyFailure(p.error));
+    const now = new Date();
     const [, returned] = await this.prisma.$transaction([
       this.prisma.assignment.update({
         where: { id: a.id },
@@ -1382,6 +1459,7 @@ export class TaskService {
           lastSeq: p.seq,
           finishedAt: new Date(),
           reason: p.error?.slice(0, 1000) ?? (p.outcome === 'no_changes' ? 'no_changes' : null),
+          failureClass,
           usageWeighted: BigInt(Math.round(p.usage.weighted)),
         },
       }),
@@ -1395,10 +1473,95 @@ export class TaskService {
     await this.agentAudit(agent, 'task.finished', a, {
       outcome: p.outcome,
       weighted: p.usage.weighted,
-      ...(p.error ? { error: p.error.slice(0, 500) } : {}),
+      ...(p.error ? { error: summarizeFailure(p.error, 500) } : {}),
+      ...(failureClass ? { failureClass } : {}),
       returnedToPool: returned.count === 1,
     });
+    await this.afterRun(agent, a, status, failureClass, p, now);
     return { ok: true };
+  }
+
+  /** What a finished run means beyond the run itself (see dispatch/failures). */
+  private async afterRun(
+    agent: AgentWithUser,
+    a: Assignment,
+    status: 'SUCCEEDED' | 'CANCELLED' | 'FAILED',
+    failureClass: FailureClass | null,
+    p: { error?: string; rateLimitedUntil?: string },
+    now: Date,
+  ): Promise<void> {
+    const { prisma } = this;
+    if (status === 'SUCCEEDED' && !agent.claudeAuthValid) {
+      // A run went through: the login works again.
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data: { claudeAuthValid: true, claudeAuthInvalidAt: null },
+      });
+      return;
+    }
+    if (failureClass === 'claude_auth') {
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data: { claudeAuthValid: false, claudeAuthInvalidAt: now },
+      });
+      if (agent.claudeAuthValid) {
+        await audit(prisma, {
+          actorType: 'SYSTEM',
+          action: 'agent.claude_auth_invalid',
+          targetUserId: agent.userId,
+          agentId: agent.id,
+          taskId: a.taskId,
+          data: { assignmentId: a.id },
+        });
+      }
+      return;
+    }
+    if (failureClass === 'rate_limited') {
+      const parsed = p.rateLimitedUntil ? new Date(p.rateLimitedUntil) : null;
+      const until =
+        parsed && parsed.getTime() > now.getTime()
+          ? parsed
+          : new Date(now.getTime() + RATE_LIMIT_FALLBACK_MS);
+      // The existing mechanism: the member's latest usage report carries `rateLimitedUntil`
+      // (kept by the following reports while it lies in the future, see recordUsage).
+      const latest = await prisma.usageReport.findFirst({
+        where: { agentId: agent.id },
+        orderBy: { reportedAt: 'desc' },
+      });
+      if (latest && (!latest.rateLimitedUntil || latest.rateLimitedUntil < until)) {
+        await prisma.usageReport.update({
+          where: { id: latest.id },
+          data: { rateLimitedUntil: until },
+        });
+      }
+      return;
+    }
+    if (failureClass === 'env') {
+      const task = await prisma.task.findUniqueOrThrow({ where: { id: a.taskId } });
+      if (task.needsAttention) return;
+      const envFailures = await prisma.assignment.findMany({
+        where: { taskId: a.taskId, status: 'FAILED' },
+        select: { failureClass: true, reason: true, finishedAt: true, updatedAt: true },
+      });
+      const count = envFailures.filter(
+        (f) => failureClassOf(f) === 'env' && !beforeRetry(f, task.retryResetAt),
+      ).length;
+      if (count < ENV_FAILURES_BEFORE_ATTENTION) return;
+      const reason = attentionReason(p.error ?? null);
+      const r = await prisma.task.updateMany({
+        where: { id: a.taskId, needsAttention: false },
+        data: { needsAttention: true, needsAttentionReason: reason, needsAttentionAt: now },
+      });
+      if (r.count === 1) {
+        await audit(prisma, {
+          actorType: 'SYSTEM',
+          action: 'task.needs_attention',
+          projectId: task.projectId,
+          taskId: a.taskId,
+          data: { envFailures: count, reason },
+        });
+      }
+    }
   }
 
   async onDoneRequest(agent: AgentWithUser, assignmentId: string): Promise<AckPayload> {

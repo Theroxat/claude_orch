@@ -196,4 +196,19 @@ describe('My server', () => {
     await waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true));
     await waitFor(() => expect(screen.queryByRole('article', { name: 'laptop' })).toBeNull());
   });
+
+  it('warns when the Claude login expired', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /agents/mine': () => ({
+        json: [agent({ claudeTokenPresent: true, claudeAuthValid: false })],
+      }),
+    });
+    renderApp('/my-server');
+    const card = await screen.findByRole('article', { name: 'laptop' });
+    expect(within(card).getByRole('alert').textContent).toBe(
+      'Claude login expired: run orch login',
+    );
+    expect(within(card).queryByText('Claude: connected')).toBeNull();
+  });
 });

@@ -622,7 +622,12 @@ describe('consent is absolute', () => {
     // An auto offer cannot be forced through the gateway either (second guard).
     const t = await prisma.task.findUniqueOrThrow({
       where: { id: tasks[0]!.id },
-      include: { project: true, createdBy: true, targets: true },
+      include: {
+        project: { include: { installation: true } },
+        createdBy: true,
+        targets: true,
+        dependsOn: { include: { dependsOn: true } },
+      },
     });
     const fake = {
       id: 'forced',

@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { serverMessage } from '@orch/shared';
 import { Agent } from '../src/agent';
+import { ClaudeAuthState } from '../src/claude-auth';
 import { sendControl } from '../src/cli/client';
 import { silentLogger } from '../src/log';
 import type { UsageEstimate } from '../src/usage';
@@ -123,10 +124,31 @@ describe('Agent', () => {
       usageFirstDelayMs: 10,
     });
     await waitFor(() => s.ofType('usage.report').length >= 1, { what: 'first report' });
-    expect(s.ofType('usage.report')[0]?.payload).toEqual(toUsageReport(estimate));
+    expect(s.ofType('usage.report')[0]?.payload).toEqual({
+      ...toUsageReport(estimate),
+      claudeAuthValid: true,
+    });
     await waitFor(() => usageCalls() >= 2, { timeoutMs: 3000, what: 'second report' });
     await waitFor(() => agent.outbox.pending().length === 0);
     expect(agent.status().lastUsageReportAt).not.toBeNull();
+  });
+
+  it('reports claudeAuthValid=false in hello and usage.report while the Claude login is expired', async () => {
+    mkdirSync(join(tmp.dir, 'data'), { recursive: true });
+    new ClaudeAuthState(join(tmp.dir, 'data')).markInvalid('401');
+    const s = await startServer();
+    const { agent } = await startAgent(s.url, { usageIntervalSec: 1, usageFirstDelayMs: 10 });
+    await waitFor(() => s.ofType('usage.report').length >= 1, { what: 'report' });
+    expect(s.ofType('hello')[0]?.payload).toMatchObject({ claudeAuthValid: false });
+    expect(s.ofType('usage.report')[0]?.payload).toMatchObject({ claudeAuthValid: false });
+    expect(agent.status().claudeAuthValid).toBe(false);
+    // `orch login` in another process flips it back; the next report carries it.
+    new ClaudeAuthState(join(tmp.dir, 'data')).markValid();
+    await waitFor(() => s.ofType('usage.report').some((m) => m.payload.claudeAuthValid === true), {
+      timeoutMs: 4000,
+      what: 'valid report',
+    });
+    expect(agent.status().claudeAuthValid).toBe(true);
   });
 
   it('keeps the loop alive when the estimate fails', async () => {

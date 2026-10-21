@@ -4,6 +4,7 @@ import { createConnection } from 'node:net';
 import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ClaudeAuthState } from '../src/claude-auth';
 import { DaemonNotRunningError, sendControl } from '../src/cli/client';
 import type { StatusInfo } from '../src/cli/protocol';
 import { extractToken, login } from '../src/cli/login';
@@ -173,6 +174,20 @@ describe('orch login', () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(r.stdout + r.stderr).not.toContain(TOKEN);
     expect(r.stdout + r.stderr).not.toContain('A1b2C3d4');
+  });
+
+  it('resets the persisted Claude login state after a successful login', async () => {
+    const secrets = join(tmp.dir, 'secrets');
+    const data = join(tmp.dir, 'data');
+    new ClaudeAuthState(data).markInvalid('401');
+    expect(new ClaudeAuthState(data).isValid()).toBe(false);
+    const r = await runEntry(
+      ['login', '--token-stdin'],
+      { ORCH_SECRETS_DIR: secrets, ORCH_DATA_DIR: data, ORCH_CLAUDE_BIN: fakeClaude() },
+      `${TOKEN}\n`,
+    );
+    expect(r.code).toBe(0);
+    expect(new ClaudeAuthState(data).isValid()).toBe(true);
   });
 
   it('rejects an invalid token and a failing setup-token', async () => {
