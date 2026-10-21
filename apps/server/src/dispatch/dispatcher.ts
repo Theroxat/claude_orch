@@ -410,6 +410,9 @@ export class Dispatcher {
       }
       const agent = await this.freeAgent(p.user, now);
       if (!agent) continue;
+      // Consent invariant: a member whose access was removed (or cannot be verified past the
+      // GitHub outage grace period) gets no offer. Checked late: the decision is cached.
+      if (!(await this.gateway.ownerAllowed(p.user))) continue;
       const usage = await this.latestUsage(p.userId);
       const state = usageState(usage, now, staleMs);
       let margin: Margin | null = null;

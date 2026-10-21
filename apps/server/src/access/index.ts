@@ -201,6 +201,14 @@ export function registerAccess(app: FastifyInstance, deps: AuthDeps): void {
         data: { status, decidedAt: new Date(), decidedBy: admin.login },
       });
       app.allowlist.invalidate(grant.githubLogin);
+      if (status === 'DENIED') {
+        // Connected agents of that user are suspended now, not at their next frame.
+        const users = await prisma.user.findMany({
+          where: { login: { equals: grant.githubLogin, mode: 'insensitive' } },
+          select: { id: true },
+        });
+        for (const u of users) await app.agentGateway.recheckUser(u.id);
+      }
       await audit(prisma, {
         actorUserId: admin.id,
         action,

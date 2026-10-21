@@ -26,6 +26,7 @@ function client(url: string, credential = CREDENTIAL, random = () => 0.999) {
     hello,
     logger: silentLogger,
     backoff: { baseMs: 20, maxMs: 160, random },
+    suspendedRetryMs: 200,
   });
   const delays: { attempt: number; delayMs: number }[] = [];
   c.on('reconnect', (r) => delays.push(r));
@@ -105,6 +106,26 @@ describe('WsClient', () => {
     expect(fatal).toEqual([4401]);
     expect(delays).toHaveLength(0);
     expect(s.rejectedAuth).toBe(1);
+  });
+
+  it('4403 (access suspended) is not fatal: it retries slowly and is back once re-approved', async () => {
+    const s = await server();
+    const { c, delays } = client(s.url);
+    const fatal: number[] = [];
+    c.on('fatal', (f) => fatal.push(f.code));
+    c.start();
+    await waitFor(() => c.ready);
+    // The admin removes the owner: the socket is closed with 4403, upgrades get HTTP 403.
+    s.suspended = true;
+    s.closeAll(4403, 'access_suspended');
+    await waitFor(() => s.rejectedSuspended >= 2, { what: 'retries while suspended' });
+    expect(fatal).toEqual([]);
+    expect(c.currentState).not.toBe('fatal');
+    for (const d of delays) expect(d.delayMs).toBeGreaterThanOrEqual(200); // long backoff
+    // Re-approved: the same credential connects again, no re-enrollment.
+    s.suspended = false;
+    await waitFor(() => c.ready && s.connections === 2, { what: 'reconnected after approval' });
+    expect(s.rejectedAuth).toBe(0);
   });
 
   it('reconnects after a 4008 close', async () => {

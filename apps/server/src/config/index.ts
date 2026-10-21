@@ -78,6 +78,12 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true'),
   /** How long an org-membership check of a signed-in user is cached. */
   ORCH_ALLOWLIST_CACHE_SEC: z.coerce.number().int().nonnegative().default(300),
+  /**
+   * GitHub outage policy: when an org-membership check fails (network, 5xx, rate limit, revoked
+   * App authorization), the user's last known decision is reused if younger than this, then
+   * access is denied (fail closed).
+   */
+  ORCH_ACCESS_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
   ORCH_ENCRYPTION_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   // Files served to member machines. Default: resolved from the repository root.
   ORCH_INSTALL_SH_PATH: z.preprocess(emptyToUndefined, z.string().optional()),

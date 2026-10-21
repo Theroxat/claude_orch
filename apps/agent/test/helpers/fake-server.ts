@@ -31,6 +31,9 @@ export class FakeServer {
   readonly sockets = new Set<WebSocket>();
   connections = 0;
   rejectedAuth = 0;
+  /** While true, upgrades get HTTP 403 (owner's access suspended by an admin). */
+  suspended = false;
+  rejectedSuspended = 0;
   autoAck: boolean;
   config: AgentConfigPayload;
   port = 0;
@@ -57,6 +60,10 @@ export class FakeServer {
       verifyClient: (info, cb) => {
         const ok = info.req.headers.authorization === `Bearer ${this.opts.credential}`;
         if (!ok) this.rejectedAuth++;
+        else if (this.suspended) {
+          this.rejectedSuspended++;
+          return cb(false, 403);
+        }
         cb(ok, 401);
       },
     });

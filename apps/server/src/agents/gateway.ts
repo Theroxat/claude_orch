@@ -36,7 +36,7 @@ interface Conn {
   queue: Promise<void>;
 }
 
-export type OfferRefusal = 'offline' | 'paused' | 'revoked' | 'no_consent';
+export type OfferRefusal = 'offline' | 'paused' | 'revoked' | 'no_consent' | 'access_suspended';
 
 export class OfferRefusedError extends Error {
   constructor(readonly reason: OfferRefusal) {
@@ -50,8 +50,9 @@ export interface GatewayDeps {
   log: FastifyBaseLogger;
   github?: GithubClient;
   /**
-   * Sign-in allowlist decision for the agent's owner. Checked on every frame (the result is
-   * cached by the allowlist), so removing someone's access also cuts off their connected agents.
+   * Sign-in allowlist decision for the agent's owner (false when refused, or unknown past the
+   * GitHub outage grace period). Checked on every frame (cached by the allowlist), before every
+   * offer and every manual claim, so removing someone's access also cuts off their agents.
    */
   isAllowed?: (user: User) => Promise<boolean>;
 }
@@ -141,6 +142,34 @@ export class AgentGateway {
     if (!this.sendTo(agentId, msg)) return false;
     this.cleanupAcks.set(msg.id, assignmentId);
     return true;
+  }
+
+  /** Whether the owner may still use orch (always true without an allowlist dependency). */
+  async ownerAllowed(user: User): Promise<boolean> {
+    return this.deps.isAllowed ? this.deps.isAllowed(user) : true;
+  }
+
+  /**
+   * Closes the agent with the non-fatal ACCESS_SUSPENDED code: the agent keeps its credential
+   * and retries with a long backoff, so approving the owner again brings it back.
+   */
+  suspend(agentId: string): void {
+    const c = this.conns.get(agentId);
+    if (!c) return;
+    this.sendError(c, 'access_suspended', 'Access to this server was removed by an admin');
+    this.disconnect(agentId, CloseCode.ACCESS_SUSPENDED, 'access_suspended');
+  }
+
+  /**
+   * Re-checks the owner's access now (after an admin denied or removed it) and suspends their
+   * connected agents when it is refused, without waiting for their next frame.
+   */
+  async recheckUser(userId: string): Promise<void> {
+    const ids = [...this.conns.values()].filter((c) => c.userId === userId).map((c) => c.agentId);
+    if (ids.length === 0) return;
+    const user = await this.deps.prisma.user.findUnique({ where: { id: userId } });
+    if (user && (await this.ownerAllowed(user))) return;
+    for (const id of ids) this.suspend(id);
   }
 
   /** Closes the live socket of an agent, if any. */
@@ -248,6 +277,11 @@ export class AgentGateway {
     });
     if (!agent || agent.revokedAt) throw new OfferRefusedError('revoked');
     if (agent.paused || agent.user.paused) throw new OfferRefusedError('paused');
+    // Consent invariant: no offer (title, repository, prompt) reaches a user who lost access.
+    if (!(await this.ownerAllowed(agent.user))) {
+      this.suspend(agentId);
+      throw new OfferRefusedError('access_suspended');
+    }
     const live = this.conns.get(agentId);
     if (!live || !live.helloed) throw new OfferRefusedError('offline');
     if (payload.kind !== 'CLAIM') {
@@ -286,6 +320,13 @@ export class AgentGateway {
       where: { id: userId },
       include: { agents: true },
     });
+    if (!(await this.ownerAllowed(user))) {
+      return {
+        ok: false,
+        code: 'access_suspended',
+        message: 'Your access to this server was removed by an admin.',
+      };
+    }
     const online = user.agents.filter((a) => !a.revokedAt && this.isConnected(a.id));
     if (online.length === 0) {
       return {
@@ -348,7 +389,10 @@ export class AgentGateway {
       this.dispatcher?.kick();
       return {
         ok: false,
-        code: err.reason === 'paused' ? 'paused' : 'no_agent_online',
+        code:
+          err.reason === 'paused' || err.reason === 'access_suspended'
+            ? err.reason
+            : 'no_agent_online',
         message: `Your machine could not be reached (${err.reason}); the task is open again.`,
       };
     }
@@ -393,17 +437,11 @@ export class AgentGateway {
     }
     const m = r.message;
     if (m.type !== 'ack' && this.deps.isAllowed) {
+      // GitHub outages are handled by the allowlist (last known decision for a grace period,
+      // then deny); any other failure throws and the frame is not processed (fail closed).
       const owner = await this.deps.prisma.user.findUnique({ where: { id: c.userId } });
-      const allowed = owner
-        ? await this.deps.isAllowed(owner).catch((err: unknown) => {
-            // GitHub unreachable (org check): keep the agent, as at the last decision.
-            this.deps.log.warn({ err, agentId: c.agentId }, 'agent allowlist check failed');
-            return true;
-          })
-        : false;
-      if (!allowed) {
-        this.sendError(c, 'unauthorized', 'This account is no longer allowed', m.id);
-        this.disconnect(c.agentId, CloseCode.UNAUTHORIZED, 'access removed');
+      if (!owner || !(await this.deps.isAllowed(owner))) {
+        this.suspend(c.agentId);
         return;
       }
     }

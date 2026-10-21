@@ -96,6 +96,82 @@ async function adminCookie(a: FastifyInstance): Promise<string> {
   return s.cookie!;
 }
 
+async function enrollAgent(a: FastifyInstance, cookie: string): Promise<string> {
+  const enrollToken = (await as(a, cookie)('POST', '/api/agents/enrollment-tokens')).json<{
+    token: string;
+  }>().token;
+  return EnrollResponseSchema.parse(
+    (
+      await a.inject({
+        method: 'POST',
+        url: '/api/agents/enroll',
+        payload: { token: enrollToken, machineName: 'box', agentVersion: '0.1.0' },
+      })
+    ).json(),
+  ).credential;
+}
+
+async function wsUrlOf(a: FastifyInstance): Promise<string> {
+  if (!a.server.listening) await a.listen({ port: 0, host: '127.0.0.1' });
+  return `ws://127.0.0.1:${(a.server.address() as AddressInfo).port}/agent/ws`;
+}
+
+/** HTTP status of a refused upgrade (0 when the socket opened). */
+async function upgradeStatus(a: FastifyInstance, credential: string): Promise<number> {
+  const ws = new WebSocket(await wsUrlOf(a), {
+    headers: { authorization: `Bearer ${credential}` },
+  });
+  ws.on('error', () => {}); // terminate() during the handshake emits one
+  return new Promise((res) => {
+    ws.once('unexpected-response', (_req, r) => {
+      res(r.statusCode ?? -1);
+      ws.terminate();
+    });
+    ws.once('open', () => {
+      res(0);
+      ws.close();
+    });
+  });
+}
+
+/** Connects an agent and sends hello. */
+async function connectAgent(a: FastifyInstance, credential: string) {
+  const ws = new WebSocket(await wsUrlOf(a), {
+    headers: { authorization: `Bearer ${credential}` },
+  });
+  const msgs: ServerMessage[] = [];
+  ws.on('message', (d) => msgs.push(JSON.parse(d.toString()) as ServerMessage));
+  const closed = new Promise<number>((res) => ws.once('close', (code) => res(code)));
+  await new Promise((res, rej) => {
+    ws.once('open', res);
+    ws.once('unexpected-response', (_req, r) => rej(new Error(`upgrade ${r.statusCode}`)));
+  });
+  ws.send(
+    JSON.stringify(
+      agentMessage('hello', {
+        agentVersion: '0.4.0',
+        capabilities: ['auto', 'manual'],
+        localPaused: false,
+        maxConcurrent: 1,
+        running: [],
+      }),
+    ),
+  );
+  const agentId = /^orch_agent_([^.]+)\./.exec(credential)![1]!;
+  const welcomed = async () => {
+    const end = Date.now() + 3000;
+    while (!msgs.some((m) => m.type === 'welcome') && Date.now() < end) {
+      await new Promise((res) => setTimeout(res, 15));
+    }
+    return msgs.some((m) => m.type === 'welcome');
+  };
+  const heartbeat = () =>
+    ws.send(JSON.stringify(agentMessage('heartbeat', { running: 0, localPaused: false })));
+  return { ws, msgs, closed, agentId, welcomed, heartbeat };
+}
+
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
 interface GrantJson {
   id: string;
   githubLogin: string;
@@ -296,61 +372,56 @@ describe('request access', () => {
     expect((await as(a, s.cookie)('GET', '/api/me')).statusCode).toBe(200);
   });
 
-  it('remove -> a connected agent is cut off: no token, socket closed', async () => {
+  it('remove -> a connected agent is suspended (4403, not fatal); re-approving brings it back', async () => {
     const login = `agent-${uid()}`;
     const r = await as(a, admin)('POST', '/api/admin/access/grants', { githubLogin: login });
     const grant = r.json<{ grant: GrantJson }>().grant;
     const s = await signIn(a, login);
-    const enrollToken = (await as(a, s.cookie)('POST', '/api/agents/enrollment-tokens')).json<{
-      token: string;
-    }>().token;
-    const enr = EnrollResponseSchema.parse(
-      (
-        await a.inject({
-          method: 'POST',
-          url: '/api/agents/enroll',
-          payload: { token: enrollToken, machineName: 'box', agentVersion: '0.1.0' },
-        })
-      ).json(),
-    );
-    if (!a.server.listening) await a.listen({ port: 0, host: '127.0.0.1' });
-    const port = (a.server.address() as AddressInfo).port;
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/agent/ws`, {
-      headers: { authorization: `Bearer ${enr.credential}` },
-    });
-    const msgs: ServerMessage[] = [];
-    ws.on('message', (d) => msgs.push(JSON.parse(d.toString()) as ServerMessage));
-    const closed = new Promise<number>((res) => ws.once('close', (code) => res(code)));
-    await new Promise((res) => ws.once('open', res));
-    ws.send(
-      JSON.stringify(
-        agentMessage('hello', {
-          agentVersion: '0.4.0',
-          capabilities: ['auto', 'manual'],
-          localPaused: false,
-          maxConcurrent: 1,
-          running: [],
-        }),
-      ),
-    );
-    const end = Date.now() + 3000;
-    while (!msgs.some((m) => m.type === 'welcome') && Date.now() < end) {
-      await new Promise((res) => setTimeout(res, 15));
+    const credential = await enrollAgent(a, s.cookie!);
+    const ag = await connectAgent(a, credential);
+    try {
+      expect(await ag.welcomed()).toBe(true);
+      // Suspended at once by the admin decision, without waiting for a frame.
+      await as(a, admin)('POST', `/api/admin/access/grants/${grant.id}/remove`);
+      expect(await ag.closed).toBe(CloseCode.ACCESS_SUSPENDED);
+      expect(ag.msgs.some((m) => m.type === 'token.grant' || m.type === 'token.deny')).toBe(false);
+      // Reconnecting while suspended: HTTP 403 (retryable), not the 401 of a bad credential.
+      expect(await upgradeStatus(a, credential)).toBe(403);
+      expect(await prisma.agent.count({ where: { id: ag.agentId, revokedAt: null } })).toBe(1);
+      // Re-approved: the same credential connects again, no re-enrollment.
+      await as(a, admin)('POST', `/api/admin/access/grants/${grant.id}/approve`);
+      const again = await connectAgent(a, credential);
+      try {
+        expect(await again.welcomed()).toBe(true);
+      } finally {
+        again.ws.close();
+      }
+    } finally {
+      ag.ws.close();
     }
-    expect(msgs.some((m) => m.type === 'welcome')).toBe(true);
+  });
 
-    await as(a, admin)('POST', `/api/admin/access/grants/${grant.id}/remove`);
-    ws.send(
-      JSON.stringify(
-        agentMessage('token.request', {
-          requestId: 'r1',
-          assignmentId: 'whatever',
-          purpose: 'push',
-        }),
-      ),
-    );
-    expect(await closed).toBe(CloseCode.UNAUTHORIZED);
-    expect(msgs.some((m) => m.type === 'token.grant' || m.type === 'token.deny')).toBe(false);
+  it('a frame from an agent whose owner lost access is not processed (task.claim)', async () => {
+    const login = `frame-${uid()}`;
+    const r = await as(a, admin)('POST', '/api/admin/access/grants', { githubLogin: login });
+    const grant = r.json<{ grant: GrantJson }>().grant;
+    const s = await signIn(a, login);
+    const ag = await connectAgent(a, await enrollAgent(a, s.cookie!));
+    try {
+      expect(await ag.welcomed()).toBe(true);
+      // Denied behind the gateway's back (like an org removal): caught at the next frame.
+      await prisma.accessGrant.update({ where: { id: grant.id }, data: { status: 'DENIED' } });
+      a.allowlist.invalidate(login);
+      ag.ws.send(
+        JSON.stringify(
+          agentMessage('task.claim', { projectFullName: 'acme/repo', issueNumber: 1 }),
+        ),
+      );
+      expect(await ag.closed).toBe(CloseCode.ACCESS_SUSPENDED);
+      expect(ag.msgs.some((m) => m.type === 'ack' || m.type === 'task.offer')).toBe(false);
+    } finally {
+      ag.ws.close();
+    }
   });
 
   it('an approved grant does not follow a login to another GitHub account', async () => {
@@ -598,5 +669,100 @@ describe('precedence', () => {
     expect(second.status).toBe(302);
     const g = await prisma.accessGrant.findUniqueOrThrow({ where: { githubLogin: login } });
     expect(g.githubUserId).toBe(BigInt(first.githubId));
+  });
+});
+
+describe('GitHub outage: last known decision for ORCH_ACCESS_GRACE_SEC, then fail closed', () => {
+  const ORG = `out-${uid()}`;
+  const GRACE_MS = 2000;
+  let a: FastifyInstance;
+  let admin: string;
+  beforeAll(async () => {
+    // No org cache: every request asks GitHub, so only the grace period keeps a decision.
+    a = newApp({
+      ORCH_ALLOWED_GITHUB_ORGS: ORG,
+      ORCH_ALLOWLIST_CACHE_SEC: '0',
+      ORCH_ACCESS_GRACE_SEC: String(GRACE_MS / 1000),
+    });
+    admin = await adminCookie(a);
+  });
+  const me = (cookie?: string) => as(a, cookie)('GET', '/api/me');
+  const userOf = (login: string) => prisma.user.findFirstOrThrow({ where: { login } });
+
+  it('within the grace: allowed (last known); after it: denied, sessions and agents alike', async () => {
+    const login = `org-${uid()}`;
+    const s = await signIn(a, login, '', [ORG]);
+    expect(s.status).toBe(302);
+    // An approved grant does not depend on GitHub.
+    const granted = `granted-${uid()}`;
+    await as(a, admin)('POST', '/api/admin/access/grants', { githubLogin: granted });
+    const g = await signIn(a, granted);
+    expect((await me(s.cookie)).statusCode).toBe(200); // decision recorded
+    const ag = await connectAgent(a, await enrollAgent(a, s.cookie!));
+    try {
+      expect(await ag.welcomed()).toBe(true);
+      gh.failOrgs = true; // GitHub down
+      expect((await me(s.cookie)).statusCode).toBe(200); // last known decision
+      ag.heartbeat();
+      await sleep(150);
+      expect(ag.ws.readyState).toBe(WebSocket.OPEN);
+      await sleep(GRACE_MS + 100);
+      expect((await me(s.cookie)).statusCode).toBe(401); // fail closed
+      expect(await a.allowlist.check(await userOf(login))).toBe('refused');
+      ag.heartbeat();
+      expect(await ag.closed).toBe(CloseCode.ACCESS_SUSPENDED);
+      // Admins and approved grants are unaffected.
+      expect((await me(admin)).statusCode).toBe(200);
+      expect((await me(g.cookie)).statusCode).toBe(200);
+    } finally {
+      gh.failOrgs = false;
+      ag.ws.close();
+    }
+  });
+
+  it('a revoked App authorization (401) is unknown, not a grant: denied after the grace', async () => {
+    const login = `revoked-app-${uid()}`;
+    const s = await signIn(a, login, '', [ORG]);
+    expect((await me(s.cookie)).statusCode).toBe(200);
+    gh.failOrgsWith = Object.assign(new Error('Bad credentials'), { status: 401 });
+    try {
+      expect((await me(s.cookie)).statusCode).toBe(200); // within the grace
+      await sleep(GRACE_MS + 100);
+      expect((await me(s.cookie)).statusCode).toBe(401);
+      expect(await a.agentGateway.ownerAllowed(await userOf(login))).toBe(false);
+      expect((await me(admin)).statusCode).toBe(200); // admin unaffected
+    } finally {
+      gh.failOrgsWith = undefined;
+    }
+  });
+
+  it('a GitHub token that cannot be refreshed (reauth) is denied after the grace too', async () => {
+    const login = `reauth-${uid()}`;
+    const s = await signIn(a, login, '', [ORG]);
+    expect((await me(s.cookie)).statusCode).toBe(200);
+    const u = await userOf(login);
+    await prisma.user.update({
+      where: { id: u.id },
+      data: { ghTokenExpiresAt: new Date(Date.now() - 3600_000), ghRefreshTokenEnc: null },
+    });
+    expect(await a.allowlist.check(await userOf(login))).toBe('allowed'); // within the grace
+    await sleep(GRACE_MS + 100);
+    expect(await a.allowlist.check(await userOf(login))).toBe('reauth');
+    expect(await a.agentGateway.ownerAllowed(await userOf(login))).toBe(false);
+    expect((await me(s.cookie)).statusCode).toBe(401);
+  });
+
+  it('a failed check is not retried on every request (short error cache)', async () => {
+    const login = `burst-${uid()}`;
+    const s = await signIn(a, login, '', [ORG]);
+    expect((await me(s.cookie)).statusCode).toBe(200);
+    gh.failOrgs = true;
+    try {
+      const before = gh.orgCalls;
+      for (let i = 0; i < 5; i++) expect((await me(s.cookie)).statusCode).toBe(200);
+      expect(gh.orgCalls - before).toBe(1);
+    } finally {
+      gh.failOrgs = false;
+    }
   });
 });

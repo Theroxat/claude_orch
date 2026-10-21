@@ -691,6 +691,50 @@ describe('consent is absolute', () => {
   });
 });
 
+describe('access removed: no offers, no claims (consent invariant)', () => {
+  it('a denied member gets no offer, sendOffer refuses and suspends the agent, take_task is refused', async () => {
+    const { owner, project: p } = await project();
+    const denied = await member(p.id, { used: 0 });
+    const other = await member(p.id, { used: 200_000 });
+    const login = denied.user.login.toLowerCase();
+    // Removed by an admin; the agent is still connected and sends no frame.
+    await prisma.accessGrant.create({
+      data: { githubLogin: login, status: 'DENIED', decidedAt: new Date(), decidedBy: 'test' },
+    });
+    app.allowlist.invalidate(login);
+    try {
+      const t = await createTask(owner, p.id);
+      const offer = await other.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+      expect(autoOffers(denied)).toHaveLength(0);
+      expect((await assignmentsOf(t.id)).map((a) => a.userId)).not.toContain(denied.user.userId);
+
+      // Any other path to sendOffer (hello replay, accepted request) is refused as well.
+      const closed = new Promise<number>((res) => denied.client.ws.once('close', (c) => res(c)));
+      await expect(app.agentGateway.sendOffer(denied.agentId, offer.payload)).rejects.toMatchObject(
+        { reason: 'access_suspended' },
+      );
+      expect(await closed).toBe(4403);
+      expect(denied.client.find('task.offer')).toHaveLength(0);
+
+      // Manual claim (MCP take_task) is refused before anything is claimed.
+      const t2 = await createTask(owner, p.id);
+      const r = await app.agentGateway.claimForUser(denied.user.userId, {
+        projectFullName: p.fullName,
+        issueNumber: t2.issueNumber,
+      });
+      expect(r).toMatchObject({ ok: false, code: 'access_suspended' });
+      const row = await prisma.task.findUniqueOrThrow({ where: { id: t2.id } });
+      expect(row.assigneeId).not.toBe(denied.user.userId);
+      expect(
+        await prisma.assignment.count({ where: { taskId: t2.id, userId: denied.user.userId } }),
+      ).toBe(0);
+    } finally {
+      await prisma.accessGrant.deleteMany({ where: { githubLogin: login } });
+      app.allowlist.invalidate(login);
+    }
+  });
+});
+
 describe('targeting', () => {
   it('members: only the listed members get it; validation of members and broadcast', async () => {
     const { owner, project: p } = await project();
