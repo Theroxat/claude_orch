@@ -166,7 +166,9 @@ describe('Agent with the manual executor', () => {
     }
 
     server.send(serverMessage('cleanup', { assignmentId: 'asg_1' }));
-    await waitFor(() => fs.removed.length === 1, { what: 'cleanup' });
+    // cleanup removes the clone and the private git dir: wait for the job, not for a count
+    await waitFor(() => fs.removed.length >= 1, { what: 'cleanup' });
+    await agent.executor?.idle();
     await waitFor(() => agent.executor?.store.get('asg_1') === undefined, {
       what: 'record removed',
     });
