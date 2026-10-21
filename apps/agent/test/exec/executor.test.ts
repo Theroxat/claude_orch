@@ -236,6 +236,9 @@ describe('ManualExecutor take -> done', () => {
     await expect(t.ex.done(42)).rejects.toThrow(/still running/);
     expect(t.ex.store.get('asg_1')?.state).toBe('running');
     expect(t.of('task.finished')).toEqual([]);
+    // commitAll removed the task's .git: it is seeded again so the live session keeps working.
+    const names = t.git.calls.map((c) => c[0]);
+    expect(names.lastIndexOf('seedTaskGit')).toBeGreaterThan(names.indexOf('commitAll'));
   });
 
   it('uses the default image and runs postCreateCommand from devcontainer.json', async () => {
