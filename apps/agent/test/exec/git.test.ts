@@ -228,6 +228,64 @@ describe('git auth and hygiene', () => {
   });
 });
 
+describe('push of a task branch', () => {
+  /** A later attempt: a fresh clone of the same project, on the same task branch. */
+  async function retry(git: CliGit, origin: string, mirror: string, name: string) {
+    const repo: GitRepo = {
+      gitDir: join(tmp.dir, 'data', 'git', `${name}.git`),
+      workTree: join(tmp.dir, 'work', name, 'src'),
+    };
+    await git.syncMirror(mirror, origin, TOKEN);
+    await git.clone(mirror, origin, repo, TOKEN);
+    await git.createBranch(repo, 'orch/issue-1-x', 'main');
+    await git.setIdentity(repo, ID);
+    await git.seedTaskGit(repo);
+    return repo;
+  }
+  const head = (origin: string) =>
+    sh(['--git-dir', origin, 'rev-parse', 'refs/heads/orch/issue-1-x']).trim();
+
+  it('a re-run replaces what an earlier attempt pushed to the task branch', async () => {
+    const { git, origin, mirror, repo } = await realRepo();
+    writeFileSync(join(repo.workTree, 'first.txt'), 'attempt 1\n');
+    await git.commitAll(repo, 'attempt 1', ID);
+    await git.push(repo, 'orch/issue-1-x', TOKEN);
+
+    const again = await retry(git, origin, mirror, 'asg2');
+    writeFileSync(join(again.workTree, 'second.txt'), 'attempt 2\n');
+    await git.commitAll(again, 'attempt 2', ID);
+    await git.push(again, 'orch/issue-1-x', TOKEN);
+    expect(head(origin)).toBe(await git.headSha(again));
+  });
+
+  it('still refuses to overwrite commits pushed to the branch after the clone', async () => {
+    const { git, origin, mirror, repo } = await realRepo();
+    const again = await retry(git, origin, mirror, 'asg2');
+    // Someone pushes to the task branch while this attempt runs.
+    writeFileSync(join(repo.workTree, 'other.txt'), 'meanwhile\n');
+    await git.commitAll(repo, 'meanwhile', ID);
+    await git.push(repo, 'orch/issue-1-x', TOKEN);
+    const theirs = head(origin);
+    writeFileSync(join(again.workTree, 'mine.txt'), 'mine\n');
+    await git.commitAll(again, 'mine', ID);
+    await expect(git.push(again, 'orch/issue-1-x', TOKEN)).rejects.toThrow();
+    expect(head(origin)).toBe(theirs);
+  });
+
+  it('never forces a branch outside orch/ (e.g. the base branch)', async () => {
+    const { git, origin, mirror, repo } = await realRepo();
+    const again = await retry(git, origin, mirror, 'asg2');
+    writeFileSync(join(repo.workTree, 'a.txt'), 'a\n');
+    await git.commitAll(repo, 'a', ID);
+    await git.push(repo, 'main', TOKEN);
+    const main = sh(['--git-dir', origin, 'rev-parse', 'refs/heads/main']).trim();
+    writeFileSync(join(again.workTree, 'b.txt'), 'b\n');
+    await git.commitAll(again, 'b', ID);
+    await expect(git.push(again, 'main', TOKEN)).rejects.toThrow();
+    expect(sh(['--git-dir', origin, 'rev-parse', 'refs/heads/main']).trim()).toBe(main);
+  });
+});
+
 describe('a hostile task cannot make the agent run anything through git', () => {
   it('control: the same evil .git/config + .gitattributes DO run with a plain git', async () => {
     const { repo } = await realRepo();
