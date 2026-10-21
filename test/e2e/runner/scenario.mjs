@@ -74,7 +74,7 @@ function sh(cmd, args, opts = {}) {
 const composeArgs = [
   'compose',
   '-p',
-  'orch-e2e',
+  process.env.ORCH_E2E_PROJECT || 'orch-e2e',
   '-f',
   `${REPO}/compose.e2e.yaml`,
   '--project-directory',
@@ -120,23 +120,45 @@ function recordAssignment(id) {
   if (IDS_FILE && id) appendFileSync(IDS_FILE, `${id}\n`);
 }
 
-/** Task containers on the host daemon for an issue, by label. */
+/**
+ * Task containers of THIS run on the host daemon for an issue, by label: not the compose sidecars
+ * of the fixture repo, not the containers of a parallel run (they mount another work dir).
+ */
 function taskContainers(issue) {
   const out = docker([
     'ps',
     '-a',
+    '--no-trunc',
     '--filter',
     `label=orch.issue=${issue}`,
     '--format',
-    '{{.Names}}\t{{.Label "orch.task"}}',
+    '{{.Names}}\t{{.Label "orch.task"}}\t{{.Label "com.docker.compose.project"}}\t{{.Mounts}}',
   ]).stdout;
   return out
     .split('\n')
     .filter(Boolean)
-    .map((l) => {
-      const [name, assignmentId] = l.split('\t');
-      return { name, assignmentId };
-    });
+    .map((l) => l.split('\t'))
+    .filter(([, , composeProject, mounts]) => !composeProject && mineMounts(mounts))
+    .map(([name, assignmentId]) => ({ name, assignmentId }));
+}
+
+const mineMounts = (mounts = '') => mounts.includes(WORK.alice) || mounts.includes(WORK.bob);
+
+/** The compose sidecars an agent started for a task (fixture repo docker-compose.yml). */
+function sidecars(assignmentId) {
+  return docker([
+    'ps',
+    '-a',
+    '--filter',
+    `label=orch.task=${assignmentId}`,
+    '--filter',
+    'label=com.docker.compose.project',
+    '--format',
+    '{{.Names}}\t{{.State}}',
+  ])
+    .stdout.split('\n')
+    .filter(Boolean)
+    .map((l) => l.split('\t'));
 }
 
 // ---------- HTTP ----------
@@ -524,6 +546,15 @@ async function main() {
         mounts[0],
       );
       assert(!JSON.stringify(mounts).includes('docker.sock'), 'no docker socket mount');
+      // Fixture docker-compose.yml: env_file .env (gitignored, absent from the clone) with a
+      // .env.example, and a fixed container_name. The sidecar runs; nothing is written in the clone.
+      const side = sidecars(c.assignmentId);
+      assert(
+        side.length === 1 && side[0][1] === 'running' && side[0][0] !== 'widgets-helper',
+        'compose sidecar running under a task-scoped name',
+        side,
+      );
+      assert(!existsSync(`${clone}/.env`), 'no .env written in the clone');
       const user = insp.Config.User;
       assert(user && !/^0(:|$)/.test(user) && user !== 'root', 'non-root user', user);
       assert(insp.HostConfig.Privileged === false, 'not privileged');

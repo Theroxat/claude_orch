@@ -9,6 +9,7 @@ import {
   scanComposeSources,
 } from '../../src/exec/compose-guard.js';
 import { tempDir } from '../helpers/util.js';
+import { BOT_REPO_FILES } from './compose-fixtures.js';
 
 let t: ReturnType<typeof tempDir>;
 let root: string;
@@ -398,6 +399,57 @@ describe('sanitizeComposeModel', () => {
   it('copes with non-object input', () => {
     expect(sanitizeComposeModel(null, {})).toEqual({ model: {}, stripped: [] });
   });
+
+  it('lets compose name built images per project; services reusing the built image follow', () => {
+    const { model: out, stripped } = sanitizeComposeModel(
+      {
+        name: 'orch-task-a1',
+        services: {
+          app: { build: { context: root }, image: 'ghcr.io/acme/app:latest' },
+          worker: { image: 'ghcr.io/acme/app:latest' },
+          plain: { build: { context: root } },
+          db: { image: 'postgres:16' },
+        },
+      },
+      {},
+    );
+    const s = out.services as Record<string, Record<string, unknown>>;
+    expect(s.app).not.toHaveProperty('image');
+    expect(s.worker?.image).toBe('orch-task-a1-app');
+    expect(s.plain).not.toHaveProperty('image');
+    expect(s.db?.image).toBe('postgres:16');
+    expect(stripped).toEqual([
+      'app: built as "orch-task-a1-app" instead of "ghcr.io/acme/app:latest"',
+    ]);
+  });
+
+  it('removes container_name (global on the daemon) and keeps it as a network alias', () => {
+    const { model: out, stripped } = sanitizeComposeModel(
+      {
+        services: {
+          a: { image: 'x', container_name: 'app', networks: { default: null } },
+          b: {
+            image: 'y',
+            container_name: 'app-b',
+            networks: { default: { aliases: ['bee'] }, back: null },
+          },
+          c: { image: 'z', container_name: 'app-c' },
+          d: { image: 'w', container_name: 'app-d', network_mode: 'none' },
+        },
+      },
+      {},
+    );
+    const s = out.services as Record<string, Record<string, unknown>>;
+    for (const k of ['a', 'b', 'c', 'd']) expect(s[k]).not.toHaveProperty('container_name');
+    expect(s.a?.networks).toEqual({ default: { aliases: ['app'] } });
+    expect(s.b?.networks).toEqual({
+      default: { aliases: ['bee', 'app-b'] },
+      back: { aliases: ['app-b'] },
+    });
+    expect(s.c?.networks).toEqual({ default: { aliases: ['app-c'] } });
+    expect(s.d).not.toHaveProperty('networks');
+    expect(stripped).toContain('a: container_name "app" removed (kept as a network alias)');
+  });
 });
 
 describe('planEnvFileFallbacks', () => {
@@ -415,6 +467,19 @@ describe('planEnvFileFallbacks', () => {
       'env file .env not found in the repository; continuing without it. Commit a .env.example or make it optional.',
     ]);
     expect(existsSync(join(root, '.env'))).toBe(false);
+  });
+
+  it('bot-repo shape (list env_file, comments with quotes): swaps .env for .env.example', () => {
+    for (const [f, c] of Object.entries(BOT_REPO_FILES)) writeFileSync(join(root, f), c);
+    expect(scanComposeSources(root, join(root, 'docker-compose.yml'))).toEqual([]);
+    const r = planEnvFileFallbacks(root, join(root, 'docker-compose.yml'));
+    expect(r.override).toBe(
+      '# Written by orch: tolerate env files missing from the clone.\nservices:\n' +
+        `  "bot":\n    env_file: !override\n        - path: ${JSON.stringify(join(root, '.env.example'))}\n          required: false\n`,
+    );
+    expect(r.warnings).toEqual([
+      'env file .env not found in the repository; using .env.example instead.',
+    ]);
   });
 
   it('uses .env.example when it exists next to the missing file', () => {

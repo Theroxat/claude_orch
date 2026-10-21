@@ -19,7 +19,7 @@
  * All Docker, git, screen and filesystem access goes through injected interfaces.
  */
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type {
   AckPayload,
   AgentMessage,
@@ -837,8 +837,22 @@ export class ManualExecutor {
   }
 
   /**
-   * Validates the repo's compose file (sources, then the resolved model), strips published ports,
-   * labels every service, and starts the sidecars from the checked model (never the raw file).
+   * The compose files every invocation after validation uses (`up`, `down`): the checked model
+   * (the repo file + the env_file override, resolved, validated and sanitized) and the network
+   * override, with the clone as project directory. The raw repo file is only ever read by
+   * `config`, always together with the env_file override when one is needed.
+   */
+  private sidecarTarget(r: TaskRecord): { files: string[]; cwd: string } {
+    return {
+      files: [join(r.taskDir, 'compose.orch.checked.json'), join(r.taskDir, 'compose.orch.yaml')],
+      cwd: r.cloneDir,
+    };
+  }
+
+  /**
+   * Validates the repo's compose file (sources, then the resolved model), strips published ports
+   * and container names, labels every service, and starts the sidecars from the checked model
+   * (never the raw file). Failures name the file, the step and what to change.
    */
   private async startSidecars(
     id: string,
@@ -847,6 +861,7 @@ export class ManualExecutor {
   ): Promise<void> {
     const r = this.store.get(id) as TaskRecord;
     const project = composeProject(id);
+    const file = relative(r.cloneDir, compose) || compose;
     const early = scanComposeSources(r.cloneDir, compose);
     if (early.length > 0) throw new ComposeGuardError(early);
     // A gitignored .env is absent from a fresh clone: fall back to the example or drop the entry.
@@ -858,22 +873,31 @@ export class ManualExecutor {
       files.push(fix);
       for (const w of envFix.warnings) this.warn(id, w);
     }
-    const model = await this.deps.docker.composeConfig(project, files, r.cloneDir);
+    let model: unknown;
+    try {
+      model = await this.deps.docker.composeConfig(project, files, r.cloneDir);
+    } catch (err) {
+      throw sidecarError(file, 'config', err);
+    }
     const problems = checkComposeModel(model, r.cloneDir, project);
     if (problems.length > 0) throw new ComposeGuardError(problems);
     const safe = sanitizeComposeModel(model, labels);
     if (safe.stripped.length > 0) {
       this.warn(id, `compose: ${safe.stripped.join('; ')}`.slice(0, 1000));
     }
-    const checked = join(r.taskDir, 'compose.orch.checked.json');
+    const target = this.sidecarTarget(r);
+    const [checked, override] = target.files as [string, string];
     this.deps.fs.writeFile(checked, JSON.stringify(safe.model, null, 2));
-    const override = join(r.taskDir, 'compose.orch.yaml');
     this.deps.fs.writeFile(
       override,
       `# Written by orch: put the sidecars on the task network.\nnetworks:\n  default:\n    name: ${r.network}\n    external: true\n`,
     );
     this.store.update(id, { composeProject: project });
-    await this.deps.docker.composeUp(project, [checked, override], r.cloneDir);
+    try {
+      await this.deps.docker.composeUp(project, target.files, target.cwd);
+    } catch (err) {
+      throw sidecarError(file, 'up', err);
+    }
   }
 
   /** Logs a warning and records it on the task (shown by `orch status` and the run log). */
@@ -1290,7 +1314,11 @@ export class ManualExecutor {
     await step('container', () => this.deps.docker.remove(rec.container));
     if (rec.composeProject) {
       const project = rec.composeProject;
-      await step('sidecars', () => this.deps.docker.composeDown(project));
+      const target = this.sidecarTarget(rec);
+      const known = target.files.every((f) => this.deps.fs.exists(f));
+      await step('sidecars', () =>
+        this.deps.docker.composeDown(project, known ? target : undefined),
+      );
     }
     await step('network', () => this.deps.docker.removeNetwork(rec.network));
   }
@@ -1443,3 +1471,23 @@ function repoOf(r: TaskRecord): GitRepo {
 }
 
 const safeName = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 100) || 'repo';
+
+/**
+ * A failed `docker compose` step of the sidecars, as an actionable message for `orch status` and
+ * the task.finished reason: which file, which step, what to change, then docker's own words.
+ */
+export function sidecarError(file: string, step: 'config' | 'up', err: unknown): Error {
+  const raw = errorMessage(err);
+  const env = /env file (\S+) not found/.exec(raw)?.[1];
+  let hint: string;
+  if (env !== undefined) {
+    hint =
+      `env file ${env} does not exist in the clone (a gitignored .env is never cloned). ` +
+      `Commit a .env.example next to it, or mark the entry "required: false" in ${file}.`;
+  } else if (step === 'config') {
+    hint = `${file} does not load; check it with "docker compose -f ${file} config".`;
+  } else {
+    hint = `a service of ${file} did not start; check it with "docker compose -f ${file} up".`;
+  }
+  return new Error(`Sidecars (${file}) failed at "docker compose ${step}": ${hint} [${raw}]`);
+}

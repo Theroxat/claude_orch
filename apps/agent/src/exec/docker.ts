@@ -47,7 +47,11 @@ export interface DockerOps {
   /** The resolved model of `docker compose config --format json` (not trusted: validate it). */
   composeConfig(project: string, files: string[], cwd: string): Promise<unknown>;
   composeUp(project: string, files: string[], cwd: string): Promise<void>;
-  composeDown(project: string): Promise<void>;
+  /**
+   * `down -v --remove-orphans`. With `target`, the same files and project directory as `up` (the
+   * checked model), so compose never loads another file; without it (orphans), by name only.
+   */
+  composeDown(project: string, target?: { files: string[]; cwd: string }): Promise<void>;
   /** Compose projects named `<prefix>...` whose containers carry `orch.agent=<agentId>`. */
   composeProjects(prefix: string, agentId: string): Promise<string[]>;
 }
@@ -186,10 +190,17 @@ export class CliDocker implements DockerOps {
     await this.d([...args, 'up', '-d', '--remove-orphans']);
   }
 
-  async composeDown(project: string): Promise<void> {
-    await this.runner.run(this.bin, ['compose', '-p', project, 'down', '-v', '--remove-orphans'], {
-      timeoutMs: 10 * 60_000,
-    });
+  async composeDown(project: string, target?: { files: string[]; cwd: string }): Promise<void> {
+    const down = ['down', '-v', '--remove-orphans', '--rmi', 'local'];
+    const opts = { timeoutMs: 10 * 60_000 };
+    if (target && target.files.length > 0) {
+      const args = ['compose', '-p', project, '--project-directory', target.cwd];
+      for (const f of target.files) args.push('-f', f);
+      const r = await this.runner.run(this.bin, [...args, ...down], opts);
+      if (r.code === 0) return;
+      // The checked model no longer loads (e.g. the clone is gone): fall back to the name.
+    }
+    await this.runner.run(this.bin, ['compose', '-p', project, ...down], opts);
   }
 
   async composeProjects(prefix: string, agentId: string): Promise<string[]> {

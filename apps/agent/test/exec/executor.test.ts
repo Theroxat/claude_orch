@@ -5,6 +5,8 @@ import { TaskFinishedPayloadSchema, serverMessage, type ServerMessage } from '@o
 import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
 import { silentLogger } from '../../src/log';
 import { tempDir } from '../helpers/util';
+import { CommandError } from '../../src/exec/runner';
+import { BOT_REPO_FILES, botRepoModel } from './compose-fixtures';
 import { FakeDocker, FakeGit, FakeScreen, offer, recordingFs } from './fakes';
 
 const CLAUDE_TOKEN = 'sk-ant-oat01-' + 'Zz9'.repeat(20);
@@ -487,6 +489,70 @@ describe('ManualExecutor cleanup and restart', () => {
       'compose.orch.envfix.yaml',
     ]);
     expect(existsSync(join(t.cfg.workDir, 'asg_1', 'src', '.env'))).toBe(false);
+  });
+
+  it('bot-repo shape (list env_file .env, .env.example, container_name): every compose call uses the override', async () => {
+    const t = setup({ files: BOT_REPO_FILES });
+    const clone = join(t.cfg.workDir, 'asg_1', 'src');
+    const taskDir = join(t.cfg.workDir, 'asg_1');
+    t.docker.composeModel = botRepoModel(clone);
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state, rec.error ?? '').toBe('running');
+    const raw = join(clone, 'docker-compose.yml');
+    const envfix = join(taskDir, 'compose.orch.envfix.yaml');
+    const checked = join(taskDir, 'compose.orch.checked.json');
+    const net = join(taskDir, 'compose.orch.yaml');
+    // The override swaps the missing .env for the committed example; nothing is written in the clone.
+    expect(readFileSync(envfix, 'utf8')).toContain(
+      `path: ${JSON.stringify(join(clone, '.env.example'))}`,
+    );
+    expect(existsSync(join(clone, '.env'))).toBe(false);
+    // Fixed container names would collide with the member's own stack: removed, kept as aliases.
+    const upModel = JSON.parse(readFileSync(checked, 'utf8')) as {
+      services: Record<string, { container_name?: string; networks: unknown; ports?: unknown }>;
+    };
+    expect(upModel.services.bot!.container_name).toBeUndefined();
+    expect(upModel.services.helper!.networks).toEqual({ default: { aliases: ['bot-helper'] } });
+    expect(upModel.services.bot!.ports).toBeUndefined();
+    // The build never overwrites the member's own tag of the published image.
+    expect((upModel.services.bot as { image?: string }).image).toBeUndefined();
+    expect((upModel.services.helper as { image?: string }).image).toBe('busybox:1.36');
+    expect(rec.warnings.join(' ')).toContain('using .env.example instead');
+    await t.ex.cleanup('asg_1');
+
+    const calls = t.docker.calls.filter((c) => String(c[0]).startsWith('compose'));
+    expect(calls.map((c) => c[0])).toEqual(['composeConfig', 'composeUp', 'composeDown']);
+    for (const c of calls) {
+      // Same project and project directory everywhere; the raw file never without the override.
+      expect(c[1]).toBe('orch-task-asg-1');
+      expect(c[3]).toBe(clone);
+      const files = c[2] as string[];
+      if (files.includes(raw)) expect(files).toEqual([raw, envfix]);
+      else expect(files).toEqual([checked, net]);
+    }
+    expect(calls[0]![2]).toEqual([raw, envfix]);
+  });
+
+  it('a compose failure is actionable in orch status and task.finished', async () => {
+    const t = setup({ files: BOT_REPO_FILES });
+    const env = join(t.cfg.workDir, 'asg_1', 'src', '.env');
+    t.docker.composeConfigError = new CommandError(
+      'docker compose',
+      1,
+      `env file ${env} not found: stat ${env}: no such file or directory`,
+    );
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state).toBe('failed');
+    expect(rec.error).toContain('Sidecars (docker-compose.yml) failed at "docker compose config"');
+    expect(rec.error).toContain('Commit a .env.example next to it');
+    expect(rec.error).toContain(`env file ${env} not found`);
+    const fin = t.of('task.finished')[0]?.payload as { error: string };
+    expect(fin.error).toBe(rec.error);
+    expect(t.docker.names()).not.toContain('composeUp');
   });
 
   it('after a restart: fails tasks whose container vanished or whose preparation was cut', async () => {

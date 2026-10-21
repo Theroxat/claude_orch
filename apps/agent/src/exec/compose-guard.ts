@@ -509,7 +509,10 @@ function labelsToObject(l: unknown): Record<string, unknown> {
   return out;
 }
 
-/** Copy of the model without published ports and with `labels` added to every service. */
+/**
+ * Copy of the model without published ports and fixed container names, with built images tagged
+ * per project and `labels` added to every service.
+ */
 export function sanitizeComposeModel(
   model: unknown,
   labels: Record<string, string>,
@@ -524,7 +527,43 @@ export function sanitizeComposeModel(
         stripped.push(`${name}: published ports ${s.ports.map(describePort).join(', ')} removed`);
       }
       delete s.ports;
+      // A fixed container name is global on the daemon: it collides with the member's own stack
+      // of the same repo and with a parallel task. Keep it reachable as a network alias.
+      if (typeof s.container_name === 'string' && s.container_name !== '') {
+        const cn = s.container_name;
+        stripped.push(`${name}: container_name "${cn}" removed (kept as a network alias)`);
+        if (s.network_mode === undefined) {
+          const nets: Record<string, unknown> = isObj(s.networks) ? s.networks : { default: null };
+          for (const [k, v] of Object.entries(nets)) {
+            const net = isObj(v) ? v : {};
+            const aliases = Array.isArray(net.aliases) ? net.aliases : [];
+            nets[k] = { ...net, aliases: [...aliases, cn] };
+          }
+          s.networks = nets;
+        }
+      }
+      delete s.container_name;
       s.labels = { ...labelsToObject(s.labels), ...labels };
+    }
+    // A built service tags its image with `image:`: never overwrite the member's own tag (e.g.
+    // the published image of the repo, used by the member's own stack). Without `image:` compose
+    // names it `<project>-<service>` and `down --rmi local` removes it. Services that run the
+    // built image by its old name follow.
+    const project = typeof copy.name === 'string' ? copy.name : '';
+    const renamed = new Map<string, string>();
+    for (const [name, s] of Object.entries(copy.services)) {
+      if (!isObj(s) || s.build === undefined || s.image === undefined) continue;
+      const tag = `${project}-${name}`;
+      if (typeof s.image === 'string') {
+        renamed.set(s.image, tag);
+        stripped.push(`${name}: built as "${tag}" instead of "${s.image}"`);
+      }
+      delete s.image;
+    }
+    for (const s of Object.values(copy.services)) {
+      if (isObj(s) && s.build === undefined && typeof s.image === 'string') {
+        s.image = renamed.get(s.image) ?? s.image;
+      }
     }
   }
   return { model: copy, stripped };
