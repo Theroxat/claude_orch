@@ -84,3 +84,8 @@ export const revokeToken = (id: string) => api<unknown>('DELETE', `/tokens/${id}
 
 export const fetchOnboarding = () =>
   api('GET', '/onboarding', { schema: OnboardingResponseSchema });
+
+export const completeOnboarding = () =>
+  api('POST', '/onboarding/complete', { schema: ApiUserSchema });
+export const dismissOnboarding = () =>
+  api('POST', '/onboarding/dismiss', { schema: ApiUserSchema });

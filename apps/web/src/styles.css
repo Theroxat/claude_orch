@@ -357,3 +357,92 @@ ul.plain {
   text-decoration: line-through;
   opacity: 0.7;
 }
+
+/* Setup wizard */
+.wizard {
+  min-height: 100vh;
+  background: var(--bg);
+}
+.wizard-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+.wizard-main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+.wizard-main h1:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.wizard-progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+.wizard-progress > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+.wizard-choice {
+  display: grid;
+  gap: 12px;
+}
+button.big {
+  padding: 14px 18px;
+  font-size: 1.05rem;
+}
+.wizard-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+.wizard-status.ok,
+.wizard-summary .ok {
+  color: var(--ok);
+}
+.spinner {
+  width: 1em;
+  height: 1em;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: wizard-spin 0.9s linear infinite;
+}
+@keyframes wizard-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+.wizard-prompt {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--card);
+}
+.wizard-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 480px) {
+  .wizard-nav button {
+    flex: 1 1 100%;
+  }
+}

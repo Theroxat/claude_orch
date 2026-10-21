@@ -48,7 +48,14 @@ export interface AuthDeps {
 }
 
 export function toApiUser(u: User): ApiUser {
-  return { id: u.id, githubLogin: u.login, name: u.name, avatarUrl: u.avatarUrl };
+  return {
+    id: u.id,
+    githubLogin: u.login,
+    name: u.name,
+    avatarUrl: u.avatarUrl,
+    onboardingCompletedAt: u.onboardingCompletedAt?.toISOString() ?? null,
+    onboardingDismissedAt: u.onboardingDismissedAt?.toISOString() ?? null,
+  };
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {

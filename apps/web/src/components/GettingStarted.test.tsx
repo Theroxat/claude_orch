@@ -15,7 +15,7 @@ const onboarding = (states: Array<'done' | 'todo' | 'unknown'>) => ({
   steps: IDS.map((id, i) => ({ id, state: states[i]!, done: states[i] === 'done' })),
 });
 const base = (states: Array<'done' | 'todo' | 'unknown'>) => ({
-  'GET /me': () => ({ json: me }),
+  'GET /me': () => ({ json: { ...me, onboardingDismissedAt: '2026-01-01T00:00:00Z' } }),
   'GET /projects/mine': () => ({ json: [] }),
   'GET /onboarding': () => ({ json: onboarding(states) }),
 });

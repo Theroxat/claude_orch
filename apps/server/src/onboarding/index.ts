@@ -2,10 +2,10 @@
  * `GET /api/onboarding`: the "Getting started" checklist, computed from existing data.
  * Contract in shared api/onboarding.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { OnboardingResponse, OnboardingStep, OnboardingStepId } from '@orch/shared';
 import type { AgentGateway } from '../agents/gateway';
-import { getUserAccessToken, requireUser, type AuthDeps } from '../auth';
+import { getUserAccessToken, requireUser, toApiUser, type AuthDeps } from '../auth';
 import type { PrismaClient } from '../db';
 
 /** An agent seen within this window counts as connected. */
@@ -97,4 +97,19 @@ export function registerOnboarding(
     const user = requireUser(req);
     return computeOnboarding(deps, user.id);
   });
+
+  // Wizard state lives on the user so the first-visit redirect does not depend on the browser.
+  // Idempotent: the first timestamp is kept.
+  const mark =
+    (field: 'onboardingCompletedAt' | 'onboardingDismissedAt') => async (req: FastifyRequest) => {
+      const user = requireUser(req);
+      if (user[field]) return toApiUser(user);
+      const updated = await deps.prisma.user.update({
+        where: { id: user.id },
+        data: { [field]: new Date() },
+      });
+      return toApiUser(updated);
+    };
+  app.post('/api/onboarding/complete', mark('onboardingCompletedAt'));
+  app.post('/api/onboarding/dismiss', mark('onboardingDismissedAt'));
 }

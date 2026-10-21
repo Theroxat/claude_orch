@@ -7,11 +7,11 @@ import { AddRepoDialog } from './AddRepoDialog';
 
 export const DISMISS_KEY = 'orch.gettingStarted.dismissed';
 
-export function useOnboarding() {
+export function useOnboarding(intervalMs = 15_000) {
   return useQuery({
     queryKey: ['onboarding'],
     queryFn: fetchOnboarding,
-    refetchInterval: 15_000,
+    refetchInterval: intervalMs,
     refetchOnWindowFocus: true,
   });
 }
@@ -150,6 +150,13 @@ export function GettingStarted() {
         </span>
       </div>
       {allDone && <p className="hint">All set. You can hide this card.</p>}
+      {!allDone && (
+        <p>
+          <Link className="btn" to="/welcome">
+            Open the setup wizard
+          </Link>
+        </p>
+      )}
       <ol>
         {steps.map((s) => (
           <li key={s.id} className={s.done ? 'done' : ''} data-testid={`step-${s.id}`}>

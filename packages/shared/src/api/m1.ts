@@ -34,6 +34,9 @@ export const ApiUserSchema = z.object({
   githubLogin: z.string(),
   name: z.string().nullable(),
   avatarUrl: z.string().nullable(),
+  /** Setup wizard state, stored server-side (ISO timestamps). Absent = not set. */
+  onboardingCompletedAt: z.string().nullish(),
+  onboardingDismissedAt: z.string().nullish(),
 });
 export type ApiUser = z.infer<typeof ApiUserSchema>;
 

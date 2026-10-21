@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  McpSetupViewSchema,
   OAuthGrantListResponseSchema,
   type OAuthGrantView,
   type PersonalTokenView,
@@ -8,11 +7,11 @@ import {
 import { useState } from 'react';
 import { api } from '../api/client';
 import { createToken, fetchTokens, revokeToken } from '../api/endpoints';
+import { McpCommand } from '../components/McpCommand';
 import { relative } from '../time';
 
 const KEY = ['tokens'];
 const GRANTS_KEY = ['oauth-grants'];
-const SETUP_KEY = ['mcp-setup'];
 
 const TOOLS: [string, string][] = [
   ['view_pool', 'See who is in the pool, their availability and estimated margin.'],
@@ -102,46 +101,13 @@ function CreateTokenCard() {
 }
 
 function ConnectCard() {
-  const setup = useQuery({
-    queryKey: SETUP_KEY,
-    queryFn: () => api('GET', '/mcp/setup', { schema: McpSetupViewSchema }),
-  });
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState(false);
-  const cmd = setup.data?.mcpAddCommandOAuth;
-  const copy = async () => {
-    if (!cmd) return;
-    try {
-      await navigator.clipboard.writeText(cmd);
-      setCopied(true);
-      setCopyError(false);
-    } catch {
-      setCopyError(true);
-    }
-  };
   return (
     <section className="card" aria-label="Connect Claude Code">
       <h2>Connect Claude Code</h2>
       <ol>
         <li>
           Run this command in your terminal:
-          {setup.isPending && <p className="hint">Loading...</p>}
-          {setup.error && <p className="error">{setup.error.message}</p>}
-          {cmd && (
-            <>
-              <pre className="code" data-testid="mcp-oauth-command">
-                {cmd}
-              </pre>
-              <div className="row">
-                <button onClick={() => void copy()}>
-                  {copied ? 'Command copied' : 'Copy command'}
-                </button>
-              </div>
-              {copyError && (
-                <p className="error">Copy failed. Select the command and copy it by hand.</p>
-              )}
-            </>
-          )}
+          <McpCommand />
         </li>
         <li>
           In Claude Code, run <code>/mcp</code>, choose <code>orch</code>, then Authenticate.

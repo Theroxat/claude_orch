@@ -10,6 +10,7 @@ import { MyServer } from './pages/MyServer';
 import { Pool } from './pages/Pool';
 import { Projects } from './pages/Projects';
 import { Requests } from './pages/Requests';
+import { Welcome } from './pages/Welcome';
 
 export function App() {
   return (
@@ -17,6 +18,7 @@ export function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/oauth/consent" element={<OAuthConsent />} />
       <Route element={<AuthGate />}>
+        <Route path="/welcome" element={<Welcome />} />
         <Route element={<Layout />}>
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<Projects />} />

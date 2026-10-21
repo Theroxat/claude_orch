@@ -1,6 +1,8 @@
+import { useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { dismissOnboarding } from '../api/endpoints';
 import { useOffers } from '../pages/Requests';
 import { useMe, useResetSession } from '../auth';
 import { useOnboarding } from './GettingStarted';
@@ -21,6 +23,20 @@ export function Layout() {
   const onboarding = useOnboarding().data?.steps;
   const navigate = useNavigate();
   const reset = useResetSession();
+  const qc = useQueryClient();
+  const redirected = useRef(false);
+  const incomplete = !!onboarding && onboarding.some((x) => !x.done);
+  // First visit only: send a member with unfinished onboarding to the wizard once. The server
+  // remembers it (dismissedAt), so a reload or another browser does not redirect again.
+  useEffect(() => {
+    if (redirected.current || !me || !incomplete) return;
+    if (me.onboardingCompletedAt || me.onboardingDismissedAt) return;
+    redirected.current = true;
+    navigate('/welcome', { replace: true });
+    void dismissOnboarding()
+      .then((u) => qc.setQueryData(['me'], u))
+      .catch(() => undefined);
+  }, [me, incomplete, navigate, qc]);
   const logout = useMutation({
     mutationFn: () => api<unknown>('POST', '/auth/logout'),
     onSuccess: () => {
@@ -44,6 +60,11 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+        {incomplete && (
+          <NavLink to="/welcome" className="progress-pill">
+            Setup wizard
+          </NavLink>
+        )}
         {onboarding && (
           <NavLink
             to="/projects"

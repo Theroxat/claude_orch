@@ -182,3 +182,35 @@ describe('GET /api/onboarding', () => {
     expect((await steps(u)).mcp_connected.done).toBe(false);
   });
 });
+
+describe('wizard state', () => {
+  it('requires a session', async () => {
+    expect((await api(app, null)('POST', '/api/onboarding/complete')).statusCode).toBe(401);
+    expect((await api(app, null)('POST', '/api/onboarding/dismiss')).statusCode).toBe(401);
+  });
+
+  it('starts unset, then persists complete and dismiss (idempotent)', async () => {
+    const u = await loginAs(app, gh);
+    const me0 = (await api(app, u)('GET', '/api/me')).json();
+    expect(me0.onboardingCompletedAt).toBeNull();
+    expect(me0.onboardingDismissedAt).toBeNull();
+
+    const dismissed = await api(app, u)('POST', '/api/onboarding/dismiss');
+    expect(dismissed.statusCode).toBe(200);
+    const first = dismissed.json().onboardingDismissedAt as string;
+    expect(first).toBeTruthy();
+    expect(dismissed.json().onboardingCompletedAt).toBeNull();
+    const again = await api(app, u)('POST', '/api/onboarding/dismiss');
+    expect(again.json().onboardingDismissedAt).toBe(first);
+
+    const done = await api(app, u)('POST', '/api/onboarding/complete');
+    expect(done.statusCode).toBe(200);
+    expect(done.json().onboardingCompletedAt).toBeTruthy();
+
+    const row = await prisma.user.findUniqueOrThrow({ where: { id: u.userId } });
+    expect(row.onboardingDismissedAt?.toISOString()).toBe(first);
+    expect(row.onboardingCompletedAt).not.toBeNull();
+    const me1 = (await api(app, u)('GET', '/api/me')).json();
+    expect(me1.onboardingCompletedAt).toBe(row.onboardingCompletedAt?.toISOString());
+  });
+});

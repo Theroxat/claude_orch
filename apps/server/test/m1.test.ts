@@ -57,6 +57,8 @@ describe('auth', () => {
       githubLogin: u.login,
       name: `Name ${u.login}`,
       avatarUrl: `https://a/${u.login}.png`,
+      onboardingCompletedAt: null,
+      onboardingDismissedAt: null,
     });
   });
 

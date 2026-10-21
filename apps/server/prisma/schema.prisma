@@ -113,6 +113,8 @@ model User {
   maxConcurrent     Int       @default(1)
   maxPendingTasks   Int       @default(20)
   lastLoginAt       DateTime?
+  onboardingCompletedAt DateTime?
+  onboardingDismissedAt DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 

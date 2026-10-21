@@ -98,7 +98,9 @@ export function ParticipationForm({ item }: { item: DiscoverItem }) {
               onChange={() => setMode('approval')}
             />{' '}
             Approval
-            <span className="hint">I approve each request before anything runs.</span>
+            <span className="hint">
+              I approve each request before anything runs. Recommended to start.
+            </span>
           </label>
         </fieldset>
       </div>
