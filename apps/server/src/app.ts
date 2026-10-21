@@ -53,7 +53,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
       },
       ...(logStream ? { stream: logStream } : {}),
     },
-    trustProxy: true,
+    trustProxy: config.ORCH_TRUST_PROXY,
   });
   installErrorHandling(app);
 

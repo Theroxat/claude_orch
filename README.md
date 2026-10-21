@@ -82,6 +82,8 @@ openssl rand -hex 32      # GITHUB_WEBHOOK_SECRET
 | `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                        |
 | `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                    |
 | `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port           |
+| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [Behind Cloudflare Tunnel](#behind-cloudflare-tunnel)      |
+| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)           |
 | `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                           |
 | `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                |
 | `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up                |
@@ -123,6 +125,39 @@ curl -fsS https://orch.selfhostr.io/healthz     # {"status":"ok"}
 ```
 
 If you change `HTTP_PORT` or `HTTPS_PORT`, the Let's Encrypt challenge cannot succeed on its own. Use Caddy behind another proxy that owns 80/443, or a DNS challenge build of Caddy.
+
+### Behind Cloudflare Tunnel
+
+If you host behind a Cloudflare Tunnel, Cloudflare terminates TLS for your domain and `cloudflared` forwards plain HTTP to a local port. There is no ACME and ports 80 and 443 are not used. Set these in `.env`:
+
+```sh
+ORCH_DOMAIN=orch.selfhostr.io
+ORCH_TLS_MODE=tunnel                      # default is acme
+HTTP_PORT=8495                            # local port cloudflared connects to
+ORCH_BIND_ADDR=127.0.0.1                  # keep the port off the LAN
+HTTPS_PUBLISH=127.0.0.1:              # nothing serves 443; maps it to a random loopback port
+ORCH_PUBLIC_URL=https://orch.selfhostr.io # always https
+```
+
+In this mode Caddy serves plain HTTP only (`auto_https off`, no HSTS; Cloudflare can add HSTS at the edge). The routes and the Content-Security-Policy are the same as in ACME mode. The server builds the GitHub OAuth callback, the `install.sh` URL, the install and `claude mcp add` commands and the `Secure` session cookie from `ORCH_PUBLIC_URL`, so they say `https` even though the request reached the server over HTTP. It trusts `X-Forwarded-For` only from private networks (the Caddy container), see `ORCH_TRUST_PROXY`.
+
+`cloudflared` ingress (`config.yml`, or the equivalent public hostname in the Zero Trust dashboard):
+
+```yaml
+ingress:
+  - hostname: orch.selfhostr.io
+    service: http://localhost:8495
+  - service: http_status:404
+```
+
+If `cloudflared` runs in Docker on the same Compose network, use `service: http://caddy:80` (the Caddy container name or service name) instead. If it runs in another container on a different network or on another host, set `ORCH_BIND_ADDR=0.0.0.0` so it can reach the port, and firewall that port so only `cloudflared` can connect: with `trusted_proxies` on private ranges, anyone who can reach the port directly could forge `X-Forwarded-For`.
+
+Notes:
+
+- WebSockets are enabled by default in Tunnel, which `/agent/ws` needs. Cloudflare closes idle WebSockets after about 100 s; the agent heartbeat is 30 s, so the link stays up.
+- Do not put Cloudflare Access in front of `/api/github/webhook`, `/agent/ws`, `/mcp` or `/install.sh`: they authenticate themselves (HMAC, agent credential, personal token, public script) and Access would block GitHub and the agents.
+- "Always Use HTTPS" is fine.
+- Update the GitHub App URLs as in the next section; they use your public `https` domain.
 
 ### Upgrading
 

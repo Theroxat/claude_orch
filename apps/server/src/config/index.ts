@@ -22,6 +22,21 @@ const ConfigSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   ORCH_BASE_URL: z.string().url().default('http://localhost:8470'),
+  /**
+   * Public URL users and agents reach orch at (for example https://orch.selfhostr.io). When set it
+   * wins over ORCH_BASE_URL. Behind Cloudflare Tunnel the request reaches the server over plain
+   * HTTP, so OAuth callbacks, install commands and the Secure cookie flag derive from this value.
+   */
+  ORCH_PUBLIC_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /**
+   * Which peers may set X-Forwarded-* headers (Fastify trustProxy): `true`, `false`, or a
+   * comma-separated list of addresses, CIDRs or the aliases loopback, linklocal, uniquelocal.
+   * Default: private networks only, so the Caddy container is trusted and the internet is not.
+   */
+  ORCH_TRUST_PROXY: z
+    .string()
+    .default('loopback,linklocal,uniquelocal')
+    .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
   DATABASE_URL: z.string().min(1),
   // GitHub App settings are optional until the OAuth phase; they must be set in production then.
   GITHUB_APP_ID: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -105,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
   const c = parsed.data;
+  if (c.ORCH_PUBLIC_URL) c.ORCH_BASE_URL = c.ORCH_PUBLIC_URL;
   if (c.NODE_ENV === 'production' && !signInIsRestricted(c) && !c.ORCH_ALLOW_ANY_GITHUB_USER) {
     throw new Error(
       'Invalid configuration:\n  Anyone with a GitHub account could sign in. Set ' +

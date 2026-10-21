@@ -1,0 +1,8 @@
+# orch production reverse proxy, ACME mode (ORCH_TLS_MODE=acme, the default).
+# ORCH_DOMAIN decides the site address; Caddy obtains and renews its certificate automatically
+# (Let's Encrypt). For `localhost` or an IP it uses its own internal CA instead.
+{$ORCH_DOMAIN:localhost} {
+	import routes.caddy
+
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}

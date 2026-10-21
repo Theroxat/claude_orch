@@ -34,3 +34,29 @@ describe('loadConfig', () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
   });
 });
+
+describe('public URL and proxy trust', () => {
+  const base = { DATABASE_URL: 'postgresql://x' };
+
+  it('ORCH_PUBLIC_URL wins over ORCH_BASE_URL', () => {
+    const c = loadConfig({
+      ...base,
+      ORCH_BASE_URL: 'http://orch:3000',
+      ORCH_PUBLIC_URL: 'https://orch.selfhostr.io',
+    });
+    expect(c.ORCH_BASE_URL).toBe('https://orch.selfhostr.io');
+  });
+
+  it('an empty ORCH_PUBLIC_URL is ignored', () => {
+    const c = loadConfig({ ...base, ORCH_BASE_URL: 'https://a.example', ORCH_PUBLIC_URL: '' });
+    expect(c.ORCH_BASE_URL).toBe('https://a.example');
+  });
+
+  it('trusts private networks only by default', () => {
+    expect(loadConfig(base).ORCH_TRUST_PROXY).toBe('loopback,linklocal,uniquelocal');
+    expect(loadConfig({ ...base, ORCH_TRUST_PROXY: 'false' }).ORCH_TRUST_PROXY).toBe(false);
+    expect(loadConfig({ ...base, ORCH_TRUST_PROXY: '10.0.0.0/8' }).ORCH_TRUST_PROXY).toBe(
+      '10.0.0.0/8',
+    );
+  });
+});

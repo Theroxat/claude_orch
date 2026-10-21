@@ -1,0 +1,15 @@
+# orch production reverse proxy, Cloudflare Tunnel mode (ORCH_TLS_MODE=tunnel).
+# Cloudflare terminates TLS; cloudflared forwards plain HTTP to this listener. No ACME, no :443,
+# no HSTS (Cloudflare can add it at the edge).
+{
+	auto_https off
+	servers {
+		# cloudflared reaches Caddy from loopback or a private (Docker) address. Trust it, so the
+		# X-Forwarded-For chain Cloudflare built (real client IP) is passed on instead of replaced.
+		trusted_proxies static private_ranges
+	}
+}
+
+http://:80 {
+	import routes.caddy
+}
