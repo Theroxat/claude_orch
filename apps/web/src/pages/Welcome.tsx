@@ -25,6 +25,7 @@ import { CopyButton } from '../components/CopyButton';
 import { useOnboarding } from '../components/GettingStarted';
 import { InstallCommandBlock, LOGIN_COMMAND } from '../components/InstallAgentCard';
 import { McpCommand } from '../components/McpCommand';
+import { OwnerParticipation } from '../components/OwnerParticipation';
 import { ParticipationForm } from '../components/ParticipationForm';
 import { VersionFooter } from '../components/VersionFooter';
 import { Brand } from '../ui/Brand';
@@ -89,10 +90,24 @@ function Status({
 }
 
 function RepoScreen({ done }: { done: boolean }) {
+  const mine = useQuery({
+    queryKey: ['projects', 'mine'],
+    queryFn: fetchMyProjects,
+    enabled: done,
+  });
+  const first = mine.data?.[0];
   return done ? (
-    <p className="wizard-status ok" role="status" aria-live="polite">
-      <span aria-hidden="true">✓</span> You already have a repository in orch.
-    </p>
+    <>
+      <p className="wizard-status ok" role="status" aria-live="polite">
+        <span aria-hidden="true">✓</span> You already have a repository in orch.
+      </p>
+      {first && (
+        <OwnerParticipation
+          project={first}
+          title={`Optional: lend your own capacity to ${first.fullName}`}
+        />
+      )}
+    </>
   ) : (
     <>
       <RepoPicker onAdded={() => undefined} pollMs={POLL_MS} />

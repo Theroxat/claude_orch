@@ -1,13 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectView, UpdateProjectRequest } from '@orch/shared';
+import { useState } from 'react';
+import { REJECTION_REASON_MAX, type ProjectView, type UpdateProjectRequest } from '@orch/shared';
 import {
   decideParticipant,
   deleteProject,
   fetchParticipants,
+  undoRejection,
   updateProject,
 } from '../api/endpoints';
+import { Modal, closeModal } from '../ui/Modal';
 import { presenceProps, usePresence, type Phase } from '../ui/presence';
 import { useToast } from '../ui/Toast';
+import { OwnerParticipation } from './OwnerParticipation';
 
 const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
   GITHUB:
@@ -17,28 +21,105 @@ const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
   ALL_MEMBERS: 'Every user of this orch server can lend their Claude capacity to this project.',
 };
 
-function ParticipantsApproval({ projectId }: { projectId: string }) {
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString();
+}
+
+function RejectDialog({
+  login,
+  pending,
+  error,
+  onConfirm,
+  onClose,
+}: {
+  login: string;
+  pending: boolean;
+  error: Error | null;
+  onConfirm: (reason: string) => void;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState('');
+  const tooLong = reason.trim().length > REJECTION_REASON_MAX;
+  return (
+    <Modal label="Reject participant" title={`Reject ${login}?`} onClose={onClose} tone="danger">
+      <label className="field">
+        Reason (optional, shown to {login})
+        <textarea
+          rows={3}
+          maxLength={REJECTION_REASON_MAX}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </label>
+      {tooLong && (
+        <p className="error" role="alert">
+          The reason is limited to {REJECTION_REASON_MAX} characters.
+        </p>
+      )}
+      {error && <p className="error">{error.message}</p>}
+      <div className="modal-actions">
+        <button onClick={() => closeModal(onClose)}>Cancel</button>
+        <button
+          className="danger solid"
+          disabled={pending || tooLong}
+          onClick={() => onConfirm(reason.trim())}
+        >
+          Confirm reject
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function ParticipantsApproval({ project }: { project: ProjectView }) {
+  const projectId = project.id;
   const qc = useQueryClient();
   const toast = useToast();
-  const q = useQuery({
-    queryKey: ['projects', projectId, 'participants'],
-    queryFn: () => fetchParticipants(projectId),
-  });
+  const [toReject, setToReject] = useState<{ userId: string; login: string } | null>(null);
+  const key = ['projects', projectId, 'participants'];
+  const q = useQuery({ queryKey: key, queryFn: () => fetchParticipants(projectId) });
+  const refresh = () => qc.invalidateQueries({ queryKey: key });
   const decide = useMutation({
-    mutationFn: (v: { userId: string; login: string; decision: 'approve' | 'reject' }) =>
-      decideParticipant(projectId, v.userId, v.decision),
+    mutationFn: (v: {
+      userId: string;
+      login: string;
+      decision: 'approve' | 'reject';
+      reason?: string;
+    }) => decideParticipant(projectId, v.userId, v.decision, v.reason),
     onSuccess: (_r, v) => {
       toast(v.decision === 'approve' ? `${v.login} approved` : `${v.login} rejected`);
-      return qc.invalidateQueries({ queryKey: ['projects', projectId, 'participants'] });
+      if (v.decision === 'reject') closeModal(() => setToReject(null));
+      return refresh();
     },
   });
-  const pending = q.data?.filter((p) => p.participation.status === 'pending');
+  const undo = useMutation({
+    mutationFn: (v: { userId: string; login: string; to: 'pending' | 'approved' }) =>
+      undoRejection(projectId, v.userId, { to: v.to }),
+    onSuccess: (_r, v) => {
+      toast(
+        v.to === 'approved' ? `${v.login} approved` : `${v.login} is back in the pending requests`,
+      );
+      return refresh();
+    },
+  });
+  // The owner's own row is managed in "Participate in my pool", never approved or rejected here.
+  const members = q.data?.filter((p) => p.user.id !== project.ownerId);
+  const pending = members?.filter((p) => p.participation.status === 'pending');
+  const rejected = members?.filter((p) => p.participation.status === 'rejected') ?? [];
   const rows = usePresence(pending, (p) => p.user.id);
+  const rejectedRows = usePresence(rejected, (p) => p.user.id);
   return (
     <div className="subpanel">
       <h3>Pending participants</h3>
+      {!project.requireParticipantApproval && (
+        <p className="hint">
+          Approval is off: new participants are active as soon as they join. You can still reject
+          them.
+        </p>
+      )}
       {q.error && <p className="error">{q.error.message}</p>}
-      {decide.error && <p className="error">{decide.error.message}</p>}
+      {decide.error && !toReject && <p className="error">{decide.error.message}</p>}
+      {undo.error && <p className="error">{undo.error.message}</p>}
       {q.isSuccess && pending?.length === 0 && <p className="hint">No pending requests.</p>}
       <ul className="list">
         {rows.map(({ key, item: p, phase }) => (
@@ -47,6 +128,15 @@ function ParticipantsApproval({ projectId }: { projectId: string }) {
               <strong>{p.user.githubLogin}</strong>
               <span className="badge">{p.participation.budgetPercent}%</span>
               <span className="badge">{p.participation.mode}</span>
+              {p.participation.previouslyRejectedAt && (
+                <span
+                  className="badge stop"
+                  title={`Rejected on ${formatDate(p.participation.previouslyRejectedAt)}`}
+                >
+                  previously rejected
+                  {p.participation.rejectionReason ? ` (${p.participation.rejectionReason})` : ''}
+                </span>
+              )}
             </span>
             <span className="row">
               <button
@@ -65,13 +155,10 @@ function ParticipantsApproval({ projectId }: { projectId: string }) {
               <button
                 className="danger"
                 aria-label={`Reject ${p.user.githubLogin}`}
-                onClick={() =>
-                  decide.mutate({
-                    userId: p.user.id,
-                    login: p.user.githubLogin,
-                    decision: 'reject',
-                  })
-                }
+                onClick={() => {
+                  decide.reset();
+                  setToReject({ userId: p.user.id, login: p.user.githubLogin });
+                }}
               >
                 Reject
               </button>
@@ -79,6 +166,52 @@ function ParticipantsApproval({ projectId }: { projectId: string }) {
           </li>
         ))}
       </ul>
+      {rejected.length > 0 && <h3>Rejected members</h3>}
+      <ul className="list">
+        {rejectedRows.map(({ key, item: p, phase }) => (
+          <li key={key} {...presenceProps(phase)}>
+            <span className="who">
+              <strong>{p.user.githubLogin}</strong>
+              <span className="badge stop">rejected</span>
+              {p.participation.rejectionReason && (
+                <span className="hint">{p.participation.rejectionReason}</span>
+              )}
+            </span>
+            <span className="row">
+              <button
+                aria-label={`Undo rejection of ${p.user.githubLogin}: back to pending`}
+                disabled={undo.isPending}
+                onClick={() =>
+                  undo.mutate({ userId: p.user.id, login: p.user.githubLogin, to: 'pending' })
+                }
+              >
+                Undo: back to pending
+              </button>
+              <button
+                className="primary"
+                aria-label={`Undo rejection of ${p.user.githubLogin}: approve`}
+                disabled={undo.isPending}
+                onClick={() =>
+                  undo.mutate({ userId: p.user.id, login: p.user.githubLogin, to: 'approved' })
+                }
+              >
+                Undo: approve
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {toReject && (
+        <RejectDialog
+          login={toReject.login}
+          pending={decide.isPending}
+          error={decide.error}
+          onClose={() => setToReject(null)}
+          onConfirm={(reason) =>
+            decide.mutate({ ...toReject, decision: 'reject', reason: reason || undefined })
+          }
+        />
+      )}
     </div>
   );
 }
@@ -180,7 +313,8 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
           <span className="hint">New participants stay pending until you approve them.</span>
         </label>
       </div>
-      <ParticipantsApproval projectId={project.id} />
+      <OwnerParticipation project={project} />
+      <ParticipantsApproval project={project} />
     </article>
   );
 }
