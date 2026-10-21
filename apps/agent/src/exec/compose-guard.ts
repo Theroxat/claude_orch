@@ -322,7 +322,11 @@ export function scanComposeSources(root: string, file: string): string[] {
 // Resolved model
 // ---------------------------------------------------------------------------------------------
 
-const UNSAFE_SECURITY_OPT = /^(apparmor|seccomp|label|systempaths)[=:](unconfined|disable)$/;
+/**
+ * Any explicit confinement profile is refused, not only `unconfined`/`disable`: a custom seccomp
+ * profile can allow every syscall, and an SELinux label can pick a privileged type (spc_t).
+ */
+const UNSAFE_SECURITY_OPT = /^(apparmor|seccomp|label|systempaths)[=:]/;
 
 function isLocalPath(p: string): boolean {
   return !/:\/\/|^(git@|github\.com[/:]|service:|docker-image:)/i.test(p);
@@ -424,6 +428,10 @@ function checkService(
   if (s.privileged === true) out.push(`${svc}: privileged is not allowed`);
   if (Array.isArray(s.cap_add) && s.cap_add.length > 0) out.push(`${svc}: cap_add is not allowed`);
   if (Array.isArray(s.devices) && s.devices.length > 0) out.push(`${svc}: devices are not allowed`);
+  // With the default CAP_MKNOD, a rule like "b *:* rwm" lets root in the sidecar open host disks.
+  if (Array.isArray(s.device_cgroup_rules) && s.device_cgroup_rules.length > 0) {
+    out.push(`${svc}: device_cgroup_rules are not allowed`);
+  }
   for (const key of ['pid', 'ipc'] as const) {
     const v = s[key];
     if (v === 'host' || (typeof v === 'string' && v.startsWith('container:'))) {
@@ -472,6 +480,24 @@ export function checkComposeModel(model: unknown, root: string, project: string)
   for (const [name, s] of Object.entries(isObj(model.services) ? model.services : {})) {
     if (!isObj(s)) out.push(`service "${name}": unexpected definition`);
     else checkService(name, s, root, project, topVolumes, out);
+  }
+  // Sidecars only join networks of their own project (the default one is replaced by the task
+  // network): an external network would reach other tasks or the member's own containers.
+  const networks = isObj(model.networks) ? model.networks : {};
+  for (const [name, def] of Object.entries(networks)) {
+    if (name === 'default') continue;
+    const net = `network "${name}"`;
+    if (!isObj(def)) {
+      out.push(`${net}: unexpected definition`);
+      continue;
+    }
+    if (def.external) out.push(`${net}: external networks are not allowed`);
+    else if (typeof def.name !== 'string' || !def.name.startsWith(`${project}_`)) {
+      out.push(`${net}: must be named ${project}_*`);
+    }
+    if (def.driver !== undefined && def.driver !== 'bridge') {
+      out.push(`${net}: driver "${String(def.driver)}" is not allowed`);
+    }
   }
   for (const kind of ['secrets', 'configs'] as const) {
     const top = model[kind];
