@@ -1,5 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { addProject, fetchAvailableRepos, fetchInstallUrl } from '../api/endpoints';
+
+const ADMIN_NOTE =
+  'Only repositories where you are an admin are listed: the project owner must be a repository admin.';
 
 export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -13,6 +17,12 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
       onClose();
     },
   });
+  const refetchRepos = repos.refetch;
+  useEffect(() => {
+    const onFocus = () => void refetchRepos();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refetchRepos]);
   const list = repos.data ?? [];
   const noRepos = repos.isSuccess && list.length === 0;
   return (
@@ -46,21 +56,62 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
             </li>
           ))}
         </ul>
-        {noRepos && (
-          <p className="hint">
-            No repositories available. The GitHub App may not be installed on any of your
-            repositories yet.
-          </p>
+        {noRepos ? (
+          <section className="onboarding" aria-label="Install the GitHub App first">
+            <h3>Install the GitHub App first</h3>
+            <p>
+              Signing in with GitHub doesn&apos;t give orch access to any repository. You need to
+              install the orch GitHub App on the repositories you want to add to the pool.
+            </p>
+            <ol>
+              <li>
+                Click <strong>Install the GitHub App</strong>.{' '}
+                {install.data ? (
+                  <a
+                    className="btn primary"
+                    href={install.data.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Install the GitHub App
+                  </a>
+                ) : (
+                  <span className="hint">Loading the install link...</span>
+                )}
+              </li>
+              <li>Pick your account or organization.</li>
+              <li>
+                Choose <strong>Only select repositories</strong> and tick the repos you want in the
+                pool (or <strong>All repositories</strong>).
+              </li>
+              <li>
+                Click <strong>Install</strong>. GitHub sends you back to orch.
+              </li>
+              <li>
+                Click <strong>Refresh</strong> below.
+              </li>
+            </ol>
+            <button disabled={repos.isFetching} onClick={() => void repos.refetch()}>
+              Refresh
+            </button>
+            <p className="hint">{ADMIN_NOTE}</p>
+          </section>
+        ) : (
+          <>
+            <p className="hint">
+              Repository missing?{' '}
+              {install.data ? (
+                <a href={install.data.url} target="_blank" rel="noopener noreferrer">
+                  Install the GitHub App
+                </a>
+              ) : (
+                'Install the GitHub App'
+              )}{' '}
+              on it.
+            </p>
+            <p className="hint">{ADMIN_NOTE}</p>
+          </>
         )}
-        <p className="hint">
-          Repository missing?{' '}
-          {install.data ? (
-            <a href={install.data.url}>Install the GitHub App</a>
-          ) : (
-            'Install the GitHub App'
-          )}{' '}
-          on it, then reopen this dialog.
-        </p>
       </div>
     </div>
   );

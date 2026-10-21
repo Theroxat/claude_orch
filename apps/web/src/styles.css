@@ -306,3 +306,24 @@ ul.plain {
 .token-revoked {
   opacity: 0.6;
 }
+
+.onboarding {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+}
+.onboarding h2,
+.onboarding h3 {
+  margin-top: 0;
+}
+.onboarding ol {
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+}
+.onboarding .btn.primary {
+  display: inline-block;
+  margin-left: 6px;
+  text-decoration: none;
+}

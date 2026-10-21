@@ -18,7 +18,13 @@ export function Projects() {
       {q.isPending && <p className="hint">Loading...</p>}
       {q.error && <p className="error">{q.error.message}</p>}
       {q.isSuccess && q.data.length === 0 && (
-        <p className="hint">You have not added any project yet.</p>
+        <div className="onboarding">
+          <h2>Add your first repository to the pool</h2>
+          <p>Install the orch GitHub App on a repository, then add it here to start sharing.</p>
+          <button className="primary" onClick={() => setAdding(true)}>
+            Add your first repository
+          </button>
+        </div>
       )}
       {q.data?.map((p) => (
         <ProjectCard key={p.id} project={p} />
