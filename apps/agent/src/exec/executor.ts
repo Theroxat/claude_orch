@@ -46,6 +46,7 @@ import {
 import {
   ComposeGuardError,
   checkComposeModel,
+  planEnvFileFallbacks,
   sanitizeComposeModel,
   scanComposeSources,
 } from './compose-guard';
@@ -116,6 +117,12 @@ export interface ExecutorDeps {
   /** The member's Claude token (`/secrets/claude-token`), or null when `orch login` was not run. */
   readClaudeToken: () => string | null;
   participations: () => readonly Participation[];
+  /**
+   * Asks the server for a fresh config (`config.request`) and resolves once it was applied, or
+   * false on timeout / older server. Used once per AUTO offer whose project is missing from the
+   * synced participation list, before rejecting it as `not_participating`.
+   */
+  refreshConfig?: () => Promise<boolean>;
   logger: Logger;
 }
 
@@ -169,6 +176,8 @@ export class ManualExecutor {
   private readonly claims = new Map<string, ClaimWaiter>();
   /** Pending approval requests (`offer.request`), for `orch requests`. In memory only. */
   private readonly requests = new Map<string, OfferRequestPayload>();
+  /** AUTO offers waiting for a config refresh before the guard re-checks them. */
+  private readonly refreshing = new Set<string>();
   /** `orch accept` waiting for the ack of its `offer.accept` (message id -> resolver). */
   private readonly userAccepts = new Map<string, (ack: AckPayload) => void>();
   /** Live `claude -p` processes by assignment. */
@@ -348,6 +357,8 @@ export class ManualExecutor {
         this.onOffer(m.payload, m.replyTo);
         return true;
       case 'task.cancel':
+        // An offer waiting for its config refresh is simply dropped (never accepted later).
+        if (this.refreshing.delete(m.payload.assignmentId)) return true;
         this.track(this.cancel(m.payload.assignmentId, m.payload.reason));
         return true;
       case 'pr.opened': {
@@ -482,6 +493,7 @@ export class ManualExecutor {
       return;
     }
     if (this.store.get(id)) return; // re-sent offer: already accepted (or waiting for the ack)
+    if (this.refreshing.has(id)) return; // re-sent while its config refresh is in flight
     if (p.expiresAt !== null && Date.parse(p.expiresAt) <= this.now()) {
       this.log.info('ignoring an expired offer', { assignmentId: id, expiresAt: p.expiresAt });
       return;
@@ -507,6 +519,37 @@ export class ManualExecutor {
       return;
     }
     const refusal = this.autoGuard(p);
+    const refresh = this.deps.refreshConfig;
+    if (refusal?.reason === 'not_participating' && refresh) {
+      // The participation list may be stale (joined after connecting): resync once, re-check.
+      this.refreshing.add(id);
+      this.log.info('auto offer for an unknown participation: refreshing the config', {
+        assignmentId: id,
+        project: p.task.project.fullName,
+      });
+      this.track(
+        refresh()
+          .catch(() => false)
+          .then(() => {
+            if (!this.refreshing.delete(id)) return; // cancelled meanwhile
+            if (this.store.get(id)) return;
+            if (p.expiresAt !== null && Date.parse(p.expiresAt) <= this.now()) {
+              this.log.info('ignoring an expired offer', { assignmentId: id });
+              return;
+            }
+            this.decideAuto(p, this.autoGuard(p));
+          }),
+      );
+      return;
+    }
+    this.decideAuto(p, refusal);
+  }
+
+  private decideAuto(
+    p: TaskOfferPayload,
+    refusal: { reason: RejectReason; detail: string } | null,
+  ): void {
+    const id = p.assignmentId;
     if (refusal) {
       this.log.info('auto offer rejected by the local guard', { assignmentId: id, ...refusal });
       this.deps.enqueue('offer.reject', { assignmentId: id, ...refusal });
@@ -806,14 +849,21 @@ export class ManualExecutor {
     const project = composeProject(id);
     const early = scanComposeSources(r.cloneDir, compose);
     if (early.length > 0) throw new ComposeGuardError(early);
-    const model = await this.deps.docker.composeConfig(project, [compose], r.cloneDir);
+    // A gitignored .env is absent from a fresh clone: fall back to the example or drop the entry.
+    const envFix = planEnvFileFallbacks(r.cloneDir, compose);
+    const files = [compose];
+    if (envFix.override !== null) {
+      const fix = join(r.taskDir, 'compose.orch.envfix.yaml');
+      this.deps.fs.writeFile(fix, envFix.override);
+      files.push(fix);
+      for (const w of envFix.warnings) this.warn(id, w);
+    }
+    const model = await this.deps.docker.composeConfig(project, files, r.cloneDir);
     const problems = checkComposeModel(model, r.cloneDir, project);
     if (problems.length > 0) throw new ComposeGuardError(problems);
     const safe = sanitizeComposeModel(model, labels);
     if (safe.stripped.length > 0) {
-      const w = `compose: ${safe.stripped.join('; ')}`.slice(0, 1000);
-      this.log.warn(w, { issue: r.issueNumber });
-      this.store.update(id, { warnings: [...r.warnings, w] });
+      this.warn(id, `compose: ${safe.stripped.join('; ')}`.slice(0, 1000));
     }
     const checked = join(r.taskDir, 'compose.orch.checked.json');
     this.deps.fs.writeFile(checked, JSON.stringify(safe.model, null, 2));
@@ -824,6 +874,13 @@ export class ManualExecutor {
     );
     this.store.update(id, { composeProject: project });
     await this.deps.docker.composeUp(project, [checked, override], r.cloneDir);
+  }
+
+  /** Logs a warning and records it on the task (shown by `orch status` and the run log). */
+  private warn(id: string, w: string): void {
+    const r = this.store.get(id) as TaskRecord;
+    this.log.warn(w, { issue: r.issueNumber });
+    this.store.update(id, { warnings: [...r.warnings, w] });
   }
 
   private claudeArgv(r: TaskRecord, prompt: string | null): string[] {
@@ -1152,7 +1209,10 @@ export class ManualExecutor {
     } catch (err) {
       this.log.warn('could not read task usage', { error: errorMessage(err) });
     }
+    // The task writes these logs itself: the protocol wants integer token counts.
     usage.weighted = Math.round(usage.weighted);
+    usage.input = Math.round(usage.input);
+    usage.output = Math.round(usage.output);
     return usage;
   }
 

@@ -176,7 +176,12 @@ export async function buildPool(
       });
     }
     const running = await prisma.assignment.findMany({
-      where: { userId, status: { in: ['ACCEPTED', 'RUNNING', 'PUSHED'] } },
+      // Only tasks of the projects listed for the caller: never leak other (private) repos.
+      where: {
+        userId,
+        status: { in: ['ACCEPTED', 'RUNNING', 'PUSHED'] },
+        task: { projectId: { in: projects.map((p) => p.id) } },
+      },
       include: { task: { include: { project: true } } },
       orderBy: { offeredAt: 'asc' },
     });

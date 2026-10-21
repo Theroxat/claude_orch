@@ -271,6 +271,14 @@ describe('backlog REST', () => {
       model: 'OPUS',
     });
     expect(TaskViewSchema.parse(patched.json())).toMatchObject({ size: 'L', model: 'OPUS' });
+    // dependencies alone (no size or model) can be changed too
+    const deps = await api(app, owner)('PATCH', `/api/tasks/${a.id}`, { dependsOn: [] });
+    expect(deps.statusCode, deps.body).toBe(200);
+    const unblocked = await api(app, owner)('PATCH', `/api/tasks/${b.id}`, { dependsOn: [] });
+    expect(unblocked.statusCode, unblocked.body).toBe(200);
+    expect(TaskViewSchema.parse(unblocked.json())).toMatchObject({ status: 'TODO', dependsOn: [] });
+    const reblocked = await api(app, owner)('PATCH', `/api/tasks/${b.id}`, { dependsOn: [a.id] });
+    expect(TaskViewSchema.parse(reblocked.json()).status).toBe('BLOCKED');
     const cyc = await api(app, owner)('PATCH', `/api/tasks/${a.id}`, { dependsOn: [b.id] });
     expect(cyc.json()).toMatchObject({ error: { code: 'dependency_cycle' } });
     // a participant who is not the creator cannot edit

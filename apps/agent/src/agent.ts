@@ -48,6 +48,15 @@ export interface AgentOptions {
   };
   tokenTimeoutMs?: number;
   listTimeoutMs?: number;
+  /** How long to wait for the answer to `config.request` (default 5 s). */
+  configRequestTimeoutMs?: number;
+}
+
+interface ConfigWaiter {
+  id: string;
+  promise: Promise<boolean>;
+  resolve: (ok: boolean) => void;
+  timer: NodeJS.Timeout;
 }
 
 interface ListWaiter {
@@ -66,6 +75,8 @@ export class Agent {
   readonly executor: ManualExecutor | undefined;
   private participations: AgentConfigPayload['participations'] = [];
   private readonly listWaiters = new Map<string, ListWaiter>();
+  /** In-flight `config.request` (concurrent refreshes share it). */
+  private configWaiter: ConfigWaiter | undefined;
   private control: ControlServer | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private agentId: string | null;
@@ -116,6 +127,7 @@ export class Agent {
           enqueue: (type, payload) => this.outbox.enqueue(type, payload as never).id,
           isPaused: () => this.pause.isPaused(),
           participations: () => this.participations,
+          refreshConfig: () => this.refreshConfig(),
           logger: this.log,
         })
       : undefined;
@@ -212,7 +224,38 @@ export class Agent {
     });
   }
 
+  /**
+   * `config.request` -> `config.update` (replyTo = request id), applied before this resolves
+   * true. Resolves false when offline, on timeout, or when an older server answers `error`.
+   */
+  refreshConfig(): Promise<boolean> {
+    if (this.configWaiter) return this.configWaiter.promise;
+    const msg = agentMessage('config.request', { reason: 'participation' });
+    if (!this.client.ready || !this.client.send(msg)) return Promise.resolve(false);
+    let resolve!: (ok: boolean) => void;
+    const promise = new Promise<boolean>((r) => (resolve = r));
+    const timer = setTimeout(() => {
+      this.log.warn('no answer to config.request; keeping the current config');
+      this.settleConfigWaiter(msg.id, false);
+    }, this.opts.configRequestTimeoutMs ?? 5_000);
+    this.configWaiter = { id: msg.id, promise, resolve, timer };
+    return promise;
+  }
+
+  private settleConfigWaiter(replyTo: string | undefined, ok: boolean): void {
+    const w = this.configWaiter;
+    if (!w || replyTo !== w.id) return;
+    clearTimeout(w.timer);
+    this.configWaiter = undefined;
+    w.resolve(ok);
+  }
+
   async stop(): Promise<void> {
+    if (this.configWaiter) {
+      clearTimeout(this.configWaiter.timer);
+      this.configWaiter.resolve(false);
+      this.configWaiter = undefined;
+    }
     this.tokens.close();
     this.executor?.close();
     for (const w of this.listWaiters.values()) clearTimeout(w.timer);
@@ -293,6 +336,8 @@ export class Agent {
     }
     if (m.type === 'error') {
       this.log.warn('server error', { code: m.payload.code, message: m.payload.message });
+      // An older server does not know `config.request`: give up at once (guard rejects).
+      this.settleConfigWaiter(m.payload.replyTo ?? m.replyTo, false);
       return;
     }
     if (!SERVER_ACKED_TYPES.includes(m.type)) {
@@ -311,12 +356,16 @@ export class Agent {
     }
     this.dedup.remember(m.id);
     this.sendAck(m.id, ack);
+    if (m.type === 'config.update') this.settleConfigWaiter(m.replyTo, ack.ok);
   }
 
   private apply(m: ServerMessage): void {
     switch (m.type) {
       case 'config.update':
         this.applyConfig(m.payload);
+        this.log.info('config updated', {
+          participations: m.payload.participations.map((p) => `${p.fullName}:${p.mode}`),
+        });
         if (this.client.ready) this.startHeartbeat(m.payload.heartbeatSec);
         return;
       case 'task.offer':

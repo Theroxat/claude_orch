@@ -1,9 +1,10 @@
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ComposeGuardError,
   checkComposeModel,
+  planEnvFileFallbacks,
   sanitizeComposeModel,
   scanComposeSources,
 } from '../../src/exec/compose-guard.js';
@@ -396,5 +397,61 @@ describe('sanitizeComposeModel', () => {
 
   it('copes with non-object input', () => {
     expect(sanitizeComposeModel(null, {})).toEqual({ model: {}, stripped: [] });
+  });
+});
+
+describe('planEnvFileFallbacks', () => {
+  const compose = (envFile: string): string =>
+    `services:\n  web:\n    image: x\n    env_file: ${envFile}\n`;
+  const plan = (text: string) => {
+    writeFileSync(join(root, 'compose.yaml'), text);
+    return planEnvFileFallbacks(root, join(root, 'compose.yaml'));
+  };
+
+  it('drops a missing in-clone env_file with a warning, creating no file', () => {
+    const r = plan(compose('.env'));
+    expect(r.override).toContain('env_file: !override []');
+    expect(r.warnings).toEqual([
+      'env file .env not found in the repository; continuing without it. Commit a .env.example or make it optional.',
+    ]);
+    expect(existsSync(join(root, '.env'))).toBe(false);
+  });
+
+  it('uses .env.example when it exists next to the missing file', () => {
+    writeFileSync(join(root, '.env.example'), 'A=1\n');
+    const r = plan(compose('.env'));
+    expect(r.override).toContain(JSON.stringify(join(root, '.env.example')));
+    expect(r.warnings[0]).toContain('using .env.example instead');
+    expect(existsSync(join(root, '.env'))).toBe(false);
+  });
+
+  it('handles the list form and the .env.sample fallback', () => {
+    writeFileSync(join(root, 'ok.env'), 'A=1\n');
+    writeFileSync(join(root, '.env.sample'), 'A=1\n');
+    const r = plan(
+      'services:\n  web:\n    image: x\n    env_file:\n      - ok.env\n      - .env\n',
+    );
+    expect(r.override).toContain(JSON.stringify(join(root, 'ok.env')));
+    expect(r.override).toContain(JSON.stringify(join(root, '.env.sample')));
+  });
+
+  it('leaves an existing env_file unchanged (no override)', () => {
+    writeFileSync(join(root, '.env'), 'A=1\n');
+    expect(plan(compose('.env'))).toEqual({ override: null, warnings: [] });
+  });
+
+  it('does not touch an env_file outside the clone: the source scan still refuses it', () => {
+    const r = plan(compose('../outside.env'));
+    expect(r.override).toBeNull();
+    expect(scanComposeSources(root, join(root, 'compose.yaml')).join('\n')).toContain(
+      'outside the repository',
+    );
+  });
+
+  it('does not follow a symlinked example that points outside the clone', () => {
+    writeFileSync(join(t.dir, 'secret.env'), 'S=1\n');
+    symlinkSync(join(t.dir, 'secret.env'), join(root, '.env.example'));
+    const r = plan(compose('.env'));
+    expect(r.override).toContain('env_file: !override []');
   });
 });

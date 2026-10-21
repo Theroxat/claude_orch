@@ -652,6 +652,49 @@ async function main() {
     assert(again.status === 200 && again.body.duplicate === true, 'replay deduped', again);
   });
 
+  await step(
+    'd0. alice leaves and re-joins while her agent is connected: config.update reaches it at once',
+    async () => {
+      const agentLog = () =>
+        compose(['logs', '--no-color', '--no-log-prefix', 'alice'], {
+          allowFail: true,
+          maxBuffer: 256 * 1024 * 1024,
+        })
+          .stdout.split('\n')
+          .filter((l) => l.includes('config updated'));
+      const before = agentLog().length;
+      const left = await users.alice.api('PUT', `/api/projects/${project.id}/participation`, {
+        participating: false,
+        budgetPercent: 50,
+        mode: 'auto',
+      });
+      assert(left.status === 'inactive', 'alice left', left);
+      await waitFor(
+        'alice agent dropped the project',
+        async () =>
+          agentLog()
+            .slice(before)
+            .some((l) => l.includes('"participations":[]')),
+        30_000,
+      );
+      const mid = agentLog().length;
+      const back = await users.alice.api('PUT', `/api/projects/${project.id}/participation`, {
+        participating: true,
+        budgetPercent: 50,
+        mode: 'auto',
+      });
+      assert(back.status === 'active', 'alice active again (still approved)', back);
+      await waitFor(
+        'alice agent got the participation back',
+        async () =>
+          agentLog()
+            .slice(mid)
+            .some((l) => l.includes(`${PROJECT}:AUTO`)),
+        30_000,
+      );
+    },
+  );
+
   let autoPr;
   await step(
     'd. auto: task -> offered to alice (auto), never auto to bob -> fake claude -p in the sandbox -> push -> draft PR -> merge -> DONE',
@@ -680,6 +723,12 @@ async function main() {
         as,
       );
       recordAssignment(run.id);
+      assert(
+        psql(
+          `select count(*) from "Assignment" where "taskId"='${t.id}' and "reason" like 'not_participating%'`,
+        )[0]?.[0] === '0',
+        'no not_participating rejection after re-joining',
+      );
       const s = await ghState();
       autoPr = s.pulls.find((p) => p.number === tv.prNumber);
       assert(autoPr && autoPr.draft === true, 'auto PR is a draft', {
