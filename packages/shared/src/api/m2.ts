@@ -95,7 +95,7 @@ export const AgentUpdateInfoSchema = z.object({
 });
 export type AgentUpdateInfo = z.infer<typeof AgentUpdateInfoSchema>;
 
-export const AgentUpdateRequestSchema = z.object({ whenIdle: z.boolean().optional() }).strict();
+export const AgentUpdateRequestSchema = z.strictObject({ whenIdle: z.boolean().optional() });
 export type AgentUpdateRequest = z.infer<typeof AgentUpdateRequestSchema>;
 
 export const OutdatedCountResponseSchema = z.object({ count: z.number().int().nonnegative() });

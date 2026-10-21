@@ -365,7 +365,7 @@ export const TokenDenyPayloadSchema = z.object({ requestId: z.string(), reason: 
 export const PrOpenedPayloadSchema = z.object({
   assignmentId: z.string(),
   prNumber: z.number().int().positive(),
-  prUrl: z.string().url(),
+  prUrl: z.url(),
 });
 
 export const TasksListItemSchema = z.object({

@@ -21,11 +21,10 @@ const optionalString = z.string().min(1).optional();
 
 const EnvSchema = z.object({
   ORCH_SERVER_URL: z
-    .string({
+    .url({
       error: (iss) =>
-        iss.input === undefined ? 'is required (e.g. https://orch.example.com)' : undefined,
+        iss.input === undefined ? 'is required (e.g. https://orch.example.com)' : 'must be a URL',
     })
-    .url('must be a URL')
     .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://'),
   ORCH_AGENT_CREDENTIAL: optionalString,
   ORCH_AGENT_ID: optionalString,
@@ -46,7 +45,7 @@ const EnvSchema = z.object({
   ORCH_CLAUDE_BIN: z.string().min(1).default('claude'),
   ORCH_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(1),
   ORCH_DEFAULT_IMAGE: z.string().min(1).default('node:22-bookworm'),
-  ORCH_GIT_BASE_URL: z.string().url().default('https://github.com'),
+  ORCH_GIT_BASE_URL: z.url().default('https://github.com'),
   ORCH_TASK_UID: z.coerce.number().int().min(1).optional(),
   ORCH_TASK_GID: z.coerce.number().int().min(0).optional(),
   ORCH_GIT_AUTHOR_NAME: z.string().min(1).default('orch agent'),
