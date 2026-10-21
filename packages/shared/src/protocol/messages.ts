@@ -69,8 +69,9 @@ export const HelloPayloadSchema = z.object({
   /** True when the member ran `orch login` (the token file exists and is non-empty). */
   claudeTokenPresent: z.boolean().optional(),
   /**
-   * False after a run failed on Claude authentication (401, expired login), true again after a
-   * successful `orch login` (v0.5.1+). Absent: unknown (older agents).
+   * False after a run failed on Claude authentication (401, expired login) or a real check
+   * rejected the token (v0.5.1+). Absent: unknown (older agents). Since v0.5.2 the server only
+   * honours `false` here: `true` never clears its flag (only `claude.auth` valid or a succeeded run).
    */
   claudeAuthValid: z.boolean().optional(),
   /** True when the agent understands `agent.update` (one-click update). Absent = no. */
@@ -114,6 +115,31 @@ export const UsageReportPayloadSchema = z.object({
   claudeAuthValid: z.boolean().optional(),
 });
 export type UsageReportPayload = z.infer<typeof UsageReportPayloadSchema>;
+
+/**
+ * `claude.auth` (v0.5.2): result of a REAL Claude check (`claude -p` with the stored token in a
+ * throwaway container), sent after `orch login`, on `orch doctor` and when the token file changes.
+ * Only `valid: true` clears the server's `claudeAuthValid = false`; `valid: false` with
+ * `errorClass` `unauthorized` or `no_token` sets it; other error classes are inconclusive (the
+ * check could not run) and only record `checkedAt` / `errorClass`. Never carries the token.
+ */
+export const ClaudeAuthErrorClass = z.enum([
+  'unauthorized',
+  'no_token',
+  'rate_limited',
+  'timeout',
+  'network',
+  'error',
+]);
+export type ClaudeAuthErrorClass = z.infer<typeof ClaudeAuthErrorClass>;
+export const ClaudeAuthPayloadSchema = z.object({
+  valid: z.boolean(),
+  checkedAt: IsoDateTime,
+  errorClass: ClaudeAuthErrorClass.optional(),
+  /** Short, redacted diagnostic (never the token). */
+  detail: z.string().max(300).optional(),
+});
+export type ClaudeAuthPayload = z.infer<typeof ClaudeAuthPayloadSchema>;
 
 export const OfferAcceptPayloadSchema = z.object({
   assignmentId: z.string(),
@@ -397,6 +423,7 @@ export const AgentMessageSchemas = {
   'tasks.list.request': envelopeOf('tasks.list.request', TasksListRequestPayloadSchema),
   'config.request': envelopeOf('config.request', ConfigRequestPayloadSchema),
   'update.status': envelopeOf('update.status', UpdateStatusPayloadSchema),
+  'claude.auth': envelopeOf('claude.auth', ClaudeAuthPayloadSchema),
   ack: AckMessageSchema,
 } as const;
 
@@ -433,6 +460,7 @@ export const AgentMessageSchema = z.discriminatedUnion('type', [
   AgentMessageSchemas['tasks.list.request'],
   AgentMessageSchemas['config.request'],
   AgentMessageSchemas['update.status'],
+  AgentMessageSchemas['claude.auth'],
   AgentMessageSchemas.ack,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
@@ -474,6 +502,7 @@ export const AGENT_ACKED_TYPES: readonly AgentMessageType[] = [
   'done.request',
   'pause.set',
   'update.status',
+  'claude.auth',
 ];
 
 /** Server -> agent types that need an `ack`. */

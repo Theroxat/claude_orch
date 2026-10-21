@@ -1,8 +1,15 @@
 /** Agent daemon entry: config -> credential -> Agent. Graceful shutdown on SIGTERM/SIGINT. */
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { Agent, type AgentOptions } from './agent';
 import type { AgentConfig } from './config';
+import {
+  checkClaudeAuth,
+  cleanupCheckContainers,
+  readTokenFile,
+  tokenFileHash,
+  tokenFileStat,
+} from './claude-check';
 import { CliDocker } from './exec/docker';
 import { CliGit } from './exec/git';
 import { spawnRunner } from './exec/runner';
@@ -25,13 +32,33 @@ function claudeTokenPresent(secretsDir: string): boolean {
 }
 
 /** Reads `/secrets/claude-token` at use time (never cached, never logged). */
-function readClaudeToken(secretsDir: string): string | null {
-  try {
-    const t = readFileSync(join(secretsDir, 'claude-token'), 'utf8').trim();
-    return t === '' ? null : t;
-  } catch {
-    return null;
-  }
+const readClaudeToken = readTokenFile;
+
+/** Real Claude login check, built on the task execution settings (same image, uid, binary). */
+function claudeCheckOptions(
+  cfg: AgentConfig,
+  exec: AgentOptions['exec'],
+): AgentOptions['claudeCheck'] {
+  if (!exec) return undefined;
+  const docker = exec.deps.docker;
+  const checkCfg = {
+    agentId: exec.config.agentId,
+    image: cfg.defaultImage,
+    claudeBin: cfg.claudeBin,
+    uid: exec.config.uid,
+    gid: exec.config.gid,
+  };
+  return {
+    run: () =>
+      checkClaudeAuth(checkCfg, {
+        docker,
+        runner: spawnRunner,
+        readClaudeToken: () => readClaudeToken(cfg.secretsDir),
+      }),
+    tokenStat: () => tokenFileStat(cfg.secretsDir),
+    tokenHash: () => tokenFileHash(cfg.secretsDir),
+    cleanup: () => cleanupCheckContainers(docker, exec.config.agentId),
+  };
 }
 
 function execOptions(cfg: AgentConfig, log: Logger, agentId: string): AgentOptions['exec'] {
@@ -103,6 +130,7 @@ async function main(): Promise<void> {
     });
   }
 
+  const exec = execOptions(cfg, log, cred.agentId);
   const agent = new Agent({
     serverUrl: cfg.serverUrl,
     wsUrl: cfg.wsUrl,
@@ -119,7 +147,8 @@ async function main(): Promise<void> {
       ...(cfg.usageLimit !== undefined ? { limitWeighted: cfg.usageLimit } : {}),
     }),
     logger: log,
-    exec: execOptions(cfg, log, cred.agentId),
+    exec,
+    claudeCheck: claudeCheckOptions(cfg, exec),
     update: updateOptions(cfg, log),
   });
   agent.client.on('fatal', () => {

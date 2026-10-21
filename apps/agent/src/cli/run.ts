@@ -1,11 +1,21 @@
 /** `orch` command dispatcher (testable: no process.exit, injectable IO, env and spawner). */
 import { spawn } from 'node:child_process';
-import { loadCliConfig } from '../config';
+import { statSync } from 'node:fs';
+import type { ClaudeAuthPayload } from '@orch/shared';
+import {
+  checkClaudeAuth,
+  checkLine,
+  readTokenFile,
+  resolveExecutable,
+  type ClaudeCheckOutcome,
+} from '../claude-check';
+import { loadCliConfig, type CliConfig } from '../config';
+import { CliDocker } from '../exec/docker';
 import { parseIssueRef } from '../exec/naming';
+import { spawnRunner, type CommandRunner } from '../exec/runner';
 import { errorMessage } from '../log';
-import { sendControl } from './client';
-import { ClaudeAuthState } from '../claude-auth';
-import { login, type LoginIo } from './login';
+import { DaemonNotRunningError, sendControl } from './client';
+import { checkTokenShape, login, type LoginIo } from './login';
 import type {
   ControlRequest,
   ControlResult,
@@ -35,9 +45,10 @@ Commands:
   update            Update this agent to the version the server runs, then restart it
                       --when-idle      wait for the running tasks to finish first
                       --version=<x.y.z> a specific release instead
-  login             Store your Claude token (wraps \`claude setup-token\`)
+  login             Store your Claude token (wraps \`claude setup-token\`), then verify it
                       --token-stdin  read the token from stdin
                       --no-setup     do not run \`claude setup-token\` first
+  doctor            Check the Claude setup: binary, token, and a real Claude request
   help              Show this help
 `;
 
@@ -49,6 +60,118 @@ export interface CliDeps {
   takeWaitMs: number;
   /** How long `update` follows the pull before returning. */
   updateWaitMs: number;
+  /** Runs `claude --version` (doctor). */
+  runner: CommandRunner;
+  /** In-process Claude check, used when the daemon socket is unreachable (not reported). */
+  localCheck: (cfg: CliConfig) => Promise<ClaudeCheckOutcome>;
+}
+
+function localUidGid(cfg: CliConfig): { uid: number; gid: number } {
+  let uid = cfg.taskUid;
+  let gid = cfg.taskGid;
+  try {
+    if (cfg.workDir) {
+      const st = statSync(cfg.workDir);
+      uid ??= st.uid > 0 ? st.uid : 1000;
+      gid ??= st.uid > 0 ? st.gid : 1000;
+    }
+  } catch {
+    // defaults below
+  }
+  return { uid: uid ?? 1000, gid: gid ?? 1000 };
+}
+
+/**
+ * In-process check (no daemon). The binary is copied into the check container at the same path,
+ * so a bare name (ORCH_CLAUDE_BIN defaults to `claude`) is first resolved to an absolute path.
+ */
+export async function defaultLocalCheck(
+  cfg: CliConfig,
+  pathEnv: string = process.env.PATH ?? '',
+): Promise<ClaudeCheckOutcome> {
+  const claudeBin = resolveExecutable(cfg.claudeBin, pathEnv);
+  if (!claudeBin) {
+    return {
+      payload: {
+        valid: false,
+        checkedAt: new Date().toISOString(),
+        errorClass: 'error',
+        detail:
+          `Claude Code CLI not found (${cfg.claudeBin} is not an executable file nor on PATH). Set ORCH_CLAUDE_BIN to its absolute path.`.slice(
+            0,
+            300,
+          ),
+      },
+      tokenHash: null,
+    };
+  }
+  return checkClaudeAuth(
+    {
+      agentId: cfg.agentId ?? 'cli',
+      image: cfg.defaultImage,
+      claudeBin,
+      ...localUidGid(cfg),
+    },
+    {
+      docker: new CliDocker(spawnRunner),
+      runner: spawnRunner,
+      readClaudeToken: () => readTokenFile(cfg.secretsDir),
+    },
+  );
+}
+
+/** Daemon commands an older or limited daemon may not know: fall back to the local check. */
+const FALLBACK_CODES = new Set(['unknown_command', 'unsupported']);
+
+/**
+ * Runs the real Claude check through the daemon (which records it and reports `claude.auth`),
+ * or in this process when the daemon is unreachable (nothing recorded or sent).
+ */
+async function runClaudeCheck(
+  cfg: CliConfig,
+  d: CliDeps,
+  reason: string,
+): Promise<{ payload: ClaudeAuthPayload; via: 'daemon' | 'local' }> {
+  let res: Awaited<ReturnType<typeof sendControl>> | null = null;
+  try {
+    res = await sendControl(cfg.socketPath, { cmd: 'claude.check', reason }, 150_000);
+  } catch (e) {
+    if (!(e instanceof DaemonNotRunningError)) throw e;
+  }
+  if (res?.ok && res.claudeAuth) return { payload: res.claudeAuth, via: 'daemon' };
+  if (res?.ok) throw new Error('The daemon returned no check result.');
+  if (res && !FALLBACK_CODES.has(res.error.code)) throw new Error(res.error.message);
+  return { payload: (await d.localCheck(cfg)).payload, via: 'local' };
+}
+
+/** `orch doctor` report lines (never the token). Exit code 0 only when valid. */
+export async function doctor(
+  cfg: CliConfig,
+  d: CliDeps,
+  out: (s: string) => void,
+): Promise<number> {
+  let version: string;
+  try {
+    const r = await d.runner.run(cfg.claudeBin, ['--version'], { timeoutMs: 15_000 });
+    version = r.code === 0 ? r.stdout.trim().split('\n')[0] || 'ok' : `failed (exit ${r.code})`;
+  } catch (e) {
+    version = `not runnable (${errorMessage(e)})`;
+  }
+  out(`Claude binary:  ${cfg.claudeBin} (${version})`);
+  const token = readTokenFile(cfg.secretsDir);
+  out(`Token:          ${token ? 'present' : 'missing'}`);
+  if (token) {
+    const shape = checkTokenShape(token);
+    out(
+      `Token shape:    ${shape.ok ? 'ok' : `unexpected: ${shape.reason}`} (${token.length} chars, ${token.startsWith('sk-ant-oat') ? 'sk-ant-oat prefix' : 'unknown prefix'})`,
+    );
+  }
+  const { payload, via } = await runClaudeCheck(cfg, d, 'doctor');
+  if (via === 'local') {
+    out('Check:          ran here (the daemon is not reachable; not reported to the server)');
+  }
+  out(checkLine(payload));
+  return payload.valid ? 0 : 1;
 }
 
 const defaultDeps: CliDeps = {
@@ -62,6 +185,8 @@ const defaultDeps: CliDeps = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   takeWaitMs: 60 * 60_000,
   updateWaitMs: 30 * 60_000,
+  runner: spawnRunner,
+  localCheck: defaultLocalCheck,
 };
 
 export function formatStatus(s: StatusInfo): string {
@@ -292,11 +417,21 @@ export async function runCli(
           },
           io,
         );
-        // The daemon re-reads this state file, so it resumes taking AUTO offers by itself.
-        new ClaudeAuthState(cfg.dataDir).markValid();
         out(`Claude token saved to ${path} (mode 0600). It never leaves this machine.`);
-        return 0;
+        // Storing a token proves nothing: verify it with a real Claude request.
+        out('Verifying the token with Claude...');
+        let check: ClaudeAuthPayload;
+        try {
+          check = (await runClaudeCheck(cfg, d, 'login')).payload;
+        } catch (e) {
+          out(`? Could not verify the Claude login (error): ${errorMessage(e)}`);
+          return 0;
+        }
+        out(checkLine(check));
+        return !check.valid && check.errorClass === 'unauthorized' ? 1 : 0;
       }
+      case 'doctor':
+        return await doctor(cfg, d, out);
       default:
         err(`unknown command "${cmd}". Run "orch help".`);
         return 2;
