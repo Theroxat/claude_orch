@@ -92,6 +92,8 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
   // CSRF: SameSite=Lax plus a same-origin check on state-changing requests.
   app.addHook('onRequest', async (req) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return;
+    // The MCP endpoint ignores cookies and requires a bearer token: no CSRF exposure.
+    if (req.url === '/mcp' || req.url.startsWith('/mcp?')) return;
     const origin = req.headers.origin;
     if (origin && origin !== base.origin) {
       throw new HttpError(403, 'csrf', 'Cross-origin request rejected');
@@ -100,6 +102,7 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
 
   // Session lookup.
   app.addHook('onRequest', async (req) => {
+    if (req.url === '/mcp' || req.url.startsWith('/mcp?')) return; // bearer token only
     const raw = parseCookies(req.headers.cookie)[SESSION_COOKIE];
     if (!raw) return;
     const session = await prisma.session.findUnique({

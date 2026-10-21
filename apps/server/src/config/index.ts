@@ -38,8 +38,12 @@ const ConfigSchema = z.object({
   CONSENT_REQUEST_TTL_SEC: z.coerce.number().int().positive().default(1_800),
   /** A usage report older than this makes the member ineligible for auto offers. */
   USAGE_STALE_SEC: z.coerce.number().int().positive().default(900),
-  /** Safety reserve s of PLAN section 6. */
-  BUDGET_SAFETY_RESERVE: z.coerce.number().min(0).max(0.9).default(0.2),
+  /**
+   * EXTRA safety reserve applied by the server. The safety reserve s of PLAN section 6 (20 %) is
+   * already applied by the agent: its `capacityEstimate` is `limit x (1 - s)`. Default 0, so the
+   * reserve counts once; raise it only to keep more headroom on top of the agent's.
+   */
+  BUDGET_SAFETY_RESERVE: z.coerce.number().min(0).max(0.9).default(0),
   OPUS_FACTOR: z.coerce.number().positive().default(5),
   /** Weighted tokens of a Pro 5h window: base of the S/M/L task estimates. */
   PRO_WINDOW_WEIGHTED: z.coerce.number().positive().default(44_000),

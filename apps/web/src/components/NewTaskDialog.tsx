@@ -1,7 +1,7 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { ProjectTaskAccess, TaskSize, TaskView } from '@orch/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { DispatchRequest, ProjectTaskAccess, TaskSize, TaskView } from '@orch/shared';
 import { useState } from 'react';
-import { createTask } from '../api/endpoints';
+import { createTask, fetchPool } from '../api/endpoints';
 
 export type BoardProject = {
   id: string;
@@ -30,8 +30,20 @@ export function NewTaskDialog({
   const [model, setModel] = useState<'SONNET' | 'OPUS'>('SONNET');
   const [deps, setDeps] = useState<string[]>([]);
   const [branch, setBranch] = useState('');
+  const [sendTo, setSendTo] = useState<DispatchRequest['mode']>('pool');
+  const [memberIds, setMemberIds] = useState<string[]>([]);
   const [invalid, setInvalid] = useState<string | null>(null);
   const projectAccess = access[projectId];
+  const isOwner = projectAccess?.myRole === 'owner';
+  const mode = sendTo === 'broadcast' && !isOwner ? 'pool' : sendTo;
+  const pool = useQuery({
+    queryKey: ['pool', projectId],
+    queryFn: () => fetchPool(projectId),
+    enabled: mode === 'members',
+  });
+  const poolMembers = (pool.data?.members ?? []).filter((m) =>
+    m.projects.some((p) => p.projectId === projectId),
+  );
   const projectTasks = tasks.filter((t) => t.projectId === projectId);
   const create = useMutation({
     mutationFn: () =>
@@ -46,6 +58,11 @@ export function NewTaskDialog({
         model,
         dependsOn: deps,
         integrationBranch: branch.trim() === '' ? null : branch.trim(),
+        ...(mode === 'members'
+          ? { dispatch: { mode, memberIds } }
+          : mode === 'broadcast'
+            ? { dispatch: { mode } }
+            : {}),
       }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['tasks'] });
@@ -55,6 +72,10 @@ export function NewTaskDialog({
   const submit = () => {
     if (title.trim() === '') {
       setInvalid('Title is required.');
+      return;
+    }
+    if (mode === 'members' && memberIds.length === 0) {
+      setInvalid('Select at least one member.');
       return;
     }
     setInvalid(null);
@@ -74,6 +95,7 @@ export function NewTaskDialog({
             onChange={(e) => {
               setProjectId(e.target.value);
               setDeps([]);
+              setMemberIds([]);
             }}
           >
             {projects.map((p) => (
@@ -135,6 +157,45 @@ export function NewTaskDialog({
           Integration branch (optional)
           <input value={branch} onChange={(e) => setBranch(e.target.value)} />
         </label>
+        <label className="field">
+          Send to
+          <select
+            value={mode}
+            onChange={(e) => setSendTo(e.target.value as DispatchRequest['mode'])}
+          >
+            <option value="pool">Pool</option>
+            <option value="members">Specific members</option>
+            {isOwner && <option value="broadcast">Everyone</option>}
+          </select>
+        </label>
+        {mode === 'pool' && (
+          <p className="hint">The best available member in the pool gets the task.</p>
+        )}
+        {mode === 'members' && (
+          <div className="checks" role="group" aria-label="Members">
+            {pool.isLoading && <span className="hint">Loading members...</span>}
+            {poolMembers.map((m) => (
+              <label key={m.userId}>
+                <input
+                  type="checkbox"
+                  checked={memberIds.includes(m.userId)}
+                  onChange={(e) =>
+                    setMemberIds((ids) =>
+                      e.target.checked ? [...ids, m.userId] : ids.filter((i) => i !== m.userId),
+                    )
+                  }
+                />{' '}
+                {m.login}
+              </label>
+            ))}
+          </div>
+        )}
+        {mode === 'broadcast' && (
+          <p className="hint">
+            Everyone: starts automatically for auto-mode members and sends a request to the others.
+            The first acceptance wins.
+          </p>
+        )}
         {invalid && <p className="error">{invalid}</p>}
         {create.error && <p className="error">{create.error.message}</p>}
         <button className="primary" disabled={create.isPending} onClick={submit}>

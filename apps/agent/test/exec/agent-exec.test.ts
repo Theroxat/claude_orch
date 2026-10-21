@@ -8,7 +8,7 @@ import { runCli } from '../../src/cli/run';
 import { silentLogger } from '../../src/log';
 import { FakeServer } from '../helpers/fake-server';
 import { CREDENTIAL, tempDir, waitFor } from '../helpers/util';
-import { FakeDocker, FakeGit, FakeScreen, offer, recordingFs } from './fakes';
+import { FakeDocker, FakeGit, FakeProc, FakeScreen, offer, recordingFs, resultLine } from './fakes';
 
 const GH_TOKEN = 'ghs_' + 'Wire1'.repeat(8);
 const CLAUDE_TOKEN = 'sk-ant-oat01-' + 'Qq7'.repeat(20);
@@ -127,7 +127,10 @@ describe('Agent with the manual executor', () => {
     await agent.start();
     await waitFor(() => agent.client.ready, { what: 'welcome' });
     const hello = server.ofType('hello')[0]!.payload;
-    expect(hello).toMatchObject({ capabilities: ['manual', 'devcontainer'], maxConcurrent: 1 });
+    expect(hello).toMatchObject({
+      capabilities: ['auto', 'manual', 'devcontainer'],
+      maxConcurrent: 1,
+    });
 
     const env = { ORCH_SOCKET_PATH: socketPath };
     const l = io();
@@ -172,5 +175,162 @@ describe('Agent with the manual executor', () => {
     const p = io();
     expect(await runCli(['take', '43'], p.io, env)).toBe(1);
     expect(p.err.join('')).toContain('paused');
+  });
+});
+
+describe('Agent in auto mode', () => {
+  it('orch requests / accept / reject / status / logs through the server protocol', async () => {
+    const server = await new FakeServer({
+      credential: CREDENTIAL,
+      config: {
+        participations: [
+          {
+            projectId: 'prj_1',
+            fullName: 'acme/widgets',
+            percent: 50,
+            mode: 'APPROVAL',
+            allowedModels: ['SONNET'],
+          },
+        ],
+      },
+    }).start();
+    cleanups.push(() => server.stop());
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const request = (assignmentId: string, issueNumber: number) =>
+      serverMessage('offer.request', {
+        assignmentId,
+        expiresAt,
+        task: {
+          taskId: `tsk_${issueNumber}`,
+          project: { id: 'prj_1', fullName: 'acme/widgets' },
+          issueNumber,
+          title: `Fix bug ${issueNumber}`,
+          size: 'S',
+          model: 'SONNET',
+          createdBy: { login: 'bob' },
+        },
+      });
+    server.onFrame = (msg) => {
+      if (msg.type === 'offer.accept') {
+        const p = msg.payload as { assignmentId: string };
+        server.send(
+          serverMessage('task.offer', {
+            ...offer({ assignmentId: p.assignmentId, issueNumber: 42 }),
+            kind: 'CONSENT_REQUEST',
+            accepted: true,
+            execMode: 'AUTO',
+            expiresAt,
+            timeoutSec: 1800,
+          }),
+        );
+      } else if (msg.type === 'token.request') {
+        const p = msg.payload as { requestId: string; purpose: string };
+        server.send(
+          serverMessage('token.grant', {
+            requestId: p.requestId,
+            token: GH_TOKEN,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            repository: 'acme/widgets',
+            permissions: { contents: p.purpose === 'push' ? 'write' : 'read' },
+          }),
+        );
+      }
+    };
+    const proc = new FakeProc();
+    const socketPath = join(tmp.dir, 'orch.sock');
+    const agent = new Agent({
+      serverUrl: 'http://127.0.0.1',
+      wsUrl: server.url,
+      credential: CREDENTIAL,
+      agentId: 'agt_test',
+      dataDir: join(tmp.dir, 'data'),
+      socketPath,
+      usageIntervalSec: 3600,
+      usageIntervalExplicit: true,
+      usageSource: {
+        estimateUsage: async () => {
+          throw new Error('unused');
+        },
+      },
+      logger: silentLogger,
+      backoff: { baseMs: 20, maxMs: 50 },
+      exec: {
+        config: {
+          workDir: join(tmp.dir, 'work'),
+          dataDir: join(tmp.dir, 'data'),
+          maxConcurrent: 1,
+          gitBaseUrl: 'https://github.com',
+          defaultImage: 'node:22-bookworm',
+          claudeBin: '/opt/orch/bin/claude',
+          uid: process.getuid?.() || 1000,
+          gid: process.getgid?.() || 1000,
+          identity: { name: 'orch', email: 'orch@example.com' },
+        },
+        deps: {
+          git: new FakeGit(),
+          docker: new FakeDocker(),
+          screen: new FakeScreen(),
+          proc,
+          fs: recordingFs(),
+          readClaudeToken: () => CLAUDE_TOKEN,
+        },
+      },
+    });
+    cleanups.push(() => agent.stop());
+    await agent.start();
+    await waitFor(() => agent.client.ready, { what: 'welcome' });
+    expect(server.ofType('hello')[0]!.payload).toMatchObject({
+      capabilities: ['auto', 'manual', 'devcontainer'],
+    });
+    const env = { ORCH_SOCKET_PATH: socketPath };
+
+    server.send(request('asg_1', 42));
+    server.send(request('asg_9', 43));
+    await waitFor(() => (agent.executor?.requestViews().length ?? 0) === 2, { what: 'requests' });
+    const r = io();
+    expect(await runCli(['requests'], r.io, env)).toBe(0);
+    expect(r.out.join('')).toContain('asg_1  acme/widgets#42  [S, sonnet]  Fix bug 42  (by bob)');
+
+    const rj = io();
+    expect(await runCli(['reject', '43'], rj.io, env)).toBe(0);
+    await waitFor(() => server.ofType('offer.reject').length === 1, { what: 'reject' });
+    expect(server.ofType('offer.reject')[0]?.payload).toEqual({
+      assignmentId: 'asg_9',
+      reason: 'user_declined',
+    });
+
+    const a = io();
+    expect(await runCli(['accept', 'asg_1'], a.io, env)).toBe(0);
+    expect(a.out.join('')).toContain('Accepted');
+    await waitFor(() => proc.runs.length === 1, { what: 'claude -p started' });
+
+    const s = io();
+    expect(await runCli(['status'], s.io, env)).toBe(0);
+    const text = s.out.join('');
+    expect(text).toContain('#42 Add a dark mode toggle!  [running] (auto)');
+    expect(text).toMatch(/elapsed: 0m0\ds \/ 30m00s timeout/);
+    expect(text).toContain('logs: orch logs 42');
+
+    const spawned: string[][] = [];
+    const l = io();
+    const spawnInteractive = async (argv: string[]) => (spawned.push(argv), 0);
+    expect(await runCli(['logs', '42', '--lines=5'], l.io, env, { spawnInteractive })).toBe(0);
+    expect(spawned[0]).toEqual([
+      'tail',
+      '-n',
+      '5',
+      '-F',
+      join(tmp.dir, 'data', 'logs', 'asg_1.log'),
+    ]);
+
+    proc.runs[0]!.stdout(resultLine());
+    proc.runs[0]!.finish(0);
+    await waitFor(() => server.ofType('task.finished').length === 1, { what: 'task.finished' });
+    expect(server.ofType('task.pushed')).toHaveLength(1);
+    expect(server.ofType('task.finished')[0]?.payload).toMatchObject({ outcome: 'succeeded' });
+    for (const f of server.frames) {
+      expect(f.raw).not.toContain(GH_TOKEN);
+      expect(f.raw).not.toContain(CLAUDE_TOKEN);
+    }
   });
 });

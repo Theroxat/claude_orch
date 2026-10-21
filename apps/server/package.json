@@ -9,21 +9,22 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@orch/shared": "workspace:*",
+    "@fastify/websocket": "^11.0.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@octokit/auth-app": "^7.1.3",
     "@octokit/rest": "^21.0.2",
+    "@orch/shared": "workspace:*",
     "@prisma/client": "^6.1.0",
     "fastify": "^5.2.0",
-    "zod": "^3.24.1",
-    "@fastify/websocket": "^11.0.2"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
     "prisma": "^6.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^3.0.0",
-    "ws": "^8.18.0",
-    "@types/ws": "^8.5.13"
+    "ws": "^8.18.0"
   }
 }

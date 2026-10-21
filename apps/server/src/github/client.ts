@@ -86,4 +86,20 @@ export interface GithubClient {
     fullName: string,
     input: CreatePullRequestInput,
   ): Promise<{ number: number; htmlUrl: string }>;
+  /** M5: head commit of a branch, or null when it does not exist. */
+  getBranchSha(installationId: number, fullName: string, branch: string): Promise<string | null>;
+  /** M5: creates a branch at a commit (no error when it already exists). */
+  createBranch(
+    installationId: number,
+    fullName: string,
+    branch: string,
+    sha: string,
+  ): Promise<void>;
+  /** M5: closes an issue (not planned) after adding labels. Compensation of a failed batch. */
+  closeIssue(
+    installationId: number,
+    fullName: string,
+    issueNumber: number,
+    addLabels: string[],
+  ): Promise<void>;
 }

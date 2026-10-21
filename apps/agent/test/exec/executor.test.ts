@@ -271,7 +271,7 @@ describe('ManualExecutor guards', () => {
     expect(t.of('task.claim')).toEqual([]);
   });
 
-  it('rejects CLAIM offers when paused or full, and auto offers always', async () => {
+  it('rejects CLAIM offers when paused or full, and auto offers when full', async () => {
     const t = setup({ max: 1 });
     t.state.paused = true;
     t.ex.handle(offerMsg());
@@ -290,7 +290,7 @@ describe('ManualExecutor guards', () => {
     t.ex.handle(offerMsg(offer({ assignmentId: 'asg_4', kind: 'AUTO_OFFER' })));
     expect(t.of('offer.reject')[2]?.payload).toMatchObject({
       assignmentId: 'asg_4',
-      reason: 'error',
+      reason: 'concurrency',
     });
     expect(t.of('offer.accept')).toHaveLength(1);
   });

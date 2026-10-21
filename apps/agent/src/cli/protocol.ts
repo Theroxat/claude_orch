@@ -9,9 +9,19 @@ export const ControlRequestSchema = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('resume') }),
   z.object({ cmd: z.literal('list'), project: z.string().optional() }),
   z.object({ cmd: z.literal('take'), issue: Issue, project: z.string().optional() }),
-  z.object({ cmd: z.literal('done'), issue: Issue }),
-  z.object({ cmd: z.literal('attach'), issue: Issue }),
-  z.object({ cmd: z.literal('shell'), issue: Issue }),
+  z.object({ cmd: z.literal('done'), issue: Issue, project: z.string().optional() }),
+  z.object({ cmd: z.literal('attach'), issue: Issue, project: z.string().optional() }),
+  z.object({ cmd: z.literal('shell'), issue: Issue, project: z.string().optional() }),
+  z.object({
+    cmd: z.literal('logs'),
+    issue: Issue,
+    project: z.string().optional(),
+    follow: z.boolean().optional(),
+    lines: z.number().int().positive().max(10_000).optional(),
+  }),
+  z.object({ cmd: z.literal('requests') }),
+  z.object({ cmd: z.literal('accept'), id: z.string().min(1).max(200) }),
+  z.object({ cmd: z.literal('reject'), id: z.string().min(1).max(200) }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
 export type ControlCommand = ControlRequest['cmd'];
@@ -40,6 +50,10 @@ export const TaskViewSchema = z.object({
   error: z.string().nullable(),
   warnings: z.array(z.string()),
   attach: z.string(),
+  mode: z.enum(['auto', 'manual']).optional(),
+  startedAt: z.string().nullable().optional(),
+  timeoutSec: z.number().nullable().optional(),
+  elapsedSec: z.number().nullable().optional(),
 });
 export type TaskViewInfo = z.infer<typeof TaskViewSchema>;
 
@@ -53,14 +67,30 @@ export const AvailableTaskSchema = z.object({
   createdBy: z.object({ login: z.string() }),
 });
 
+export const RequestViewSchema = z.object({
+  assignmentId: z.string(),
+  project: z.string(),
+  issueNumber: z.number().int(),
+  title: z.string(),
+  size: z.string(),
+  model: z.string(),
+  createdBy: z.string(),
+  expiresAt: z.string().nullable(),
+});
+export type RequestViewInfo = z.infer<typeof RequestViewSchema>;
+
 /** Successful answer: each command fills the fields it needs. */
 export const ControlResultSchema = z.object({
   status: StatusInfoSchema.optional(),
   tasks: z.array(TaskViewSchema).optional(),
   task: TaskViewSchema.optional(),
   available: z.array(AvailableTaskSchema).optional(),
-  /** Interactive command for the CLI to run (attach, shell). */
+  /** Interactive command for the CLI to run (attach, shell, logs). */
   exec: z.array(z.string()).optional(),
+  /** Pending approval requests (`orch requests`). */
+  requests: z.array(RequestViewSchema).optional(),
+  /** Human-readable outcome (accept, reject). */
+  message: z.string().optional(),
 });
 export type ControlResult = z.infer<typeof ControlResultSchema>;
 

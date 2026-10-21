@@ -13,6 +13,10 @@ describe('loadConfig', () => {
     expect(c.GITHUB_APP_ID).toBeUndefined();
   });
 
+  it('applies the budget safety reserve once: the agent already did (no extra server reserve)', () => {
+    expect(loadConfig({ DATABASE_URL: 'postgresql://x' }).BUDGET_SAFETY_RESERVE).toBe(0);
+  });
+
   it('fails fast without DATABASE_URL', () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
   });

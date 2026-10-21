@@ -58,10 +58,30 @@ export const networkName = (assignmentId: string) => `orch-net-${dockerSafe(assi
 export const imageTag = (assignmentId: string) => `orch-task-${dockerSafe(assignmentId)}:latest`;
 export const composeProject = (assignmentId: string) => `orch-task-${dockerSafe(assignmentId)}`;
 export const COMPOSE_PROJECT_PREFIX = 'orch-task-';
-export const screenName = (issueNumber: number) => `issue-${issueNumber}`;
+/**
+ * Screen session name: `issue-<n>` when no other session uses it, else `<repo>-issue-<n>` (the
+ * same issue number can exist in several projects), with a numeric suffix as a last resort.
+ */
+export function screenName(
+  issueNumber: number,
+  projectFullName = '',
+  taken: Iterable<string> = [],
+): string {
+  const used = new Set(taken);
+  const short = `issue-${issueNumber}`;
+  if (!used.has(short)) return short;
+  const repo = (projectFullName.split('/').pop() ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  const long = repo ? `${repo}-${short}` : short;
+  if (!used.has(long)) return long;
+  for (let i = 2; ; i++) if (!used.has(`${long}-${i}`)) return `${long}-${i}`;
+}
 
-export const attachCommand = (issueNumber: number) =>
-  `docker compose -f ~/orch/compose.yaml exec agent screen -r ${screenName(issueNumber)}`;
+export const attachCommand = (screen: string) =>
+  `docker compose -f ~/orch/compose.yaml exec agent screen -r ${screen}`;
 
 export const taskLabels = (assignmentId: string, issueNumber: number): Record<string, string> => ({
   [TASK_LABEL]: assignmentId,

@@ -39,6 +39,22 @@ describe('budget', () => {
     expect(m.globalMargin).toBe(80_000 - 30_000 - 12_000);
   });
 
+  it("with the default (no extra server reserve), B is percent x the agent's net capacity", () => {
+    // The agent reports capacityEstimate = limit x 0.8: 100k limit -> 80k.
+    const m = computeMargin({
+      usage: usage({ weighted: 0, byProject: {}, capacity: 80_000 }),
+      now,
+      projectId: 'p',
+      percent: 50,
+      reserve: 0,
+      orchUsedInWindow: 0,
+      reservedProject: 0,
+      reservedAll: 0,
+    })!;
+    expect(m.budget).toBe(40_000); // 50 % x 100k x 0.8: the 20 % counted once
+    expect(m.globalMargin).toBe(80_000);
+  });
+
   it('uses the server-side orch usage when the report lags behind', () => {
     const m = computeMargin({
       usage: usage({ byProject: { p: 1_000 } }),

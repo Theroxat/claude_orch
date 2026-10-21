@@ -51,12 +51,28 @@ export const TaskRecordSchema = z.object({
   error: z.string().nullable(),
   warnings: z.array(z.string()),
   cleanupRequested: z.boolean(),
+  /** M4: AUTO = headless `claude -p`, MANUAL = screen session. */
+  execMode: z.enum(['AUTO', 'MANUAL']).default('MANUAL'),
+  /** Id of our `offer.accept` while it waits for the server's ack (nothing runs before). */
+  pendingAcceptId: z.string().nullable().default(null),
+  workspaceFolder: z.string().default('/workspace'),
+  /** Hard limit of an auto run, in seconds. */
+  timeoutSec: z.number().int().positive().nullable().default(null),
+  /** When `claude -p` started (auto mode). */
+  runStartedAt: z.string().nullable().default(null),
+  /** Auto run log (`/data/logs/<assignmentId>.log`). */
+  logFile: z.string().nullable().default(null),
+  /** Starting prompt built from the offer (issue snapshot, not secret); cleared once used. */
+  prompt: z.string().nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type TaskRecord = z.infer<typeof TaskRecordSchema>;
 
-const FileSchema = z.object({ tasks: z.array(TaskRecordSchema) });
+// Cast: the new fields have defaults (older state files), so input and output types differ.
+const FileSchema = z.object({ tasks: z.array(TaskRecordSchema) }) as unknown as z.ZodType<{
+  tasks: TaskRecord[];
+}>;
 
 export class TaskStore {
   private tasks: TaskRecord[];
@@ -77,9 +93,13 @@ export class TaskStore {
     return this.tasks.filter((t) => ACTIVE_STATES.includes(t.state));
   }
 
-  /** Most recent record for an issue number, active ones first. */
-  byIssue(issueNumber: number): TaskRecord | undefined {
-    const matches = this.tasks.filter((t) => t.issueNumber === issueNumber);
+  /** Most recent record for an issue number (optionally of one project), active ones first. */
+  byIssue(issueNumber: number, project?: string): TaskRecord | undefined {
+    const p = project?.toLowerCase();
+    const matches = this.tasks.filter(
+      (t) =>
+        t.issueNumber === issueNumber && (p === undefined || t.projectFullName.toLowerCase() === p),
+    );
     return (
       matches.find((t) => ACTIVE_STATES.includes(t.state)) ??
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]

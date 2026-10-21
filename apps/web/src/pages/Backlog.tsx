@@ -9,6 +9,7 @@ import {
   importTasks,
 } from '../api/endpoints';
 import { NewTaskDialog, type BoardProject } from '../components/NewTaskDialog';
+import { POLL_MS } from '../time';
 import { TaskCard } from '../components/TaskCard';
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
@@ -19,8 +20,6 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: 'IN_REVIEW', label: 'In review' },
   { status: 'DONE', label: 'Done' },
 ];
-
-export const POLL_MS = 15_000;
 
 const canCreateIn = (a: ProjectTaskAccess | undefined) => !!a && (a.canSubmit || a.canPropose);
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, type Agent, type Assignment, type Project, type User } from '@prisma/client';
 import {
   TASK_STATUSES,
@@ -147,6 +148,63 @@ export interface CreateTaskInput {
   integrationBranch: string | null;
   /** M4: who the dispatcher may offer the task to. */
   dispatch?: { mode: 'pool' | 'members' | 'broadcast'; memberIds?: string[] };
+}
+
+export interface BatchItem {
+  ref: string;
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  size: 'S' | 'M' | 'L';
+  model: 'SONNET' | 'OPUS';
+  /** Refs of this batch, or issue numbers (number, "12" or "#12") of existing tasks. */
+  dependsOn: Array<string | number>;
+}
+
+export interface BatchInput {
+  items: BatchItem[];
+  integrationBranch: string | null;
+  dispatch?: CreateTaskInput['dispatch'];
+}
+
+export interface BatchResult {
+  batchId: string;
+  status: TaskStatus;
+  branchCreated: boolean;
+  /** In request order. */
+  tasks: Array<{ ref: string; row: TaskRow }>;
+}
+
+/**
+ * Kahn's algorithm over local refs. Returns an order where dependencies come first; 400
+ * `dependency_cycle` naming the refs left in a cycle.
+ */
+export function topoOrder(refs: string[], deps: Map<string, string[]>): string[] {
+  const indegree = new Map(refs.map((r) => [r, deps.get(r)?.length ?? 0]));
+  const dependents = new Map<string, string[]>();
+  for (const r of refs) {
+    for (const d of deps.get(r) ?? []) dependents.set(d, [...(dependents.get(d) ?? []), r]);
+  }
+  const queue = refs.filter((r) => indegree.get(r) === 0);
+  const out: string[] = [];
+  while (queue.length > 0) {
+    const r = queue.shift()!;
+    out.push(r);
+    for (const n of dependents.get(r) ?? []) {
+      const left = indegree.get(n)! - 1;
+      indegree.set(n, left);
+      if (left === 0) queue.push(n);
+    }
+  }
+  if (out.length !== refs.length) {
+    const stuck = refs.filter((r) => !out.includes(r));
+    throw new HttpError(
+      400,
+      'dependency_cycle',
+      `These subtasks depend on each other in a cycle: ${stuck.join(', ')}`,
+    );
+  }
+  return out;
 }
 
 /** Result of a claim: the ack for the agent and, on success, the offer to send after it. */
@@ -334,16 +392,7 @@ export class TaskService {
       throw new HttpError(403, 'forbidden', 'You may not create tasks in this project');
     }
     const status: TaskStatus = access.canSubmit ? 'TODO' : 'PROPOSED';
-    const pending = await this.prisma.task.count({
-      where: { createdById: user.id, status: { in: PENDING_STATUSES } },
-    });
-    if (pending >= user.maxPendingTasks) {
-      throw new HttpError(
-        409,
-        'pending_limit',
-        `You already have ${pending} pending tasks (limit ${user.maxPendingTasks})`,
-      );
-    }
+    await this.assertPendingRoom(user, 1);
     const dispatch = await this.checkDispatch(project, access, input.dispatch);
     // Validate the dependencies before touching GitHub.
     const depIds = await this.checkDependencies(this.prisma, project.id, null, input.dependsOn);
@@ -401,6 +450,265 @@ export class TaskService {
       },
     });
     return task;
+  }
+
+  /** 409 `pending_limit` when `adding` more pending tasks would exceed the creator's limit. */
+  private async assertPendingRoom(user: User, adding: number): Promise<void> {
+    const pending = await this.prisma.task.count({
+      where: { createdById: user.id, status: { in: PENDING_STATUSES } },
+    });
+    if (pending + adding > user.maxPendingTasks) {
+      throw new HttpError(
+        409,
+        'pending_limit',
+        adding === 1
+          ? `You already have ${pending} pending tasks (limit ${user.maxPendingTasks})`
+          : `You have ${pending} pending tasks: ${adding} more would exceed the limit of ${user.maxPendingTasks}`,
+      );
+    }
+  }
+
+  // ---------- M5: batch submission (MCP submit_task) ----------
+
+  /**
+   * Creates several tasks at once, with dependencies between them given by local refs.
+   * Everything is validated first (rights, pending limit, dispatch, refs, cycles with Kahn's
+   * algorithm). Then the integration branch is created if missing, the issues are created in
+   * dependency order, and the tasks and their dependencies are inserted in ONE transaction. If
+   * GitHub or the database fails midway, the issues already created are closed with the label
+   * `orch-aborted` (compensation) and nothing is stored.
+   */
+  async submitBatch(
+    project: ProjectWithInstallation,
+    user: User,
+    access: Access,
+    input: BatchInput,
+    ip?: string,
+  ): Promise<BatchResult> {
+    if (!access.canPropose) {
+      throw new HttpError(403, 'forbidden', 'You may not create tasks in this project');
+    }
+    const status: TaskStatus = access.canSubmit ? 'TODO' : 'PROPOSED';
+    await this.assertPendingRoom(user, input.items.length);
+    const dispatch = await this.checkDispatch(project, access, input.dispatch);
+
+    // ---- resolve dependencies ----
+    const refs = new Map<string, BatchItem>();
+    for (const it of input.items) {
+      if (refs.has(it.ref)) {
+        throw new HttpError(400, 'duplicate_ref', `The ref "${it.ref}" is used twice`);
+      }
+      refs.set(it.ref, it);
+    }
+    const localDeps = new Map<string, string[]>();
+    const existingDeps = new Map<string, number[]>();
+    const wanted = new Set<number>();
+    for (const it of input.items) {
+      const local: string[] = [];
+      const existing: number[] = [];
+      for (const d of it.dependsOn) {
+        if (typeof d === 'string' && refs.has(d)) {
+          if (d === it.ref) {
+            throw new HttpError(400, 'dependency_cycle', `"${it.ref}" depends on itself`);
+          }
+          local.push(d);
+          continue;
+        }
+        const n = typeof d === 'number' ? d : /^#?\d+$/.test(d) ? Number(d.replace('#', '')) : NaN;
+        if (!Number.isInteger(n) || n <= 0) {
+          throw new HttpError(
+            400,
+            'unknown_dependency',
+            `"${it.ref}" depends on "${d}", which is neither a ref of this request nor an issue number`,
+          );
+        }
+        existing.push(n);
+        wanted.add(n);
+      }
+      localDeps.set(it.ref, [...new Set(local)]);
+      existingDeps.set(it.ref, [...new Set(existing)]);
+    }
+    const found = wanted.size
+      ? await this.prisma.task.findMany({
+          where: { projectId: project.id, githubIssueNumber: { in: [...wanted] } },
+        })
+      : [];
+    const byNumber = new Map(found.map((t) => [t.githubIssueNumber, t]));
+    for (const n of wanted) {
+      const t = byNumber.get(n);
+      if (!t || t.status === 'CANCELLED') {
+        throw new HttpError(
+          400,
+          'invalid_dependency',
+          `Issue #${n} is not an open task of ${project.fullName}`,
+        );
+      }
+    }
+    const order = topoOrder(
+      input.items.map((i) => i.ref),
+      localDeps,
+    );
+
+    // ---- GitHub: integration branch, then issues in dependency order ----
+    const gh = this.github();
+    const installationId = Number(project.installation.githubInstallationId);
+    let branchCreated = false;
+    if (input.integrationBranch && input.integrationBranch !== project.defaultBranch) {
+      const exists = await gh.getBranchSha(
+        installationId,
+        project.fullName,
+        input.integrationBranch,
+      );
+      if (!exists) {
+        const base = await gh.getBranchSha(installationId, project.fullName, project.defaultBranch);
+        if (!base) {
+          throw new HttpError(
+            409,
+            'no_default_branch',
+            `Branch ${project.defaultBranch} not found`,
+          );
+        }
+        await gh.createBranch(installationId, project.fullName, input.integrationBranch, base);
+        branchCreated = true;
+      }
+    }
+    const integrationBranch = input.integrationBranch ?? null;
+    const batchId = randomUUID();
+    const issues = new Map<string, GithubIssue>();
+    const compensate = async () => {
+      for (const issue of issues.values()) {
+        try {
+          await gh.closeIssue(installationId, project.fullName, issue.number, ['orch-aborted']);
+        } catch {
+          // Best effort: the issue stays open without tasks; the audit records it.
+        }
+      }
+      await audit(this.prisma, {
+        actorUserId: user.id,
+        action: 'task.batch_aborted',
+        projectId: project.id,
+        ip,
+        data: { batchId, closedIssues: [...issues.values()].map((i) => i.number) },
+      });
+    };
+    const issueNumberOf = (ref: string) => issues.get(ref)!.number;
+    try {
+      for (const ref of order) {
+        const it = refs.get(ref)!;
+        const deps = [...localDeps.get(ref)!.map(issueNumberOf), ...existingDeps.get(ref)!];
+        const body = buildIssueBody(it.description, {
+          v: 1,
+          size: it.size,
+          model: it.model,
+          acceptanceCriteria: it.acceptanceCriteria,
+          dependsOn: deps,
+          integrationBranch,
+        });
+        issues.set(
+          ref,
+          await gh.createIssue(installationId, project.fullName, {
+            title: it.title,
+            body,
+            labels: [project.poolLabel],
+          }),
+        );
+      }
+    } catch {
+      await compensate();
+      throw new HttpError(
+        502,
+        'github_error',
+        `GitHub failed after ${issues.size} of ${order.length} issues: the batch was rolled back (created issues closed with label orch-aborted)`,
+      );
+    }
+
+    // ---- database: one transaction ----
+    let ids: Map<string, string>;
+    try {
+      ids = await this.prisma.$transaction(async (tx) => {
+        const out = new Map<string, string>();
+        for (const ref of order) {
+          const it = refs.get(ref)!;
+          const issue = issues.get(ref)!;
+          const snapshot = it.description.trim();
+          const row = await tx.task.create({
+            data: {
+              projectId: project.id,
+              githubIssueNumber: issue.number,
+              githubIssueNodeId: issue.nodeId,
+              title: it.title,
+              bodySnapshot: snapshot,
+              bodyHash: bodyHash(snapshot),
+              acceptanceCriteria: it.acceptanceCriteria,
+              size: it.size,
+              model: it.model,
+              baseBranch: project.defaultBranch,
+              integrationBranch,
+              branchName: branchNameFor(issue.number, it.title),
+              status,
+              origin: 'MCP',
+              createdById: user.id,
+              dispatchMode: dispatch.mode,
+              dependsOn: {
+                create: [
+                  ...localDeps.get(ref)!.map((r) => ({ dependsOnId: out.get(r)! })),
+                  ...existingDeps.get(ref)!.map((n) => ({ dependsOnId: byNumber.get(n)!.id })),
+                ],
+              },
+              targets: { create: dispatch.memberIds.map((userId) => ({ userId })) },
+            },
+          });
+          out.set(ref, row.id);
+        }
+        return out;
+      });
+    } catch (err) {
+      await compensate();
+      throw err;
+    }
+
+    for (const ref of order) {
+      const issue = issues.get(ref)!;
+      await audit(this.prisma, {
+        actorUserId: user.id,
+        action: status === 'PROPOSED' ? 'task.proposed' : 'task.created',
+        projectId: project.id,
+        taskId: ids.get(ref)!,
+        ip,
+        data: {
+          issueNumber: issue.number,
+          batchId,
+          ref,
+          via: 'mcp',
+          dispatch: dispatch.mode,
+          ...(dispatch.memberIds.length ? { memberIds: dispatch.memberIds } : {}),
+        },
+      });
+    }
+    await audit(this.prisma, {
+      actorUserId: user.id,
+      action: 'task.batch_submitted',
+      projectId: project.id,
+      ip,
+      data: {
+        batchId,
+        via: 'mcp',
+        status,
+        issueNumbers: order.map(issueNumberOf),
+        ...(integrationBranch ? { integrationBranch, branchCreated } : {}),
+      },
+    });
+    const rows = await this.prisma.task.findMany({
+      where: { id: { in: [...ids.values()] } },
+      include: taskInclude,
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return {
+      batchId,
+      status,
+      branchCreated,
+      tasks: input.items.map((it) => ({ ref: it.ref, row: byId.get(ids.get(it.ref)!)! })),
+    };
   }
 
   /** M4 targeting rules: broadcast is owner-only; members must participate in the project. */
@@ -702,6 +1010,8 @@ export class TaskService {
   async claim(
     agent: AgentWithUser,
     payload: { projectFullName: string; issueNumber: number },
+    /** `server`: the member took it outside the agent (MCP `take_task`). */
+    initiatedBy: 'agent' | 'server' = 'agent',
   ): Promise<ClaimResult> {
     const { prisma } = this;
     if (agent.paused || agent.user.paused) return { ack: refuse('paused', 'The agent is paused') };
@@ -797,12 +1107,14 @@ export class TaskService {
         assignmentId: assignment.id,
         issueNumber: task.githubIssueNumber,
         execMode: 'MANUAL',
+        ...(initiatedBy === 'server' ? { via: 'mcp' } : {}),
       },
     });
     const offer: TaskOfferPayload = {
       assignmentId: assignment.id,
       kind: 'CLAIM',
       expiresAt: null,
+      ...(initiatedBy === 'server' ? { initiatedBy, execMode: 'MANUAL', accepted: true } : {}),
       task: {
         taskId: task.id,
         project: {

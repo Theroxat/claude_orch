@@ -8,7 +8,10 @@ import {
   InstallUrlResponseSchema,
   TaskBoardSchema,
   TaskViewSchema,
+  OfferListResponseSchema,
+  OfferViewSchema,
   ParticipantItemSchema,
+  PoolResponseSchema,
   ParticipationViewSchema,
   ProjectViewSchema,
   type AddProjectRequest,
@@ -59,3 +62,13 @@ export const importTasks = (projectId: string) =>
   api('POST', `/projects/${projectId}/tasks/import`, { schema: ImportTasksResponseSchema });
 export const approveTask = (id: string) =>
   api('POST', `/tasks/${id}/approve`, { schema: TaskViewSchema });
+
+export const fetchPool = (projectId?: string) =>
+  api('GET', projectId ? `/pool?projectId=${encodeURIComponent(projectId)}` : '/pool', {
+    schema: PoolResponseSchema,
+  });
+export const fetchMyOffers = () => api('GET', '/offers/mine', { schema: OfferListResponseSchema });
+export const acceptOffer = (id: string) =>
+  api('POST', `/offers/${id}/accept`, { schema: OfferViewSchema });
+export const rejectOffer = (id: string) =>
+  api('POST', `/offers/${id}/reject`, { schema: OfferViewSchema });

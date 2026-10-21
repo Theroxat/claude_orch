@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertSafeId,
   attachCommand,
+  screenName,
   branchName,
   containerName,
   isValidBranch,
@@ -51,8 +52,15 @@ describe('branch naming and slugging', () => {
     expect(() => assertSafeId('../etc')).toThrow();
     expect(() => assertSafeId('a/b')).toThrow();
     expect(containerName(5, 'Asg_X1')).toBe('orch-task-5-asg-x1');
-    expect(attachCommand(5)).toBe(
+    expect(attachCommand('issue-5')).toBe(
       'docker compose -f ~/orch/compose.yaml exec agent screen -r issue-5',
     );
+  });
+
+  it('names screen sessions issue-<n>, or <repo>-issue-<n> when the short name is taken', () => {
+    expect(screenName(5, 'acme/widgets')).toBe('issue-5');
+    expect(screenName(5, 'acme/widgets', ['issue-4'])).toBe('issue-5');
+    expect(screenName(5, 'acme/Big.Gadgets', ['issue-5'])).toBe('big-gadgets-issue-5');
+    expect(screenName(5, 'acme/widgets', ['issue-5', 'widgets-issue-5'])).toBe('widgets-issue-5-2');
   });
 });

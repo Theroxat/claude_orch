@@ -12,6 +12,8 @@ import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
 import { registerTasks } from './tasks';
 import { registerWebhooks } from './webhooks';
+import { registerMcp } from './mcp';
+import { registerTokens } from './tokens';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -54,6 +56,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     registerTasks(app, m4);
     registerOffers(app, m4);
     registerWebhooks(app, m4);
+    registerTokens(app, deps);
+    registerMcp(app, m4);
     app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
     app.register(async (scope) => registerAgents(scope, m4, gateway));
   }

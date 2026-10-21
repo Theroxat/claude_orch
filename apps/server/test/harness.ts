@@ -76,6 +76,12 @@ export class FakeGithub implements GithubClient {
     fullName: string,
     input: CreateIssueInput,
   ): Promise<GithubIssue> {
+    if (
+      this.failCreateIssueAfter !== null &&
+      this.createdIssues.length >= this.failCreateIssueAfter
+    ) {
+      throw new Error('GitHub is down (fake)');
+    }
     const list = this.issues.get(fullName) ?? [];
     const number = Math.max(0, ...list.map((i) => i.number)) + 1;
     const issue = this.addIssue(fullName, {
@@ -109,6 +115,28 @@ export class FakeGithub implements GithubClient {
     const number = this.pullRequests.length + 100;
     this.pullRequests.push({ ...input, fullName, number });
     return { number, htmlUrl: `https://github.com/${fullName}/pull/${number}` };
+  }
+
+  // ---- M5: branches, issue close (batch compensation), failure injection ----
+  branches = new Map<string, Map<string, string>>(); // fullName -> branch -> sha
+  createdBranches: Array<{ fullName: string; branch: string; sha: string }> = [];
+  closedIssues: Array<{ fullName: string; number: number; labels: string[] }> = [];
+  /** createIssue throws once this many issues were created by it (null = never). */
+  failCreateIssueAfter: number | null = null;
+
+  async getBranchSha(_installationId: number, fullName: string, branch: string) {
+    const known = this.branches.get(fullName)?.get(branch);
+    if (known) return known;
+    return branch === 'main' ? `sha-main-${fullName}` : null;
+  }
+  async createBranch(_installationId: number, fullName: string, branch: string, sha: string) {
+    const m = this.branches.get(fullName) ?? new Map<string, string>();
+    m.set(branch, sha);
+    this.branches.set(fullName, m);
+    this.createdBranches.push({ fullName, branch, sha });
+  }
+  async closeIssue(_installationId: number, fullName: string, number: number, labels: string[]) {
+    this.closedIssues.push({ fullName, number, labels });
   }
 }
 

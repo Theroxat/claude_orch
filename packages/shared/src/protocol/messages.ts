@@ -204,6 +204,13 @@ export const TaskOfferPayloadSchema = z.object({
   accepted: z.boolean().optional(),
   /** M4: hard execution limit in seconds (size S/M/L = 30/90/180 min). */
   timeoutSec: z.number().int().positive().optional(),
+  /**
+   * M5: who started a CLAIM. `agent` = answer to the agent's own `task.claim` (has `replyTo`).
+   * `server` = the member took the task elsewhere (MCP `take_task`): the claim is already accepted
+   * on the server, no `replyTo`; the agent answers `offer.accept` MANUAL and prepares it like
+   * its own claim, or `offer.reject` if its local guard refuses.
+   */
+  initiatedBy: z.enum(['agent', 'server']).optional(),
   task: z.object({
     taskId: z.string(),
     project: z.object({ id: z.string(), fullName: z.string(), defaultBranch: z.string() }),

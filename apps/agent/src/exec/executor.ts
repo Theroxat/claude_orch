@@ -1,5 +1,5 @@
 /**
- * Manual-mode executor (PLAN 5.1-5.6, M3).
+ * Task executor (PLAN 5.1-5.6): manual mode (M3) and auto mode (M4).
  *
  * take:   guards (pause, maxConcurrent, Claude token) -> `task.claim` -> server `task.offer`
  *         (kind CLAIM) -> `offer.accept` MANUAL -> clone token -> mirror + isolated clone ->
@@ -7,14 +7,23 @@
  *         per-task network -> sandboxed container -> screen session running claude.
  * done:   commit leftovers -> push token -> push -> `task.pushed` + `task.finished` (the server
  *         opens the PR) -> remove containers, sidecars and network. The clone stays.
- * cleanup (server): delete the clone and the task image.
+ * auto:   `task.offer` AUTO_OFFER (or an accepted CONSENT_REQUEST) -> local consent guard (kind,
+ *         pause, concurrency, participation, model, Claude token) -> `offer.accept` AUTO -> wait
+ *         for the server's ack -> same clone / dev env / sandbox -> `claude -p` (stream-json, log
+ *         in /data/logs/<id>.log, hard timeout) -> commit, push, `task.pushed` (draft PR) and
+ *         `task.finished` -> remove containers. The clone stays.
+ * requests: `offer.request` / `offer.withdrawn` keep the list behind `orch requests`;
+ *         `orch accept|reject <id>` answer them.
+ * cleanup (server): delete the clone, the task image and the run log.
  *
  * All Docker, git, screen and filesystem access goes through injected interfaces.
  */
+import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   AckPayload,
   AgentMessage,
+  OfferRequestPayload,
   ParticipationConfigSchema,
   PayloadOf,
   ServerMessage,
@@ -24,6 +33,16 @@ import type { z } from 'zod';
 import { errorMessage, redact, type Logger } from '../log';
 import type { OutboxType } from '../outbox';
 import { modelFactor, parseLine, weigh } from '../usage';
+import {
+  DEFAULT_TIMEOUT_SEC,
+  buildAutoArgv,
+  isRateLimited,
+  parseResultEvent,
+  spawnProcessOps,
+  type ClaudeResult,
+  type ProcessOps,
+  type RunningProcess,
+} from './claude-run';
 import { findComposeFile, postCreateArgvs, selectDevEnv } from './devcontainer';
 import type { DockerOps } from './docker';
 import type { GitIdentity, GitOps } from './git';
@@ -41,7 +60,7 @@ import {
   screenName,
   taskLabels,
 } from './naming';
-import { buildManualPrompt } from './prompt';
+import { buildAutoPrompt, buildManualPrompt } from './prompt';
 import { CLAUDE_TOKEN_ENV, TASK_CLAUDE_CONFIG_DIR, buildCreateArgs } from './sandbox';
 import type { ScreenOps } from './screen';
 import { ACTIVE_STATES, TaskStore, type TaskRecord } from './state';
@@ -49,7 +68,9 @@ import type { TokenPurpose } from './tokens';
 import type { WorkspaceFs } from './workspace';
 
 type Participation = z.infer<typeof ParticipationConfigSchema>;
-type Task = TaskOfferPayload['task'];
+type RejectReason = PayloadOf<AgentMessage, 'offer.reject'>['reason'];
+type Usage = { weighted: number; input: number; output: number };
+const NO_USAGE: Usage = { weighted: 0, input: 0, output: 0 };
 
 export interface ExecutorConfig {
   /** Host path bind-mounted at the same path in the agent (PLAN 5.1). */
@@ -66,12 +87,19 @@ export interface ExecutorConfig {
   identity: GitIdentity;
   opusFactor?: number;
   claimTimeoutMs?: number;
+  /** How long `orch accept` waits for the server's ack. */
+  acceptTimeoutMs?: number;
+  /** Length of one `timeoutSec` unit in ms (1000; tests shrink it). */
+  timeoutUnitMs?: number;
+  now?: () => number;
 }
 
 export interface ExecutorDeps {
   git: GitOps;
   docker: DockerOps;
   screen: ScreenOps;
+  /** Runs `claude -p` (auto mode). Defaults to real child processes. */
+  proc?: ProcessOps;
   fs: WorkspaceFs;
   requestToken: (assignmentId: string, purpose: TokenPurpose) => Promise<string>;
   /** Persists and sends an acked message; returns its message id. */
@@ -94,6 +122,21 @@ export interface TaskView {
   error: string | null;
   warnings: string[];
   attach: string;
+  mode: 'auto' | 'manual';
+  startedAt: string | null;
+  timeoutSec: number | null;
+  elapsedSec: number | null;
+}
+
+export interface RequestView {
+  assignmentId: string;
+  project: string;
+  issueNumber: number;
+  title: string;
+  size: string;
+  model: string;
+  createdBy: string;
+  expiresAt: string | null;
 }
 
 export class ExecError extends Error {
@@ -116,6 +159,13 @@ interface ClaimWaiter {
 export class ManualExecutor {
   readonly store: TaskStore;
   private readonly claims = new Map<string, ClaimWaiter>();
+  /** Pending approval requests (`offer.request`), for `orch requests`. In memory only. */
+  private readonly requests = new Map<string, OfferRequestPayload>();
+  /** `orch accept` waiting for the ack of its `offer.accept` (message id -> resolver). */
+  private readonly userAccepts = new Map<string, (ack: AckPayload) => void>();
+  /** Live `claude -p` processes by assignment. */
+  private readonly runs = new Map<string, RunningProcess>();
+  private readonly proc: ProcessOps;
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly log: Logger;
 
@@ -125,11 +175,22 @@ export class ManualExecutor {
   ) {
     this.store = new TaskStore(join(cfg.dataDir, 'tasks.json'));
     this.log = deps.logger;
+    this.proc = deps.proc ?? spawnProcessOps;
+  }
+
+  private now(): number {
+    return this.cfg.now?.() ?? Date.now();
   }
 
   // ---------- queries ----------
 
   view(r: TaskRecord): TaskView {
+    const auto = r.execMode === 'AUTO';
+    const started = r.runStartedAt ? Date.parse(r.runStartedAt) : NaN;
+    const elapsed =
+      Number.isFinite(started) && ACTIVE_STATES.includes(r.state)
+        ? Math.max(0, Math.round((this.now() - started) / 1000))
+        : null;
     return {
       assignmentId: r.assignmentId,
       project: r.projectFullName,
@@ -140,7 +201,11 @@ export class ManualExecutor {
       prUrl: r.prUrl,
       error: r.error,
       warnings: r.warnings,
-      attach: attachCommand(r.issueNumber),
+      attach: auto ? `orch logs ${r.issueNumber}` : attachCommand(r.screen),
+      mode: auto ? 'auto' : 'manual',
+      startedAt: r.runStartedAt,
+      timeoutSec: auto ? (r.timeoutSec ?? DEFAULT_TIMEOUT_SEC[r.size]) : null,
+      elapsedSec: elapsed,
     };
   }
 
@@ -150,12 +215,15 @@ export class ManualExecutor {
 
   /** `hello.running` entries. */
   running(): { assignmentId: string; taskId: string; state: string; lastSeq: number }[] {
-    return this.store.active().map((r) => ({
-      assignmentId: r.assignmentId,
-      taskId: r.taskId,
-      state: r.state,
-      lastSeq: r.seq,
-    }));
+    return this.store
+      .active()
+      .filter((r) => r.pendingAcceptId === null)
+      .map((r) => ({
+        assignmentId: r.assignmentId,
+        taskId: r.taskId,
+        state: r.state,
+        lastSeq: r.seq,
+      }));
   }
 
   get maxConcurrent(): number {
@@ -206,7 +274,7 @@ export class ManualExecutor {
       throw new ExecError('no_claude_token', 'No Claude token. Run "orch login" first.');
     }
     const fullName = this.resolveProject(project);
-    const existing = this.store.byIssue(issueNumber);
+    const existing = this.store.byIssue(issueNumber, fullName);
     if (existing && ACTIVE_STATES.includes(existing.state)) {
       throw new ExecError('already_running', `Issue #${issueNumber} is already ${existing.state}.`);
     }
@@ -232,6 +300,27 @@ export class ManualExecutor {
 
   /** Called for every `ack` the agent receives. */
   onAck(replyTo: string, ack: AckPayload): void {
+    const okAck = ack.ok || ack.duplicate === true;
+    const waiting = this.store.all().find((r) => r.pendingAcceptId === replyTo);
+    if (waiting) {
+      const id = waiting.assignmentId;
+      if (okAck) {
+        this.store.update(id, { pendingAcceptId: null });
+        this.log.info('auto offer accepted', { issue: waiting.issueNumber, assignmentId: id });
+        this.track(this.prepare(id));
+      } else {
+        // Late or lost race (the server also sends task.cancel "taken"): nothing was started.
+        this.log.info('auto offer acceptance refused', { assignmentId: id, error: ack.error });
+        this.store.delete(id);
+      }
+      return;
+    }
+    const user = this.userAccepts.get(replyTo);
+    if (user) {
+      this.userAccepts.delete(replyTo);
+      user(ack);
+      return;
+    }
     for (const [key, w] of this.claims) {
       if (w.entryId !== replyTo) continue;
       if (!ack.ok && !ack.duplicate) {
@@ -263,12 +352,28 @@ export class ManualExecutor {
         assertSafeId(m.payload.assignmentId);
         this.track(this.cleanup(m.payload.assignmentId));
         return true;
+      case 'offer.request':
+        this.requests.set(m.payload.assignmentId, m.payload);
+        this.log.info('approval request received', {
+          project: m.payload.task.project.fullName,
+          issue: m.payload.task.issueNumber,
+          hint: `orch accept ${m.payload.assignmentId}`,
+        });
+        return true;
+      case 'offer.withdrawn':
+        this.requests.delete(m.payload.assignmentId);
+        return true;
       default:
         return false;
     }
   }
 
   private onOffer(p: TaskOfferPayload, replyTo?: string): void {
+    if (p.kind === 'CLAIM') this.onClaimOffer(p, replyTo);
+    else this.onAutoOffer(p);
+  }
+
+  private onClaimOffer(p: TaskOfferPayload, replyTo?: string): void {
     const { task } = p;
     let key = claimKey(task.project.fullName, task.issueNumber);
     for (const [k, w] of this.claims) if (replyTo !== undefined && w.entryId === replyTo) key = k;
@@ -279,14 +384,6 @@ export class ManualExecutor {
       this.claims.delete(key);
       fn(waiter);
     };
-    if (p.kind !== 'CLAIM') {
-      this.deps.enqueue('offer.reject', {
-        assignmentId: p.assignmentId,
-        reason: 'error',
-        detail: 'This agent runs manual mode only (auto mode comes in M4).',
-      });
-      return;
-    }
     if (this.store.get(p.assignmentId)) return; // duplicate offer
     let refusal: 'paused' | 'concurrency' | 'error' | null = null;
     let detail = '';
@@ -307,18 +404,219 @@ export class ManualExecutor {
       settle((w) => w.reject(new ExecError(refusal, detail)));
       return;
     }
-    const rec = this.newRecord(p);
+    const rec = this.newRecord(p, 'MANUAL');
     this.store.put(rec);
     this.deps.enqueue('offer.accept', { assignmentId: p.assignmentId, execMode: 'MANUAL' });
     settle((w) => w.resolve(this.view(rec)));
-    this.track(this.prepare(rec.assignmentId, task));
+    this.track(this.prepare(rec.assignmentId));
   }
 
-  private newRecord(p: TaskOfferPayload): TaskRecord {
+  // ---------- auto mode: consent guard ----------
+
+  /**
+   * The agent is the last line of defense (PLAN 6, consent invariants): nothing runs unless the
+   * offer is an AUTO_OFFER for a project this member runs in auto mode, or a CONSENT_REQUEST the
+   * member accepted, and the machine is not paused and has a free slot.
+   */
+  autoGuard(p: TaskOfferPayload): { reason: RejectReason; detail: string } | null {
+    if (p.kind !== 'AUTO_OFFER' && p.kind !== 'CONSENT_REQUEST') {
+      return { reason: 'error', detail: `Unknown offer kind ${String(p.kind)}` };
+    }
+    if (p.kind === 'CONSENT_REQUEST' && p.accepted !== true) {
+      return { reason: 'error', detail: 'The member has not accepted this request' };
+    }
+    if (p.execMode !== undefined && p.execMode !== 'AUTO') {
+      return { reason: 'error', detail: `${p.kind} must run in AUTO mode (got ${p.execMode})` };
+    }
+    if (this.deps.isPaused()) return { reason: 'paused', detail: 'This machine is paused' };
+    const used = this.store.active().length + this.claims.size;
+    if (used >= this.cfg.maxConcurrent) {
+      return {
+        reason: 'concurrency',
+        detail: `Already running ${used} task(s) (max ${this.cfg.maxConcurrent})`,
+      };
+    }
+    const { task } = p;
+    const part = this.deps
+      .participations()
+      .find(
+        (x) =>
+          x.projectId === task.project.id ||
+          x.fullName.toLowerCase() === task.project.fullName.toLowerCase(),
+      );
+    if (!part) {
+      return {
+        reason: 'not_participating',
+        detail: `No participation in ${task.project.fullName}`,
+      };
+    }
+    if (p.kind === 'AUTO_OFFER' && part.mode !== 'AUTO') {
+      return {
+        reason: 'not_participating',
+        detail: `Participation in ${task.project.fullName} is in ${part.mode} mode, not AUTO`,
+      };
+    }
+    if (!part.allowedModels.includes(task.model)) {
+      return { reason: 'model_not_allowed', detail: `Model ${task.model} is not allowed` };
+    }
+    if (!this.deps.readClaudeToken()) {
+      return { reason: 'error', detail: 'No Claude token on this machine (run "orch login")' };
+    }
+    return null;
+  }
+
+  private onAutoOffer(p: TaskOfferPayload): void {
+    const id = p.assignmentId;
+    try {
+      assertSafeId(id);
+    } catch (e) {
+      this.log.warn('ignoring an offer with an unsafe id', { error: errorMessage(e) });
+      return;
+    }
+    if (this.store.get(id)) return; // re-sent offer: already accepted (or waiting for the ack)
+    if (p.expiresAt !== null && Date.parse(p.expiresAt) <= this.now()) {
+      this.log.info('ignoring an expired offer', { assignmentId: id, expiresAt: p.expiresAt });
+      return;
+    }
+    if (p.kind === 'CONSENT_REQUEST' && p.accepted !== true) {
+      // Not consented yet: keep it as a request for "orch requests"; never run it.
+      this.requests.set(id, {
+        assignmentId: id,
+        expiresAt: p.expiresAt,
+        task: {
+          taskId: p.task.taskId,
+          project: { id: p.task.project.id, fullName: p.task.project.fullName },
+          issueNumber: p.task.issueNumber,
+          title: p.task.title,
+          size: p.task.size,
+          model: p.task.model,
+          createdBy: p.task.createdBy,
+        },
+      });
+      this.log.warn('consent request not accepted by the member: not running it', {
+        assignmentId: id,
+      });
+      return;
+    }
+    const refusal = this.autoGuard(p);
+    if (refusal) {
+      this.log.info('auto offer rejected by the local guard', { assignmentId: id, ...refusal });
+      this.deps.enqueue('offer.reject', { assignmentId: id, ...refusal });
+      return;
+    }
+    this.requests.delete(id);
+    const rec = this.newRecord(p, 'AUTO');
+    this.store.put(rec);
+    const msgId = this.deps.enqueue('offer.accept', { assignmentId: id, execMode: 'AUTO' });
+    this.store.update(id, { pendingAcceptId: msgId });
+    this.log.info('auto offer accepted locally, waiting for the server', {
+      project: p.task.project.fullName,
+      issue: p.task.issueNumber,
+    });
+  }
+
+  // ---------- approval requests (orch requests / accept / reject) ----------
+
+  requestViews(): RequestView[] {
+    const now = this.now();
+    for (const [id, r] of this.requests) {
+      if (r.expiresAt !== null && Date.parse(r.expiresAt) <= now) this.requests.delete(id);
+    }
+    return [...this.requests.values()].map((r) => ({
+      assignmentId: r.assignmentId,
+      project: r.task.project.fullName,
+      issueNumber: r.task.issueNumber,
+      title: r.task.title,
+      size: r.task.size,
+      model: r.task.model,
+      createdBy: r.task.createdBy.login,
+      expiresAt: r.expiresAt,
+    }));
+  }
+
+  /** `<assignmentId>`, `<n>` or `<owner/repo>#<n>` of a pending request. */
+  private resolveRequest(ref: string): string {
+    const list = this.requestViews();
+    const exact = list.find((r) => r.assignmentId === ref);
+    if (exact) return exact.assignmentId;
+    const m = /^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#)?(\d+)$/.exec(ref.trim());
+    if (m) {
+      const issue = Number(m[2]);
+      const proj = m[1]?.toLowerCase();
+      const hits = list.filter(
+        (r) => r.issueNumber === issue && (!proj || r.project.toLowerCase() === proj),
+      );
+      if (hits.length === 1 && hits[0]) return hits[0].assignmentId;
+      if (hits.length > 1) {
+        throw new ExecError('ambiguous', `Several requests for #${issue}. Use the request id.`);
+      }
+      throw new ExecError('not_found', `No pending request for ${ref}. See "orch requests".`);
+    }
+    // An id the agent has not seen (e.g. after a restart): the server checks it.
+    try {
+      return assertSafeId(ref);
+    } catch {
+      throw new ExecError('not_found', `No pending request ${JSON.stringify(ref)}.`);
+    }
+  }
+
+  /** `orch accept <id>`: the member consents; the server then sends the accepted task.offer. */
+  async acceptRequest(ref: string): Promise<{ assignmentId: string; message: string }> {
+    const id = this.resolveRequest(ref);
+    if (this.deps.isPaused()) {
+      throw new ExecError('paused', 'This machine is paused. Run "orch resume" first.');
+    }
+    const used = this.store.active().length + this.claims.size;
+    if (used >= this.cfg.maxConcurrent) {
+      throw new ExecError(
+        'concurrency',
+        `Already running ${used} task(s) (max ${this.cfg.maxConcurrent}).`,
+      );
+    }
+    if (!this.deps.readClaudeToken()) {
+      throw new ExecError('no_claude_token', 'No Claude token. Run "orch login" first.');
+    }
+    const msgId = this.deps.enqueue('offer.accept', { assignmentId: id, execMode: 'AUTO' });
+    const ack = await new Promise<AckPayload | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.userAccepts.delete(msgId);
+        resolve(null);
+      }, this.cfg.acceptTimeoutMs ?? 15_000);
+      this.userAccepts.set(msgId, (a) => {
+        clearTimeout(timer);
+        resolve(a);
+      });
+    });
+    if (ack && !ack.ok && !ack.duplicate) {
+      this.requests.delete(id);
+      throw new ExecError(
+        ack.error?.code ?? 'refused',
+        `The server refused: ${ack.error?.message ?? 'the request is no longer open'}`,
+      );
+    }
+    this.requests.delete(id);
+    return {
+      assignmentId: id,
+      message: ack
+        ? 'Accepted. The task starts on this machine in auto mode ("orch status").'
+        : 'Acceptance queued; it is sent when the agent is connected.',
+    };
+  }
+
+  /** `orch reject <id>`. */
+  rejectRequest(ref: string): { assignmentId: string; message: string } {
+    const id = this.resolveRequest(ref);
+    this.deps.enqueue('offer.reject', { assignmentId: id, reason: 'user_declined' });
+    this.requests.delete(id);
+    return { assignmentId: id, message: 'Rejected.' };
+  }
+
+  private newRecord(p: TaskOfferPayload, execMode: 'AUTO' | 'MANUAL'): TaskRecord {
     const { task } = p;
     const id = p.assignmentId;
     const taskDir = join(this.cfg.workDir, id);
     const now = new Date().toISOString();
+    const branch = pickBranch(task.branchName, task.issueNumber, task.title);
     return {
       assignmentId: id,
       taskId: task.taskId,
@@ -329,7 +627,7 @@ export class ManualExecutor {
       model: task.model,
       size: task.size,
       baseBranch: task.baseBranch || task.project.defaultBranch,
-      branch: pickBranch(task.branchName, task.issueNumber, task.title),
+      branch,
       state: 'preparing',
       seq: 0,
       taskDir,
@@ -339,11 +637,25 @@ export class ManualExecutor {
       image: null,
       builtImage: null,
       composeProject: null,
-      screen: screenName(task.issueNumber),
+      screen: screenName(
+        task.issueNumber,
+        task.project.fullName,
+        this.store
+          .active()
+          .filter((r) => r.execMode === 'MANUAL')
+          .map((r) => r.screen),
+      ),
       prUrl: null,
       error: null,
       warnings: [],
       cleanupRequested: false,
+      execMode,
+      pendingAcceptId: null,
+      workspaceFolder: '/workspace',
+      timeoutSec: execMode === 'AUTO' ? (p.timeoutSec ?? DEFAULT_TIMEOUT_SEC[task.size]) : null,
+      runStartedAt: null,
+      logFile: null,
+      prompt: execMode === 'AUTO' ? buildAutoPrompt(task, branch) : buildManualPrompt(task, branch),
       createdAt: now,
       updatedAt: now,
     };
@@ -374,7 +686,7 @@ export class ManualExecutor {
     return !r || r.state === 'cancelled' || r.cleanupRequested;
   }
 
-  private async prepare(id: string, task: Task): Promise<void> {
+  private async prepare(id: string): Promise<void> {
     const rec = () => this.store.get(id) as TaskRecord;
     try {
       const claudeToken = this.deps.readClaudeToken();
@@ -398,7 +710,7 @@ export class ManualExecutor {
       this.status(id, 'building');
       const env = selectDevEnv(r0.cloneDir, this.cfg.defaultImage);
       for (const w of env.warnings) this.log.warn(w, { issue: r0.issueNumber });
-      this.store.update(id, { warnings: env.warnings });
+      this.store.update(id, { warnings: env.warnings, workspaceFolder: env.workspaceFolder });
       const labels = taskLabels(id, r0.issueNumber);
       await this.deps.docker.createNetwork(r0.network, labels);
 
@@ -462,12 +774,15 @@ export class ManualExecutor {
       }
       if (this.cancelled(id)) return;
 
-      await this.deps.screen.start(
-        r0.screen,
-        this.claudeArgv(rec(), buildManualPrompt(task, r0.branch)),
-      );
-      this.status(id, 'running', `attach: ${attachCommand(r0.issueNumber)}`);
-      this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.issueNumber) });
+      const prompt = rec().prompt ?? '';
+      if (r0.execMode === 'AUTO') {
+        await this.runAuto(id, prompt);
+        return;
+      }
+      await this.deps.screen.start(r0.screen, this.claudeArgv(rec(), prompt));
+      this.store.update(id, { prompt: null });
+      this.status(id, 'running', `attach: ${attachCommand(r0.screen)}`);
+      this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.screen) });
     } catch (err) {
       if (this.cancelled(id)) return;
       await this.fail(id, err);
@@ -475,7 +790,7 @@ export class ManualExecutor {
   }
 
   private claudeArgv(r: TaskRecord, prompt: string | null): string[] {
-    const base = ['docker', 'exec', '-it', '-w', '/workspace', r.container];
+    const base = ['docker', 'exec', '-it', '-w', r.workspaceFolder, r.container];
     const model = claudeModel(r.model);
     if (prompt !== null) return [...base, this.cfg.claudeBin, '--model', model, prompt];
     // Session re-created after an agent restart: continue the last conversation if any.
@@ -488,79 +803,218 @@ export class ManualExecutor {
     ];
   }
 
-  private async fail(id: string, err: unknown): Promise<void> {
+  private async fail(id: string, err: unknown, usage: Usage = NO_USAGE): Promise<void> {
     const message = redact(errorMessage(err)).slice(0, 3000);
     this.log.error('task failed', { assignmentId: id, error: message });
-    const rec = this.store.update(id, { state: 'failed', error: message });
+    this.runs.get(id)?.kill();
+    const rec = this.store.update(id, { state: 'failed', error: message, prompt: null });
     await this.teardown(rec);
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'failed',
-      usage: { weighted: 0, input: 0, output: 0 },
+      usage,
       error: message,
+    });
+  }
+
+  // ---------- auto mode: headless run ----------
+
+  /**
+   * Runs `claude -p` in the task container, streams its output to the run log and enforces the
+   * hard timeout (the container is removed, which kills the run). Then pushes and reports.
+   */
+  private async runAuto(id: string, prompt: string): Promise<void> {
+    const r = this.store.get(id) as TaskRecord;
+    const logDir = join(this.cfg.dataDir, 'logs');
+    mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const logFile = join(logDir, `${id}.log`);
+    const out = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
+    out.on('error', (e) => this.log.warn('run log write failed', { error: e.message }));
+    const timeoutSec = r.timeoutSec ?? DEFAULT_TIMEOUT_SEC[r.size];
+    this.store.update(id, {
+      logFile,
+      timeoutSec,
+      prompt: null,
+      runStartedAt: new Date(this.now()).toISOString(),
+    });
+    this.status(id, 'running', `claude -p (auto mode, timeout ${Math.round(timeoutSec / 60)} min)`);
+    const argv = buildAutoArgv({
+      container: r.container,
+      workspaceFolder: r.workspaceFolder,
+      claudeBin: this.cfg.claudeBin,
+      model: claudeModel(r.model),
+      size: r.size,
+    });
+    this.log.info('auto run started', { issue: r.issueNumber, log: logFile });
+    let result: ClaudeResult | null = null;
+    let stderrTail = '';
+    const proc = this.proc.spawnLines(
+      argv,
+      prompt,
+      (line) => {
+        out.write(`${redact(line)}\n`);
+        const res = parseResultEvent(line);
+        if (res) result = res;
+      },
+      (line) => {
+        const clean = redact(line);
+        out.write(`[stderr] ${clean}\n`);
+        stderrTail = `${stderrTail}\n${clean}`.slice(-1500);
+      },
+    );
+    this.runs.set(id, proc);
+    let timedOut = false;
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        this.log.warn('auto run timed out, stopping it', { issue: r.issueNumber, timeoutSec });
+        proc.kill();
+        void this.deps.docker.remove(r.container).catch(() => undefined);
+      },
+      timeoutSec * (this.cfg.timeoutUnitMs ?? 1000),
+    );
+    let code: number;
+    try {
+      code = await proc.exit;
+    } finally {
+      clearTimeout(timer);
+      this.runs.delete(id);
+      await new Promise<void>((res) => out.end(() => res()));
+    }
+    if (this.cancelled(id)) return; // cancel() already stopped and reported it
+    const final = result as ClaudeResult | null;
+    const usage = final ? this.weighResult(final, r.model) : await this.collectUsage(r);
+    if (timedOut) {
+      await this.fail(
+        id,
+        new Error(`Timed out after ${Math.round(timeoutSec / 60)} min; the run was stopped.`),
+        usage,
+      );
+      return;
+    }
+    if (code !== 0 || !final || final.isError) {
+      const detail = final?.text || stderrTail.trim() || 'no result event';
+      const limited = isRateLimited(`${detail} ${stderrTail}`) ? 'rate limited: ' : '';
+      await this.fail(
+        id,
+        new Error(
+          `${limited}claude exited with code ${code}${final ? ` (${final.subtype})` : ''}: ${detail.slice(-1500)}`,
+        ),
+        usage,
+      );
+      return;
+    }
+    this.status(id, 'pushing');
+    try {
+      await this.pushAndReport(id, usage, final.text);
+    } catch (err) {
+      await this.fail(id, new Error(`Push failed: ${errorMessage(err)}`), usage);
+      return;
+    }
+    const after = this.store.update(id, { state: 'finished', error: null });
+    await this.teardown(after);
+    this.log.info('auto run finished', { issue: r.issueNumber });
+  }
+
+  private weighResult(res: ClaudeResult, model: string): Usage {
+    const factor = modelFactor(model, this.cfg.opusFactor ?? 5);
+    return {
+      weighted: Math.round(weigh(res.usage, factor)),
+      input: res.usage.input,
+      output: res.usage.output,
+    };
+  }
+
+  /** Commits leftovers, pushes with a scoped token and sends task.pushed + task.finished. */
+  private async pushAndReport(id: string, usage: Usage, claudeSummary = ''): Promise<void> {
+    const rec = this.store.get(id) as TaskRecord;
+    const git = this.deps.git;
+    await git.commitAll(
+      rec.cloneDir,
+      `orch: remaining changes for #${rec.issueNumber}`,
+      this.cfg.identity,
+    );
+    this.deps.fs.chownR(rec.cloneDir, this.cfg.uid, this.cfg.gid);
+    const ahead = await git.commitsAhead(rec.cloneDir, rec.baseBranch);
+    if (ahead === 0) {
+      this.deps.enqueue('task.finished', {
+        assignmentId: id,
+        seq: this.nextSeq(id),
+        outcome: 'no_changes',
+        usage,
+      });
+      return;
+    }
+    const token = await this.deps.requestToken(id, 'push');
+    await git.push(rec.cloneDir, rec.branch, token);
+    const [headSha, changedFiles, subjects] = await Promise.all([
+      git.headSha(rec.cloneDir),
+      git.changedFiles(rec.cloneDir, rec.baseBranch),
+      git.subjects(rec.cloneDir, rec.baseBranch),
+    ]);
+    let summary = subjects.map((s) => `- ${s}`).join('\n');
+    if (claudeSummary.trim()) summary += `\n\nClaude's summary:\n${redact(claudeSummary.trim())}`;
+    this.deps.enqueue('task.pushed', {
+      assignmentId: id,
+      seq: this.nextSeq(id),
+      branch: rec.branch,
+      headSha,
+      changedFiles,
+      summary: summary.slice(0, 10_000),
+    });
+    this.deps.enqueue('task.finished', {
+      assignmentId: id,
+      seq: this.nextSeq(id),
+      outcome: 'succeeded',
+      usage,
     });
   }
 
   // ---------- done ----------
 
-  private findRunning(issueNumber: number): TaskRecord {
-    const rec = this.store.byIssue(issueNumber);
+  private findTask(issueNumber: number, project?: string): TaskRecord {
+    if (!project) {
+      const active = this.store.active().filter((r) => r.issueNumber === issueNumber);
+      if (new Set(active.map((r) => r.projectFullName)).size > 1) {
+        throw new ExecError(
+          'ambiguous',
+          `Several projects have a task for #${issueNumber}. Use <owner/repo>#${issueNumber}.`,
+        );
+      }
+    }
+    const rec = this.store.byIssue(issueNumber, project);
     if (!rec)
       throw new ExecError('not_found', `No task for issue #${issueNumber} on this machine.`);
+    return rec;
+  }
+
+  private findRunning(issueNumber: number, project?: string): TaskRecord {
+    const rec = this.findTask(issueNumber, project);
     if (rec.state !== 'running') {
       throw new ExecError('bad_state', `Issue #${issueNumber} is ${rec.state}, not running.`);
     }
     return rec;
   }
 
-  async done(issueNumber: number): Promise<TaskView> {
-    const rec = this.findRunning(issueNumber);
+  private findManual(issueNumber: number, project?: string): TaskRecord {
+    const rec = this.findRunning(issueNumber, project);
+    if (rec.execMode === 'AUTO') {
+      throw new ExecError(
+        'auto_mode',
+        `Issue #${issueNumber} runs in auto mode: it pushes on its own. Follow it with "orch logs ${issueNumber}".`,
+      );
+    }
+    return rec;
+  }
+
+  async done(issueNumber: number, project?: string): Promise<TaskView> {
+    const rec = this.findManual(issueNumber, project);
     const id = rec.assignmentId;
     this.status(id, 'pushing');
     try {
       const usage = await this.collectUsage(rec);
-      const git = this.deps.git;
-      await git.commitAll(
-        rec.cloneDir,
-        `orch: remaining changes for #${rec.issueNumber}`,
-        this.cfg.identity,
-      );
-      this.deps.fs.chownR(rec.cloneDir, this.cfg.uid, this.cfg.gid);
-      const ahead = await git.commitsAhead(rec.cloneDir, rec.baseBranch);
-      if (ahead === 0) {
-        this.deps.enqueue('task.finished', {
-          assignmentId: id,
-          seq: this.nextSeq(id),
-          outcome: 'no_changes',
-          usage,
-        });
-      } else {
-        const token = await this.deps.requestToken(id, 'push');
-        await git.push(rec.cloneDir, rec.branch, token);
-        const [headSha, changedFiles, subjects] = await Promise.all([
-          git.headSha(rec.cloneDir),
-          git.changedFiles(rec.cloneDir, rec.baseBranch),
-          git.subjects(rec.cloneDir, rec.baseBranch),
-        ]);
-        this.deps.enqueue('task.pushed', {
-          assignmentId: id,
-          seq: this.nextSeq(id),
-          branch: rec.branch,
-          headSha,
-          changedFiles,
-          summary: subjects
-            .map((s) => `- ${s}`)
-            .join('\n')
-            .slice(0, 10_000),
-        });
-        this.deps.enqueue('task.finished', {
-          assignmentId: id,
-          seq: this.nextSeq(id),
-          outcome: 'succeeded',
-          usage,
-        });
-      }
+      await this.pushAndReport(id, usage);
     } catch (err) {
       const message = redact(errorMessage(err));
       this.status(id, 'running', `done failed: ${message}`);
@@ -610,22 +1064,22 @@ export class ManualExecutor {
 
   // ---------- attach / shell ----------
 
-  async attach(issueNumber: number): Promise<string[]> {
-    const rec = this.findRunning(issueNumber);
+  async attach(issueNumber: number, project?: string): Promise<string[]> {
+    const rec = this.findManual(issueNumber, project);
     if (!(await this.deps.screen.exists(rec.screen))) {
       await this.deps.screen.start(rec.screen, this.claudeArgv(rec, null));
     }
     return ['screen', '-r', rec.screen];
   }
 
-  shell(issueNumber: number): string[] {
-    const rec = this.findRunning(issueNumber);
+  shell(issueNumber: number, project?: string): string[] {
+    const rec = this.findRunning(issueNumber, project);
     return [
       'docker',
       'exec',
       '-it',
       '-w',
-      '/workspace',
+      rec.workspaceFolder,
       rec.container,
       'sh',
       '-c',
@@ -633,13 +1087,41 @@ export class ManualExecutor {
     ];
   }
 
+  /** `orch logs <n>`: a `tail` of the auto run log. */
+  logs(issueNumber: number, project?: string, follow = true, lines = 100): string[] {
+    const rec = this.findTask(issueNumber, project);
+    if (!rec.logFile) {
+      throw new ExecError(
+        'no_log',
+        rec.execMode === 'AUTO'
+          ? `Issue #${issueNumber} has not started running yet ("orch status").`
+          : `Issue #${issueNumber} runs in manual mode: use "orch attach ${issueNumber}".`,
+      );
+    }
+    const n = String(Math.max(1, Math.min(10_000, Math.floor(lines))));
+    const live = follow && ACTIVE_STATES.includes(rec.state);
+    return ['tail', '-n', n, ...(live ? ['-F'] : []), rec.logFile];
+  }
+
   // ---------- cancel / cleanup / teardown ----------
 
   private async cancel(id: string, reason: string): Promise<void> {
+    this.requests.delete(id);
     const rec = this.store.get(id);
     if (!rec || !ACTIVE_STATES.includes(rec.state)) return;
+    if (rec.pendingAcceptId !== null) {
+      // Expired, withdrawn or taken before the server confirmed our accept: nothing started.
+      this.log.info('offer withdrawn before it started', { issue: rec.issueNumber, reason });
+      this.store.delete(id);
+      return;
+    }
     this.log.info('task cancelled by the server', { issue: rec.issueNumber, reason });
-    const after = this.store.update(id, { state: 'cancelled', error: `cancelled: ${reason}` });
+    const after = this.store.update(id, {
+      state: 'cancelled',
+      error: `cancelled: ${reason}`,
+      prompt: null,
+    });
+    this.runs.get(id)?.kill();
     await this.teardown(after);
     this.deps.enqueue('task.finished', {
       assignmentId: id,
@@ -658,7 +1140,7 @@ export class ManualExecutor {
         this.log.warn(`teardown: ${what} failed`, { error: errorMessage(err) });
       }
     };
-    await step('screen', () => this.deps.screen.kill(rec.screen));
+    if (rec.execMode === 'MANUAL') await step('screen', () => this.deps.screen.kill(rec.screen));
     await step('container', () => this.deps.docker.remove(rec.container));
     if (rec.composeProject) {
       const project = rec.composeProject;
@@ -674,14 +1156,17 @@ export class ManualExecutor {
     if (rec) {
       this.store.update(id, { cleanupRequested: true });
       await this.teardown(rec);
+      this.runs.get(id)?.kill();
       if (rec.builtImage) await this.deps.docker.removeImage(rec.builtImage).catch(() => undefined);
       await this.deps.fs.remove(rec.taskDir);
+      if (rec.logFile) rmSync(rec.logFile, { force: true });
       this.store.delete(id);
     } else {
       for (const c of await this.labeled('container')) {
         if (c.value === id) await this.deps.docker.remove(c.name).catch(() => undefined);
       }
       await this.deps.fs.remove(join(this.cfg.workDir, id));
+      rmSync(join(this.cfg.dataDir, 'logs', `${id}.log`), { force: true });
     }
     this.log.info('task cleaned up', { assignmentId: id });
   }
@@ -703,8 +1188,20 @@ export class ManualExecutor {
     for (const rec of [...this.store.all()]) {
       try {
         if (rec.cleanupRequested) await this.cleanup(rec.assignmentId);
-        else if (rec.state === 'preparing' || rec.state === 'building') {
+        else if (rec.pendingAcceptId !== null) {
+          // Accept still waiting for the server's ack (it stays in the outbox): keep waiting.
+          continue;
+        } else if (rec.state === 'preparing' || rec.state === 'building') {
           await this.fail(rec.assignmentId, new Error('The agent restarted during preparation.'));
+        } else if (
+          rec.execMode === 'AUTO' &&
+          (rec.state === 'running' || rec.state === 'pushing')
+        ) {
+          // The headless run died with the agent and cannot be re-attached: report a failure.
+          await this.fail(
+            rec.assignmentId,
+            new Error('The agent restarted during the auto run; the run was lost.'),
+          );
         } else if (rec.state === 'running' || rec.state === 'pushing') {
           if (await this.deps.docker.exists(rec.container)) {
             if (rec.state === 'pushing')
@@ -744,6 +1241,11 @@ export class ManualExecutor {
   }
 
   close(): void {
+    for (const p of this.runs.values()) p.kill();
+    for (const resolve of this.userAccepts.values()) {
+      resolve({ ok: false, error: { code: 'stopping', message: 'Agent stopping' } });
+    }
+    this.userAccepts.clear();
     for (const w of this.claims.values()) {
       clearTimeout(w.timer);
       w.reject(new ExecError('stopping', 'Agent stopping'));

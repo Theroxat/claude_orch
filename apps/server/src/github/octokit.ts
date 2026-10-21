@@ -215,6 +215,71 @@ export class OctokitGithubClient implements GithubClient {
     return { number: data.number, htmlUrl: data.html_url };
   }
 
+  async getBranchSha(
+    installationId: number,
+    fullName: string,
+    branch: string,
+  ): Promise<string | null> {
+    const { owner, repo } = splitFullName(fullName);
+    try {
+      const { data } = await this.forInstallation(installationId).rest.git.getRef({
+        owner,
+        repo,
+        ref: `heads/${branch}`,
+      });
+      return data.object.sha;
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw err;
+    }
+  }
+
+  async createBranch(
+    installationId: number,
+    fullName: string,
+    branch: string,
+    sha: string,
+  ): Promise<void> {
+    const { owner, repo } = splitFullName(fullName);
+    try {
+      await this.forInstallation(installationId).rest.git.createRef({
+        owner,
+        repo,
+        ref: `refs/heads/${branch}`,
+        sha,
+      });
+    } catch (err) {
+      // 422 "Reference already exists": someone created it meanwhile.
+      if ((err as { status?: number }).status === 422) return;
+      throw err;
+    }
+  }
+
+  async closeIssue(
+    installationId: number,
+    fullName: string,
+    issueNumber: number,
+    addLabels: string[],
+  ): Promise<void> {
+    const { owner, repo } = splitFullName(fullName);
+    const octokit = this.forInstallation(installationId);
+    if (addLabels.length > 0) {
+      await octokit.rest.issues.addLabels({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        labels: addLabels,
+      });
+    }
+    await octokit.rest.issues.update({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      state: 'closed',
+      state_reason: 'not_planned',
+    });
+  }
+
   private forInstallation(installationId: number): Octokit {
     let client = this.installationClients.get(installationId);
     if (!client) {

@@ -6,7 +6,9 @@
  *   global      = C_u x (1 - s) - totalUsed(u) - reservedAll(u)
  *   E(task)     = sizeBudget[size] x modelFactor
  *
- * C_u is the agent's `capacityEstimate`, s the server safety reserve.
+ * C_u is the agent's `capacityEstimate`, which ALREADY excludes the agent's safety reserve (20 % by
+ * default: capacityEstimate = limit x (1 - 0.2)). `reserve` here is only the optional extra server
+ * reserve (config BUDGET_SAFETY_RESERVE, default 0), so the 20 % is applied once.
  */
 import type { Model, TaskSize } from '@prisma/client';
 

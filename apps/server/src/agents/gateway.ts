@@ -240,6 +240,93 @@ export class AgentGateway {
     if (!this.send(c, serverMessage('task.offer', payload))) throw new OfferRefusedError('offline');
   }
 
+  /**
+   * M5 `take_task`: the member claims a task for one of their online, unpaused machines through
+   * the same claim path as `orch take` (manual mode), then the server tells that agent to start
+   * it with `task.offer` kind CLAIM, `initiatedBy: "server"`. If the offer cannot be delivered the
+   * claim is undone (task back to TODO).
+   */
+  async claimForUser(
+    userId: string,
+    payload: { projectFullName: string; issueNumber: number },
+  ): Promise<
+    | { ok: true; assignmentId: string; agentId: string; machineName: string }
+    | { ok: false; code: string; message: string }
+  > {
+    const { prisma } = this.deps;
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { agents: true },
+    });
+    const online = user.agents.filter((a) => !a.revokedAt && this.isConnected(a.id));
+    if (online.length === 0) {
+      return {
+        ok: false,
+        code: 'no_agent_online',
+        message: 'None of your machines is online. Start the orch agent, then try again.',
+      };
+    }
+    const ready = user.paused ? [] : online.filter((a) => !a.paused);
+    if (ready.length === 0) {
+      return {
+        ok: false,
+        code: 'paused',
+        message: 'Your machines are paused. Resume one (orch resume, or the web) first.',
+      };
+    }
+    let best = ready[0]!;
+    let bestLoad = Number.POSITIVE_INFINITY;
+    for (const a of ready) {
+      const load = await prisma.assignment.count({
+        where: { agentId: a.id, status: { in: ['ACCEPTED', 'RUNNING'] } },
+      });
+      if (load < bestLoad) {
+        best = a;
+        bestLoad = load;
+      }
+    }
+    const agent = { ...best, user };
+    const r = await this.tasks.claim(agent, payload, 'server');
+    if (!r.ack.ok || !r.offer) {
+      const e = r.ack.ok ? { code: 'claim_failed', message: 'The claim failed' } : r.ack.error;
+      return { ok: false, code: e?.code ?? 'claim_failed', message: e?.message ?? 'Claim failed' };
+    }
+    if (r.withdrawn?.length && this.dispatcher) {
+      this.dispatcher.notifyWithdrawn(r.withdrawn, 'taken');
+    }
+    const offer = r.offer;
+    try {
+      await this.sendOffer(best.id, offer);
+    } catch (err) {
+      if (!(err instanceof OfferRefusedError)) throw err;
+      await prisma.$transaction([
+        prisma.assignment.updateMany({
+          where: { id: offer.assignmentId, status: 'ACCEPTED' },
+          data: { status: 'CANCELLED', reason: `undeliverable:${err.reason}` },
+        }),
+        prisma.task.updateMany({
+          where: { id: offer.task.taskId, status: 'IN_PROGRESS', assigneeAgentId: best.id },
+          data: { status: 'TODO', assigneeId: null, assigneeAgentId: null },
+        }),
+      ]);
+      await audit(prisma, {
+        actorUserId: userId,
+        agentId: best.id,
+        action: 'task.claim_undone',
+        projectId: offer.task.project.id,
+        taskId: offer.task.taskId,
+        data: { assignmentId: offer.assignmentId, reason: err.reason, via: 'mcp' },
+      });
+      this.dispatcher?.kick();
+      return {
+        ok: false,
+        code: err.reason === 'paused' ? 'paused' : 'no_agent_online',
+        message: `Your machine could not be reached (${err.reason}); the task is open again.`,
+      };
+    }
+    return { ok: true, assignmentId: offer.assignmentId, agentId: best.id, machineName: best.name };
+  }
+
   /** Closes sockets whose last hello/heartbeat is older than the timeout. */
   sweep(now: number = Date.now()): void {
     const timeout = this.deps.config.AGENT_HEARTBEAT_TIMEOUT_MS;

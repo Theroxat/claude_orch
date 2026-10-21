@@ -5,7 +5,13 @@ import { parseIssueRef } from '../exec/naming';
 import { errorMessage } from '../log';
 import { sendControl } from './client';
 import { login, type LoginIo } from './login';
-import type { ControlRequest, ControlResult, StatusInfo, TaskViewInfo } from './protocol';
+import type {
+  ControlRequest,
+  ControlResult,
+  RequestViewInfo,
+  StatusInfo,
+  TaskViewInfo,
+} from './protocol';
 
 const HELP = `Usage: orch <command>
 
@@ -17,6 +23,12 @@ Commands:
   attach <n>        Attach to the Claude session of issue <n> (Ctrl-a d to detach)
   shell <n>         Open a shell in the task container of issue <n>
   done <n>          Commit, push the branch (the server opens the PR), stop the sandbox
+  logs <n>          Follow the log of an auto-mode run of issue <n>
+                      --no-follow  print the last lines and exit
+                      --lines=<k>  number of lines (default 100)
+  requests          List the approval requests waiting for your answer
+  accept <id>       Accept an approval request (id, <n> or <owner/repo>#<n>): it runs here
+  reject <id>       Decline an approval request
   pause             Pause this machine (applied locally first, works offline)
   resume            Resume this machine
   login             Store your Claude token (wraps \`claude setup-token\`)
@@ -56,12 +68,33 @@ export function formatStatus(s: StatusInfo): string {
   ].join('\n');
 }
 
+const minutes = (sec: number) => {
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}m${String(s).padStart(2, '0')}s`;
+};
+
 export function formatTask(t: TaskViewInfo): string {
-  const lines = [`#${t.issueNumber} ${t.title}  [${t.state}]`, `  ${t.project}  ${t.branch}`];
-  if (t.state === 'running') lines.push(`  attach: ${t.attach}`);
+  const mode = t.mode ? ` (${t.mode})` : '';
+  const lines = [
+    `#${t.issueNumber} ${t.title}  [${t.state}]${mode}`,
+    `  ${t.project}  ${t.branch}`,
+  ];
+  if (t.mode === 'auto') {
+    if (t.elapsedSec != null) {
+      const limit = t.timeoutSec ? ` / ${minutes(t.timeoutSec)} timeout` : '';
+      lines.push(`  elapsed: ${minutes(t.elapsedSec)}${limit}`);
+    }
+    if (t.state === 'running') lines.push(`  logs: ${t.attach}`);
+  } else if (t.state === 'running') lines.push(`  attach: ${t.attach}`);
   if (t.prUrl) lines.push(`  PR: ${t.prUrl}`);
   if (t.error) lines.push(`  error: ${t.error}`);
   return lines.join('\n');
+}
+
+export function formatRequest(r: RequestViewInfo): string {
+  const exp = r.expiresAt ? `  expires ${r.expiresAt}` : '';
+  return `${r.assignmentId}  ${r.project}#${r.issueNumber}  [${r.size}, ${r.model.toLowerCase()}]  ${r.title}  (by ${r.createdBy})${exp}`;
 }
 
 function issueArg(args: string[]): { issue: number; project?: string } | null {
@@ -149,7 +182,7 @@ export async function runCli(
           err('usage: orch done <n>');
           return 2;
         }
-        const res = await call({ cmd, issue: ref.issue }, 15 * 60_000);
+        const res = await call({ cmd, ...ref }, 15 * 60_000);
         if (!res?.task) return 1;
         out(
           `Issue #${res.task.issueNumber}: pushed ${res.task.branch}. The server opens the pull request.`,
@@ -164,9 +197,51 @@ export async function runCli(
           err(`usage: orch ${cmd} <n>`);
           return 2;
         }
-        const res = await call({ cmd, issue: ref.issue }, 30_000);
+        const res = await call({ cmd, ...ref }, 30_000);
         if (!res?.exec) return 1;
         return await d.spawnInteractive(res.exec);
+      }
+      case 'logs': {
+        const ref = issueArg(args);
+        if (!ref) {
+          err('usage: orch logs <n> [--no-follow] [--lines=<k>]');
+          return 2;
+        }
+        const linesArg = args.find((a) => a.startsWith('--lines='));
+        const lines = linesArg ? Number(linesArg.slice('--lines='.length)) : undefined;
+        if (lines !== undefined && (!Number.isInteger(lines) || lines <= 0 || lines > 10_000)) {
+          err('--lines must be an integer between 1 and 10000');
+          return 2;
+        }
+        const res = await call({
+          cmd,
+          ...ref,
+          follow: !args.includes('--no-follow'),
+          ...(lines !== undefined ? { lines } : {}),
+        });
+        if (!res?.exec) return 1;
+        return await d.spawnInteractive(res.exec);
+      }
+      case 'requests': {
+        const res = await call({ cmd });
+        if (!res) return 1;
+        const list = res.requests ?? [];
+        if (list.length === 0) out('No approval request waiting.');
+        for (const r of list) out(formatRequest(r));
+        if (list.length > 0) out('\nAnswer with "orch accept <id>" or "orch reject <id>".');
+        return 0;
+      }
+      case 'accept':
+      case 'reject': {
+        const id = args.find((a) => !a.startsWith('--'));
+        if (!id) {
+          err(`usage: orch ${cmd} <id>`);
+          return 2;
+        }
+        const res = await call({ cmd, id }, 30_000);
+        if (!res) return 1;
+        out(res.message ?? (cmd === 'accept' ? 'Accepted.' : 'Rejected.'));
+        return 0;
       }
       case 'login': {
         const unknown = args.filter((a) => a !== '--token-stdin' && a !== '--no-setup');

@@ -264,7 +264,8 @@ async function hook(
 describe('dispatcher: eligibility and ranking', () => {
   it('offers AUTO to the member with the highest margin fraction, with everything claude -p needs', async () => {
     const { owner, project: p } = await project();
-    const tight = await member(p.id, { used: 300_000 }); // 50% of 0.8M = 400k budget, 100k left
+    // capacityEstimate is already net of the agent's 20 % reserve: B = 50% of 1M = 500k, 100k left
+    const tight = await member(p.id, { used: 400_000 });
     const roomy = await member(p.id, { used: 0 });
     const t = await createTask(owner, p.id, {
       acceptanceCriteria: ['works'],
@@ -316,7 +317,7 @@ describe('dispatcher: eligibility and ranking', () => {
 
   it('excludes members whose project budget is exhausted, and rate-limited members', async () => {
     const { owner, project: p } = await project();
-    const spent = await member(p.id, { used: 399_000 }); // budget 400k, an S task needs 4.4k
+    const spent = await member(p.id, { used: 499_000 }); // budget 500k, an S task needs 4.4k
     const limited = await member(p.id);
     await prisma.usageReport.updateMany({
       where: { userId: limited.user.userId },
@@ -1071,10 +1072,16 @@ describe('pool endpoint', () => {
       projectId: p.id,
       mode: 'AUTO',
       budgetPercent: 50,
-      estimatedBudget: 400_000,
+      estimatedBudget: 500_000, // reserve applied once (by the agent), not again here
     });
-    // 400k budget - 100k used - 0 reserved for other tasks (the running task is reserved)
-    expect(row.projects[0]!.estimatedMargin).toBeLessThan(300_000);
+    // 500k budget - 100k used - the running task's estimate
+    expect(row.projects[0]!.estimatedMargin).toBeLessThan(400_000);
+    expect(row.projects[0]!.isOwner).toBe(true); // the caller (owner) owns it
+    expect(row.runningTasks[0]).toMatchObject({
+      projectFullName: p.fullName,
+      issueUrl: `https://github.com/${p.fullName}/issues/${t.issueNumber}`,
+    });
+    expect(pool.projects).toEqual([{ projectId: p.id, fullName: p.fullName, isOwner: true }]);
     expect(row.runningTasks.map((r) => r.taskId)).toEqual([t.id]);
     const a = pool.members.find((x) => x.userId === appr.user.userId)!;
     expect(a.projects[0]!.mode).toBe('APPROVAL');

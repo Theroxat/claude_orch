@@ -9,3 +9,4 @@ export * from './api/m3';
 export * from './api/dispatch';
 export * from './api/m4';
 export * from './protocol';
+export * from './api/m5';

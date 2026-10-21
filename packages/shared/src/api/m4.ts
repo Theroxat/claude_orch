@@ -5,7 +5,8 @@
  *   POST   /api/projects/:id/tasks   (m3) accepts `dispatch` (see ./dispatch). 403 `forbidden`
  *          when a non-owner asks for `broadcast`; 400 `invalid_member` when a memberId does not
  *          participate in the project.
- *   GET    /api/offers/mine          -> OfferView[]   pending requests for the caller (approval mode)
+ *   GET    /api/offers/mine          -> OfferView[]   pending CONSENT_REQUESTs for the caller (approval
+ *          mode) only: never auto offers.
  *   POST   /api/offers/:id/accept    -> OfferView     the caller consents; the task starts on one of
  *          their online, unpaused agents. 409 `offer_closed` (taken, expired, withdrawn),
  *          409 `paused`, 409 `no_agent_online`, 409 `not_participating`, 404 for other users' offers.
@@ -39,6 +40,7 @@ export type OfferStatus = z.infer<typeof OfferStatus>;
 
 export const OfferViewSchema = z.object({
   id: z.string(),
+  /** Always `CONSENT_REQUEST` on `/api/offers/*`: auto offers are never listed or answered there. */
   kind: AssignmentKind,
   status: OfferStatus,
   offeredAt: z.string(),
@@ -58,6 +60,8 @@ export const OfferViewSchema = z.object({
   }),
   /** The CLI equivalent of the Accept button. */
   acceptCommand: z.string(),
+  /** M5 (additive): who asked for it (the task creator; for a broadcast, its submitter). */
+  requestedBy: z.object({ githubLogin: z.string(), avatarUrl: z.string().nullable() }).optional(),
 });
 export type OfferView = z.infer<typeof OfferViewSchema>;
 export const OfferListResponseSchema = z.array(OfferViewSchema);
@@ -73,6 +77,8 @@ export const PoolMemberProjectSchema = z.object({
   estimatedMargin: z.number().nullable(),
   /** estimatedMargin / estimatedBudget, 0..1. */
   marginFraction: z.number().nullable(),
+  /** M5 (additive): the caller is this project's owner. */
+  isOwner: z.boolean().optional(),
 });
 
 export const PoolMemberSchema = z.object({
@@ -94,6 +100,10 @@ export const PoolMemberSchema = z.object({
       issueNumber: z.number().int(),
       title: z.string(),
       status: OfferStatus,
+      /** M5 (additive). */
+      projectFullName: z.string().optional(),
+      /** M5 (additive). */
+      issueUrl: z.string().optional(),
     }),
   ),
 });
@@ -103,6 +113,10 @@ export const PoolResponseSchema = z.object({
   /** Every figure is an estimate (local logs, plan presets). */
   estimate: z.literal(true),
   members: z.array(PoolMemberSchema),
+  /** M5 (additive): projects in scope with the caller's ownership, members or not. */
+  projects: z
+    .array(z.object({ projectId: z.string(), fullName: z.string(), isOwner: z.boolean() }))
+    .optional(),
 });
 export type PoolResponse = z.infer<typeof PoolResponseSchema>;
 

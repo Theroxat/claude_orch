@@ -42,7 +42,7 @@ export interface AgentOptions {
   /** Manual-mode task execution. Without it, take/done/list answer "not configured". */
   exec?: {
     config: ExecutorConfig;
-    deps: Pick<ExecutorDeps, 'git' | 'docker' | 'screen' | 'fs' | 'readClaudeToken'>;
+    deps: Pick<ExecutorDeps, 'git' | 'docker' | 'screen' | 'fs' | 'readClaudeToken' | 'proc'>;
   };
   tokenTimeoutMs?: number;
   listTimeoutMs?: number;
@@ -86,7 +86,7 @@ export class Agent {
       backoff: opts.backoff,
       hello: () => ({
         agentVersion: AGENT_VERSION,
-        capabilities: this.executor ? ['manual', 'devcontainer'] : [],
+        capabilities: this.executor ? ['auto', 'manual', 'devcontainer'] : [],
         localPaused: this.pause.isPaused(),
         maxConcurrent: this.executor?.maxConcurrent ?? 1,
         running: this.executor?.running() ?? [],
@@ -146,9 +146,15 @@ export class Agent {
         resume: () => ({ status: this.setPaused(false) }),
         list: (r) => this.listTasks(r.project),
         take: async (r) => ({ task: await this.exec().take(r.issue, r.project) }),
-        done: async (r) => ({ task: await this.exec().done(r.issue) }),
-        attach: async (r) => ({ exec: await this.exec().attach(r.issue) }),
-        shell: (r) => ({ exec: this.exec().shell(r.issue) }),
+        done: async (r) => ({ task: await this.exec().done(r.issue, r.project) }),
+        attach: async (r) => ({ exec: await this.exec().attach(r.issue, r.project) }),
+        shell: (r) => ({ exec: this.exec().shell(r.issue, r.project) }),
+        logs: (r) => ({
+          exec: this.exec().logs(r.issue, r.project, r.follow ?? true, r.lines ?? 100),
+        }),
+        requests: () => ({ requests: this.exec().requestViews() }),
+        accept: async (r) => ({ message: (await this.exec().acceptRequest(r.id)).message }),
+        reject: (r) => ({ message: this.exec().rejectRequest(r.id).message }),
       },
       this.log,
     );
@@ -262,6 +268,11 @@ export class Agent {
         this.listWaiters.delete(m.replyTo);
         w.resolve(m.payload);
       }
+      return;
+    }
+    if (m.type === 'offer.request' || m.type === 'offer.withdrawn') {
+      // Notifications without ack (approval requests for `orch requests`).
+      this.executor?.handle(m);
       return;
     }
     if (m.type === 'error') {

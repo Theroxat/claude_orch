@@ -277,3 +277,29 @@ button:disabled {
   width: 20px;
   height: 20px;
 }
+
+.pool-project {
+  margin: 8px 0;
+}
+.pool-project progress {
+  width: 140px;
+}
+ul.plain {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+}
+.nav-badge {
+  margin-left: 4px;
+  background: var(--danger);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 0.75rem;
+}
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+}
