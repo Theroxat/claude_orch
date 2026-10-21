@@ -86,6 +86,10 @@ describe('checkComposeModel', () => {
     ['label=disable', { security_opt: ['label=disable'] }],
     ['label:disable', { security_opt: ['label:disable'] }],
     ['systempaths=unconfined', { security_opt: ['systempaths=unconfined'] }],
+    ['custom seccomp profile', { security_opt: ['seccomp=./allow-all.json'] }],
+    ['custom apparmor profile', { security_opt: ['apparmor=my-profile'] }],
+    ['selinux type', { security_opt: ['label=type:spc_t'] }],
+    ['device_cgroup_rules', { device_cgroup_rules: ['b *:* rwm'] }],
     ['volumes_from container', { volumes_from: ['container:abc:ro'] }],
     ['runtime', { runtime: 'nvidia' }],
     ['cgroup_parent', { cgroup_parent: 'system.slice' }],
@@ -93,6 +97,32 @@ describe('checkComposeModel', () => {
     const p = check(svc(s));
     expect(p).toHaveLength(1);
     expect(p[0]).toMatch(/^service "db": /);
+  });
+
+  describe('networks', () => {
+    it('accepts project networks and ignores the default one', () => {
+      const m = svc(
+        { networks: { back: null } },
+        {
+          networks: {
+            default: { name: 'whatever', external: true },
+            back: { name: `${P}_back`, driver: 'bridge' },
+            other: { name: `${P}_other` },
+          },
+        },
+      );
+      expect(check(m)).toEqual([]);
+    });
+    it.each([
+      ['an external network', { external: true, name: 'orch-net-other-task' }],
+      ['the host network', { external: true, name: 'host' }],
+      ['a network not named after the project', { name: 'immich_default' }],
+      ['a macvlan driver', { name: `${P}_lan`, driver: 'macvlan' }],
+    ])('refuses %s', (_n, def) => {
+      const p = check(svc({ networks: { x: null } }, { networks: { x: def } }));
+      expect(p).toHaveLength(1);
+      expect(p[0]).toMatch(/^network "x": /);
+    });
   });
 
   it('allows volumes_from another service', () => {
