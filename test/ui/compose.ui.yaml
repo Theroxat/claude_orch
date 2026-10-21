@@ -1,0 +1,21 @@
+# Overlay on compose.e2e.yaml for the browser UI suite (test/ui). Adds the production Caddy routes
+# (CSP headers included) in front of the built SPA and the e2e server, under the hostname `web`.
+services:
+  server:
+    environment:
+      ORCH_BASE_URL: http://web
+      ORCH_VERSION: ${ORCH_VERSION:-0.6.1}
+  web:
+    image: caddy:2-alpine
+    volumes:
+      - ./deploy/server/Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
+      - ./deploy/server/routes.caddy:/etc/caddy/routes.caddy:ro
+      - ./apps/web/dist:/srv:ro
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:80/healthz']
+      interval: 2s
+      timeout: 3s
+      retries: 30

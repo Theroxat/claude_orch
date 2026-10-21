@@ -1,0 +1,10 @@
+{
+  "name": "orch-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser UI suite for orch (Playwright). Run through test/ui/stack.sh in Docker.",
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@playwright/test": "1.56.1"
+  }
+}

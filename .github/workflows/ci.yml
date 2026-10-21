@@ -31,6 +31,30 @@ jobs:
       - name: Installer tests (shellcheck + bats)
         run: ./dev test:install
 
+  ui:
+    name: Browser UI tests (Playwright, Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Self-contained: builds the web app, starts the e2e stack behind the production Caddy CSP,
+      # runs Playwright (pinned image), tears everything down. CSP violations and axe
+      # serious/critical findings fail the job.
+      - name: UI tests
+        run: ./dev test:ui
+      - name: Upload screenshots and report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-output
+          path: |
+            ~/.cache/orch-uitest/shots
+            ~/.cache/orch-uitest/work/report.json
+            ~/.cache/orch-uitest/work/findings.jsonl
+            ~/.cache/orch-uitest/work/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   images:
     name: Production images build
     runs-on: ubuntu-latest

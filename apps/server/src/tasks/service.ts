@@ -141,7 +141,11 @@ export function toTaskView(
     ...failureView(t),
     needsAttention: t.needsAttention,
     needsAttentionReason: t.needsAttentionReason,
-    canRetry: t.status === 'TODO' && (access.isOwner || t.createdById === viewer.id),
+    // Retry only makes sense for a task that failed since the last retry, or is flagged.
+    canRetry:
+      t.status === 'TODO' &&
+      (access.isOwner || t.createdById === viewer.id) &&
+      (t.needsAttention || t.assignments.some((a) => !beforeRetry(a, t.retryResetAt))),
     createdAt: t.createdAt.toISOString(),
     updatedAt: t.updatedAt.toISOString(),
   };

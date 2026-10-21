@@ -16,6 +16,7 @@
   --rule-strong: #a8b4a9;
   --route: #2452c2;
   --proceed: #1b8450;
+  --proceed-ink: #12693d;
   --caution: #c98410;
   --caution-ink: #8a5a00;
   --stop: #c0362c;
@@ -50,6 +51,7 @@
     --rule-strong: #3a4c52;
     --route: #8aa9ff;
     --proceed: #4cc98a;
+    --proceed-ink: #4cc98a;
     --caution: #f2b54b;
     --caution-ink: #f2b54b;
     --stop: #f36d60;
@@ -73,6 +75,7 @@
   --rule-strong: #3a4c52;
   --route: #8aa9ff;
   --proceed: #4cc98a;
+  --proceed-ink: #4cc98a;
   --caution: #f2b54b;
   --caution-ink: #f2b54b;
   --stop: #f36d60;
@@ -640,7 +643,7 @@ strong {
 }
 .badge.ok {
   --lamp: var(--proceed);
-  color: var(--proceed);
+  color: var(--proceed-ink);
 }
 .badge.pending {
   --lamp: var(--caution);
@@ -1234,8 +1237,7 @@ ul.plain li {
 }
 .kanban {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(208px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 12px;
@@ -1587,6 +1589,11 @@ progress::-moz-progress-bar {
   min-height: 100vh;
   background: var(--panel);
 }
+.wizard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .wizard-top {
   display: flex;
   justify-content: space-between;
@@ -1668,7 +1675,7 @@ progress::-moz-progress-bar {
 }
 .wizard-status.ok,
 .wizard-summary .ok {
-  color: var(--proceed);
+  color: var(--proceed-ink);
 }
 .wizard-status.ok > span[aria-hidden] {
   display: inline-grid;
@@ -1833,7 +1840,15 @@ details.card > summary {
   list-style-position: inside;
 }
 .token-revoked {
-  opacity: 0.62;
+  /* Muted by color, not opacity: opacity drags badges and code under 4.5:1. */
+  background: var(--surface-sunk);
+  color: var(--muted);
+}
+.token-revoked .agent-meta {
+  color: var(--muted);
+}
+.token-revoked code {
+  color: var(--ink-soft);
 }
 
 /* ---------- Spinner ---------- */
@@ -2098,6 +2113,8 @@ details.card > summary {
     margin: 0 -16px;
     padding-inline: 16px;
     scroll-snap-type: x mandatory;
+    grid-auto-flow: column;
+    grid-template-columns: none;
     grid-auto-columns: minmax(78%, 1fr);
   }
   .kanban-col {

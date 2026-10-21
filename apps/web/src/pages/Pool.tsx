@@ -15,6 +15,10 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
   // Display-only freshness check; re-evaluated on every refetch.
   // eslint-disable-next-line react-hooks/purity
   const limited = m.rateLimitedUntil && new Date(m.rateLimitedUntil).getTime() > Date.now();
+  // Per-machine state when the server sends it; "Paused" when every ONLINE machine is paused.
+  const machines = m.machines ?? [];
+  const onlineMachines = machines.filter((x) => x.online);
+  const paused = m.paused || (onlineMachines.length > 0 && onlineMachines.every((x) => x.paused));
   return (
     <article
       className="card pool-member"
@@ -36,9 +40,27 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
           >
             {m.online ? 'Online' : 'Offline'}
           </span>
-          {m.paused && <span className="badge pending">Paused</span>}
+          {paused && <span className="badge pending">Paused</span>}
         </div>
       </div>
+      {machines.length > 0 && (
+        <ul className="plain machines" aria-label={`Machines of ${m.login}`}>
+          {machines.map((x) => (
+            <li key={x.name}>
+              <span className="name">{x.name}</span>{' '}
+              <span className={`badge ${x.online ? (x.paused ? 'pending' : 'ok') : 'off'}`}>
+                {x.paused
+                  ? x.online
+                    ? 'Paused'
+                    : 'Paused, offline'
+                  : x.online
+                    ? 'Online'
+                    : 'Offline'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {m.usageStale && (
         <p className="warning">Usage stale: no recent report, not eligible for auto requests.</p>
       )}

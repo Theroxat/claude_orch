@@ -250,6 +250,19 @@ describe('setup wizard', () => {
   });
 });
 
+describe('Log out from the wizard', () => {
+  it('POSTs /auth/logout and goes to the sign-in page', async () => {
+    const base = routes(() => ALL_TODO);
+    const calls = mockApi({ ...base, 'POST /auth/logout': () => ({ json: {} }) });
+    renderApp('/welcome');
+    await title();
+    click('Log out');
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST' && c.path === '/auth/logout')).toBe(true),
+    );
+  });
+});
+
 describe('first-visit redirect', () => {
   it('redirects once to /welcome and records it', async () => {
     const calls = mockApi(routes(() => ALL_TODO));

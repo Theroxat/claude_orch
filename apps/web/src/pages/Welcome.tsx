@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { api } from '../api/client';
 import {
   completeOnboarding,
   dismissOnboarding,
@@ -19,7 +20,7 @@ import {
   fetchMyAgents,
   fetchMyProjects,
 } from '../api/endpoints';
-import { useMe } from '../auth';
+import { useMe, useResetSession } from '../auth';
 import { RepoPicker } from '../components/AddRepoDialog';
 import { CopyButton } from '../components/CopyButton';
 import { useOnboarding } from '../components/GettingStarted';
@@ -321,6 +322,14 @@ export function Welcome() {
     onSuccess: (u) => qc.setQueryData(['me'], u),
     onSettled: () => navigate('/projects'),
   });
+  const reset = useResetSession();
+  const logout = useMutation({
+    mutationFn: () => api<unknown>('POST', '/auth/logout'),
+    onSuccess: () => {
+      reset();
+      navigate('/login', { replace: true });
+    },
+  });
   const completedAt = me?.onboardingCompletedAt;
   const completeNow = complete.mutate;
   useEffect(() => {
@@ -352,9 +361,14 @@ export function Welcome() {
     <div className="wizard">
       <header className="wizard-top">
         <Brand />
-        <button className="ghost" onClick={() => exit.mutate()} disabled={exit.isPending}>
-          Exit setup
-        </button>
+        <div className="wizard-actions">
+          <button className="ghost" onClick={() => exit.mutate()} disabled={exit.isPending}>
+            Exit setup
+          </button>
+          <button className="ghost" onClick={() => logout.mutate()} disabled={logout.isPending}>
+            Log out
+          </button>
+        </div>
       </header>
       <main className="wizard-main">
         <div

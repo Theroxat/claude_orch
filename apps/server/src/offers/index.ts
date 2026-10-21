@@ -198,6 +198,11 @@ export async function buildPool(
       avatarUrl: u.avatarUrl,
       online: agents.some((a) => gateway.isConnected(a.id)),
       paused: u.paused || (agents.length > 0 && agents.every((a) => a.paused)),
+      machines: agents.map((a) => ({
+        name: a.name,
+        online: gateway.isConnected(a.id),
+        paused: a.paused,
+      })),
       usageStale: state !== 'fresh',
       resetAt: usage?.windowResetAt?.toISOString() ?? null,
       rateLimitedUntil: usage?.rateLimitedUntil?.toISOString() ?? null,

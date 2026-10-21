@@ -22,3 +22,12 @@ describe('auth gate', () => {
     expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy();
   });
 });
+
+describe('unknown routes', () => {
+  it('shows a not-found page with a link home', async () => {
+    mockApi({ 'GET /me': () => ({ json: me }), 'GET /projects/mine': () => ({ json: [] }) });
+    renderApp('/no/such/page');
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Back to orch' }).getAttribute('href')).toBe('/');
+  });
+});

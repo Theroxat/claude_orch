@@ -88,6 +88,10 @@ export const PoolMemberSchema = z.object({
   avatarUrl: z.string().nullable(),
   online: z.boolean(),
   paused: z.boolean(),
+  /** Additive: per-machine state (non-revoked machines), so the UI can tell paused from offline. */
+  machines: z
+    .array(z.object({ name: z.string(), online: z.boolean(), paused: z.boolean() }))
+    .optional(),
   /** Last usage report is older than ~15 min: not eligible for auto offers. */
   usageStale: z.boolean(),
   /** ESTIMATE: when the member's 5h window resets. */

@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { OAuthConsentInfoSchema, OAuthConsentResultSchema } from '@orch/shared';
+import { useRef } from 'react';
 import { useLocation } from 'react-router';
 import { ApiError, api } from '../api/client';
 import { Brand } from '../ui/Brand';
@@ -41,6 +42,8 @@ export function OAuthConsent() {
       }
     },
   });
+  // Synchronous guard: two clicks in the same tick both see isPending=false, so state is not enough.
+  const sent = useRef(false);
   const decide = useMutation({
     mutationFn: (approve: boolean) =>
       api('POST', '/oauth/consent', {
@@ -48,7 +51,15 @@ export function OAuthConsent() {
         schema: OAuthConsentResultSchema,
       }),
     onSuccess: (r) => window.location.assign(r.redirectTo),
+    onError: () => {
+      sent.current = false;
+    },
   });
+  const decideOnce = (approve: boolean) => {
+    if (sent.current) return;
+    sent.current = true;
+    decide.mutate(approve);
+  };
 
   if (info.error) {
     return (
@@ -86,10 +97,10 @@ export function OAuthConsent() {
         <p className="warning">Only approve if you just started this from Claude Code.</p>
         {decide.error && <p className="error">{decide.error.message}</p>}
         <div className="card-foot">
-          <button className="primary" disabled={busy} onClick={() => decide.mutate(true)}>
+          <button className="primary" disabled={busy} onClick={() => decideOnce(true)}>
             Approve
           </button>
-          <button disabled={busy} onClick={() => decide.mutate(false)}>
+          <button disabled={busy} onClick={() => decideOnce(false)}>
             Deny
           </button>
         </div>

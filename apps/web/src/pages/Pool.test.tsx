@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { me, mockApi, renderApp } from '../test/helpers';
 
@@ -69,5 +69,74 @@ describe('Pool', () => {
       'Claude rejected the token (401): run orch login on laptop',
     );
     expect(await screen.findByText(/fine: Claude login verified 10 min ago/)).toBeTruthy();
+  });
+});
+
+describe('Pool member machines', () => {
+  const member = (over: Record<string, unknown>) => ({
+    userId: 'u2',
+    login: 'bob',
+    avatarUrl: null,
+    online: true,
+    paused: false,
+    usageStale: false,
+    resetAt: null,
+    rateLimitedUntil: null,
+    projects: [],
+    runningTasks: [],
+    ...over,
+  });
+  const base = {
+    'GET /me': () => ({ json: me }),
+    'GET /projects/mine': () => ({ json: [] }),
+    'GET /projects/discover': () => ({ json: [] }),
+    'GET /agents/mine': () => ({ json: [] }),
+  };
+
+  it('shows each machine and Paused when every online machine is paused', async () => {
+    mockApi({
+      ...base,
+      'GET /pool': () => ({
+        json: {
+          estimate: true,
+          members: [
+            member({
+              machines: [
+                { name: 'laptop', online: true, paused: true },
+                { name: 'desktop', online: false, paused: false },
+              ],
+            }),
+          ],
+        },
+      }),
+    });
+    renderApp('/pool');
+    const card = (await screen.findByText('bob')).closest('article')!;
+    expect(card.textContent).toContain('laptop');
+    expect(card.textContent).toContain('desktop');
+    expect(within(card).getAllByText('Paused')).toHaveLength(2); // machine + member level
+    expect(within(card).getAllByText('Offline').length).toBeGreaterThan(0);
+  });
+
+  it('no member-level Paused when an online machine is running', async () => {
+    mockApi({
+      ...base,
+      'GET /pool': () => ({
+        json: {
+          estimate: true,
+          members: [
+            member({
+              machines: [
+                { name: 'laptop', online: true, paused: true },
+                { name: 'desktop', online: true, paused: false },
+              ],
+            }),
+          ],
+        },
+      }),
+    });
+    renderApp('/pool');
+    const card = (await screen.findByText('bob')).closest('article')!;
+    expect(within(card).getAllByText('Paused')).toHaveLength(1);
   });
 });
