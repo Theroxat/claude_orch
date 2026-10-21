@@ -740,6 +740,16 @@ export class ManualExecutor {
 
   private async prepare(id: string): Promise<void> {
     const rec = () => this.store.get(id) as TaskRecord;
+    const first = rec();
+    let sidecars: string | null = null;
+    // cancel()/cleanup() tore down what existed at that moment: a step still in flight may have
+    // created more since (network, sidecars, container, screen session). Tear down again.
+    const abandoned = async (): Promise<boolean> => {
+      if (!this.cancelled(id)) return false;
+      const last = this.store.get(id) ?? first;
+      await this.teardown({ ...last, composeProject: last.composeProject ?? sidecars });
+      return true;
+    };
     try {
       const claudeToken = this.deps.readClaudeToken();
       if (!claudeToken) throw new Error('No Claude token. Run "orch login".');
@@ -761,7 +771,7 @@ export class ManualExecutor {
       await this.deps.git.seedTaskGit(repo);
       // The task dir only (the private git dir lives in the agent's data dir and stays its own).
       this.deps.fs.chownR(r0.taskDir, this.cfg.uid, this.cfg.gid);
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       this.status(id, 'building');
       const env = selectDevEnv(r0.cloneDir, this.cfg.defaultImage);
@@ -771,7 +781,10 @@ export class ManualExecutor {
       await this.deps.docker.createNetwork(r0.network, labels);
 
       const compose = findComposeFile(r0.cloneDir);
-      if (compose) await this.startSidecars(id, compose, labels);
+      if (compose) {
+        sidecars = composeProject(id);
+        await this.startSidecars(id, compose, labels);
+      }
 
       let image: string;
       if (env.kind === 'build') {
@@ -794,7 +807,7 @@ export class ManualExecutor {
         });
       }
       this.store.update(id, { image });
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       const args = buildCreateArgs({
         name: r0.container,
@@ -819,7 +832,7 @@ export class ManualExecutor {
           this.store.update(id, { warnings: [...rec().warnings, redact(w)] });
         }
       }
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       const prompt = rec().prompt ?? '';
       if (r0.execMode === 'AUTO') {
@@ -827,11 +840,12 @@ export class ManualExecutor {
         return;
       }
       await this.deps.screen.start(r0.screen, this.claudeArgv(rec(), prompt));
+      if (await abandoned()) return;
       this.store.update(id, { prompt: null });
       this.status(id, 'running', `attach: ${attachCommand(r0.issueNumber)}`);
       this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.issueNumber) });
     } catch (err) {
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
       await this.fail(id, err);
     }
   }
@@ -1027,9 +1041,11 @@ export class ManualExecutor {
     try {
       await this.pushAndReport(id, usage, final.text);
     } catch (err) {
+      if (this.cancelled(id)) return;
       await this.fail(id, new Error(`Push failed: ${errorMessage(err)}`), usage);
       return;
     }
+    if (this.cancelled(id)) return; // cancelled during the push: cancel() reported it
     const after = this.store.update(id, { state: 'finished', error: null });
     await this.teardown(after);
     this.log.info('auto run finished', { issue: r.issueNumber });
@@ -1066,6 +1082,8 @@ export class ManualExecutor {
       for (const c of paused) await this.deps.docker.unpause(c).catch(() => undefined);
     }
     const ahead = await git.commitsAhead(repo, rec.baseBranch);
+    // A cancel may land at any await below: then report nothing more (cancel() sent finished).
+    if (this.cancelled(id)) return;
     if (ahead === 0) {
       this.deps.enqueue('task.finished', {
         assignmentId: id,
@@ -1076,12 +1094,14 @@ export class ManualExecutor {
       return;
     }
     const token = await this.deps.requestToken(id, 'push');
+    if (this.cancelled(id)) return;
     await git.push(repo, rec.branch, token);
     const [headSha, changedFiles, subjects] = await Promise.all([
       git.headSha(repo),
       git.changedFiles(repo, rec.baseBranch),
       git.subjects(repo, rec.baseBranch),
     ]);
+    if (this.cancelled(id)) return;
     let summary = (taskSubjects.length > 0 ? taskSubjects : subjects)
       .map((s) => `- ${s}`)
       .join('\n');
@@ -1214,6 +1234,7 @@ export class ManualExecutor {
       const usage = await this.collectUsage(rec);
       await this.pushAndReport(id, usage);
     } catch (err) {
+      if (this.cancelled(id)) throw cancelledDuringDone(issueNumber);
       const message = redact(errorMessage(err));
       // commitAll removed the task's .git: give the still-running session a working copy back.
       // The task is frozen meanwhile: it cannot swap `.git` (or a sub-path) for a symlink between
@@ -1234,6 +1255,7 @@ export class ManualExecutor {
       this.status(id, 'running', `done failed: ${message}`);
       throw new ExecError('done_failed', `Push failed, the task is still running: ${message}`);
     }
+    if (this.cancelled(id)) throw cancelledDuringDone(issueNumber);
     const after = this.store.update(id, { state: 'finished', error: null });
     await this.teardown(after);
     return this.view(after);
@@ -1489,6 +1511,10 @@ export class ManualExecutor {
     void job.finally(() => this.jobs.delete(job));
   }
 }
+
+/** `orch done` raced with a server cancel: cancel() already tore down and reported. */
+const cancelledDuringDone = (issueNumber: number) =>
+  new ExecError('cancelled', `Issue #${issueNumber} was cancelled by the server meanwhile.`);
 
 const CLAIM_REFUSALS: Record<string, string> = {
   paused: 'You are paused on the server. Run "orch resume" first.',
