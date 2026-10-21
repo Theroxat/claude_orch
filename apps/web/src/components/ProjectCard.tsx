@@ -97,7 +97,17 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
     mutationFn: () => deleteProject(project.id),
     onSuccess: () => {
       toast(`${project.fullName} removed from orch`);
-      return qc.invalidateQueries({ queryKey: ['projects', 'mine'] });
+      // The repo picker caches `alreadyAdded` per repository: drop it so reopening the dialog
+      // never flashes a removed repo as "Added" before the refetch lands.
+      qc.removeQueries({ queryKey: ['repos'] });
+      qc.removeQueries({ queryKey: ['projects', project.id] });
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: ['projects', 'mine'] }),
+        qc.invalidateQueries({ queryKey: ['projects', 'discover'] }),
+        qc.invalidateQueries({ queryKey: ['onboarding'] }),
+        qc.invalidateQueries({ queryKey: ['tasks'] }),
+        qc.invalidateQueries({ queryKey: ['pool'] }),
+      ]);
     },
   });
   const id = project.id;
