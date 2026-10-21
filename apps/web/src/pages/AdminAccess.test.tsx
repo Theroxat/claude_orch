@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockApi, me, renderApp } from '../test/helpers';
@@ -39,6 +41,24 @@ describe('Admin access', () => {
     expect(screen.getAllByText(/configured on the server/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/envuser/)).toBeTruthy();
     expect(screen.getByText(/acme/)).toBeTruthy();
+  });
+
+  it('avatar fallbacks load under the production CSP (img-src)', async () => {
+    mockApi({
+      'GET /me': () => ({ json: admin }),
+      'GET /admin/access/pending-count': () => ({ json: { count: 1 } }),
+      'GET /admin/access': () => ({ json: access }),
+    });
+    const { container } = renderApp('/admin/access');
+    await screen.findByText('alice');
+    // Tests run from apps/web.
+    const caddy = readFileSync(resolve('../../deploy/server/routes.caddy'), 'utf8');
+    const imgSrc = /img-src ([^;]+);/.exec(caddy)![1]!.split(' ');
+    const imgs = [...container.querySelectorAll('img.avatar')] as HTMLImageElement[];
+    expect(imgs.length).toBeGreaterThan(0);
+    for (const img of imgs) {
+      expect(imgSrc).toContain(new URL(img.src).origin);
+    }
   });
 
   it('approves a pending request', async () => {
