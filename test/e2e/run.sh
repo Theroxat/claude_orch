@@ -17,7 +17,10 @@ esac
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 ORCH_E2E_REPO="$PWD"
-state_file="${TMPDIR:-/tmp}/orch-e2e.last"
+# ORCH_E2E_PROJECT: compose project (and image tag) of this run, so parallel runs never collide.
+ORCH_E2E_PROJECT="${ORCH_E2E_PROJECT:-orch-e2e}"
+ORCH_E2E_TAG="${ORCH_E2E_TAG:-$(printf "%s" "$ORCH_E2E_PROJECT" | tr -c "A-Za-z0-9_.-" "_")}"
+state_file="${TMPDIR:-/tmp}/$ORCH_E2E_PROJECT.last"
 if [ "$keep" -eq -1 ] && [ -f "$state_file" ]; then
   ORCH_E2E_WORK="$(cat "$state_file")"
 else
@@ -34,9 +37,9 @@ ORCH_E2E_WEBHOOK_SECRET="$(rand)"
 ORCH_E2E_CLIENT_SECRET="$(rand)"
 ORCH_E2E_ENCRYPTION_KEY="$(rand)"
 export HOST_UID HOST_GID ORCH_E2E_REPO ORCH_E2E_WORK ORCH_E2E_WORK_ALICE ORCH_E2E_WORK_BOB \
-  ORCH_E2E_WEBHOOK_SECRET ORCH_E2E_CLIENT_SECRET ORCH_E2E_ENCRYPTION_KEY
+  ORCH_E2E_WEBHOOK_SECRET ORCH_E2E_CLIENT_SECRET ORCH_E2E_ENCRYPTION_KEY ORCH_E2E_PROJECT ORCH_E2E_TAG
 
-e2e() { docker compose -p orch-e2e -f compose.e2e.yaml --profile agents --profile runner "$@"; }
+e2e() { docker compose -p "$ORCH_E2E_PROJECT" -f compose.e2e.yaml --profile agents --profile runner "$@"; }
 
 cleanup() {
   echo "== e2e cleanup"
@@ -71,7 +74,7 @@ fi
 status=1
 on_exit() {
   if [ "$status" -ne 0 ] && [ "$keep" -eq 1 ]; then
-    echo "== e2e failed: stack kept (docker compose -p orch-e2e ...). Clean with ./dev e2e --clean"
+    echo "== e2e failed: stack kept (docker compose -p $ORCH_E2E_PROJECT ...). Clean with ./dev e2e --clean"
     return
   fi
   if [ "$status" -ne 0 ]; then

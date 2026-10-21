@@ -71,6 +71,8 @@ export class FakeDocker implements DockerOps {
   projects: { name: string; agent?: string }[] = [];
   /** What `composeConfig` returns (the resolved model). */
   composeModel: unknown = { name: 'p', services: {} };
+  /** Thrown by `composeConfig` when set. */
+  composeConfigError: Error | null = null;
   paused = new Set<string>();
   createEnv: Record<string, string>[] = [];
   usageJsonl = '';
@@ -132,13 +134,16 @@ export class FakeDocker implements DockerOps {
   }
   async composeConfig(project: string, files: string[], cwd: string) {
     this.calls.push(['composeConfig', project, files, cwd]);
+    if (this.composeConfigError) throw this.composeConfigError;
     return this.composeModel;
   }
   async composeUp(project: string, files: string[], cwd: string) {
     this.calls.push(['composeUp', project, files, cwd]);
   }
-  async composeDown(project: string) {
-    this.calls.push(['composeDown', project]);
+  async composeDown(project: string, target?: { files: string[]; cwd: string }) {
+    this.calls.push(
+      target ? ['composeDown', project, target.files, target.cwd] : ['composeDown', project],
+    );
   }
   async composeProjects(prefix: string, agentId: string) {
     return this.projects

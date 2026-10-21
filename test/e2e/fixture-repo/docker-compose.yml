@@ -1,0 +1,11 @@
+# Sidecar the agent starts next to each task. Same shape as real repos that broke the agent: a
+# list-form env_file naming a gitignored .env (absent from every clone; .env.example is committed)
+# and a fixed container_name (two parallel tasks would collide on it).
+services:
+  helper:
+    image: debian:bookworm-slim
+    container_name: widgets-helper
+    command: ['sleep', 'infinity']
+    init: true
+    env_file:
+      - .env

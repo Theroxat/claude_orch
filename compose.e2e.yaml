@@ -14,7 +14,7 @@ x-agent: &agent
   build:
     context: .
     dockerfile: apps/agent/Dockerfile
-  image: orch-agent:e2e
+  image: orch-agent:${ORCH_E2E_TAG:-e2e}
   profiles: ['agents']
   restart: 'no'
   depends_on:
@@ -25,7 +25,7 @@ x-agent: &agent
 
 services:
   keygen:
-    image: orch-e2e-fake-github:e2e
+    image: orch-e2e-fake-github:${ORCH_E2E_TAG:-e2e}
     build:
       context: test/e2e
       dockerfile: fake-github/Dockerfile
@@ -51,7 +51,7 @@ services:
       retries: 30
 
   fake-github:
-    image: orch-e2e-fake-github:e2e
+    image: orch-e2e-fake-github:${ORCH_E2E_TAG:-e2e}
     environment:
       PORT: '8080'
       FAKE_GH_APP_ID: '1001'
@@ -183,11 +183,13 @@ services:
   runner:
     build:
       context: test/e2e/runner
-    image: orch-e2e-runner:e2e
+    image: orch-e2e-runner:${ORCH_E2E_TAG:-e2e}
     profiles: ['runner']
     working_dir: ${ORCH_E2E_REPO:?}
     environment:
       ORCH_E2E_REPO: ${ORCH_E2E_REPO:?}
+      ORCH_E2E_PROJECT: ${ORCH_E2E_PROJECT:-orch-e2e}
+      ORCH_E2E_TAG: ${ORCH_E2E_TAG:-e2e}
       ORCH_E2E_WORK_ALICE: ${ORCH_E2E_WORK_ALICE:?}
       ORCH_E2E_WORK_BOB: ${ORCH_E2E_WORK_BOB:?}
       ORCH_E2E_WORK: ${ORCH_E2E_WORK:?}
