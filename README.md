@@ -77,25 +77,37 @@ openssl rand -base64 32   # ORCH_ENCRYPTION_KEY
 openssl rand -hex 32      # GITHUB_WEBHOOK_SECRET
 ```
 
-| Variable                                                                       | Required | Meaning                                                                                |
-| ------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------- |
-| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                        |
-| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                    |
-| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port           |
-| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [Behind Cloudflare Tunnel](#behind-cloudflare-tunnel)      |
-| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)           |
-| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                           |
-| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                |
-| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up                |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App (next section)                                                    |
-| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | yes (\*) | Who may sign in: GitHub logins and/or organizations, comma-separated, case-insensitive |
-| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public           |
-| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                 |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                  |
-| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                      |
-| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start      |
+| Variable                                                                       | Required | Meaning                                                                               |
+| ------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------- |
+| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                       |
+| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                   |
+| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port          |
+| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [Behind Cloudflare Tunnel](#behind-cloudflare-tunnel)     |
+| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)          |
+| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                          |
+| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)               |
+| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up               |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App (next section)                                                   |
+| `ORCH_ADMIN_GITHUB_LOGINS`                                                     | yes (\*) | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page |
+| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | no (\*)  | Who may also sign in: GitHub logins and/or organizations, comma-separated             |
+| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public          |
+| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                 |
+| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                     |
+| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start     |
 
-(\*) **In production the server refuses to start** when both `ORCH_ALLOWED_GITHUB_LOGINS` and `ORCH_ALLOWED_GITHUB_ORGS` are empty, unless `ORCH_ALLOW_ANY_GITHUB_USER=true`. Without an allowlist, anyone with a GitHub account could sign in, see the projects set to "All orch users on this server" and join their pools. A user matches if their login is listed **or** they are an active member of a listed organization. Org membership is checked at login with the user's own GitHub token, and again for open sessions every `ORCH_ALLOWLIST_CACHE_SEC` seconds (default 300). Removing someone from the list or the org therefore takes effect within minutes (logins are re-checked on every request). Org checks need the GitHub App organization permission **Members: Read-only** (see below) and the App installed on, or approved by, the organization. In development and tests an empty allowlist only logs a warning.
+(\*) **In production the server refuses to start** when nobody restricts sign-in: no `ORCH_ADMIN_GITHUB_LOGINS`, no `ORCH_ALLOWED_GITHUB_LOGINS`, no `ORCH_ALLOWED_GITHUB_ORGS` and no access approved on the Access page, unless `ORCH_ALLOW_ANY_GITHUB_USER=true`. Without an allowlist, anyone with a GitHub account could sign in, see the projects set to "All orch users on this server" and join their pools. The usual setup is to list yourself in `ORCH_ADMIN_GITHUB_LOGINS` and let people in from the web UI (see [Managing access](#managing-access)). A user may sign in if they are an admin, **or** their login is listed, **or** they are an active member of a listed organization, **or** an admin approved them on the Access page. Org membership is checked at login with the user's own GitHub token, and again for open sessions every `ORCH_ALLOWLIST_CACHE_SEC` seconds (default 300). Removing someone from the list or the org therefore takes effect within minutes (logins are re-checked on every request). Org checks need the GitHub App organization permission **Members: Read-only** (see below) and the App installed on, or approved by, the organization. In development and tests an empty allowlist only logs a warning.
+
+### Managing access
+
+Admins (`ORCH_ADMIN_GITHUB_LOGINS`) see an **Access** page in the web UI (`/admin/access`). To let someone in, you do not edit `.env` or restart anything:
+
+- **Access requests.** Someone who is not allowed yet signs in with GitHub and gets a "Request access" page instead of a session, with an optional message for the admins. The request appears on the Access page (with a counter in the navigation); **Approve** lets them sign in, **Deny** shows them "Your request was declined".
+- **Pre-approve.** Type a GitHub login on the Access page to approve it before the person even tries.
+- **Invite links.** Create a single-use or multi-use link that expires after 1 to 720 hours and send it to someone. Opening `https://<domain>/invite/<token>` and signing in with GitHub approves that account automatically (never one an admin declined). Only a hash of the token is stored; the link is shown once. Revoke a link from the Access page at any time.
+- **Remove.** Removing someone sets their access to denied. Like removal from the env lists, nothing is deleted: their sessions, personal tokens, OAuth grants and agents are refused at once (the cached check is dropped) and work again if you approve them later. A declined or removed login stays refused even if it is in `ORCH_ALLOWED_GITHUB_LOGINS`, in an allowed organization or the server runs with `ORCH_ALLOW_ANY_GITHUB_USER=true`; only admins are never refused.
+
+The env lists keep working for people who should always have access (logins, whole organizations). Every decision is written to the audit log.
 
 Other server knobs (dispatcher interval, offer TTLs, budget factors) have defaults and are listed in [`apps/server/src/config/index.ts`](apps/server/src/config/index.ts). To change one, add it to the `server` service `environment` in `compose.yaml`.
 
@@ -238,7 +250,7 @@ Because a `Contents: write` installation token can push to any branch, **enable 
 
 ## Adding a member
 
-1. **Sign in.** The member opens `https://<domain>` and signs in with GitHub.
+1. **Get access, then sign in.** The member opens `https://<domain>` and signs in with GitHub. If they are not allowed yet, they click **Request access** and an admin approves them on the **Access** page (`/admin/access`); or an admin pre-approves their login or sends them an invite link first (see [Managing access](#managing-access)). No `.env` edit or restart is needed.
 2. **Install the App on the repos** they want to use (the Projects page links to the install page). Repository owners then register a repo as a project from **Projects**.
 3. **Join projects.** On **Discover**, the member joins a project and picks their participation settings: `AUTO` (tasks start automatically while they have budget) or `APPROVAL` (they get a request they accept or reject), and which models they allow (Sonnet, Opus). Their Claude plan is declared on the agent side (`ORCH_PLAN`). Private projects require the owner's approval by default.
 4. **Install the agent.** On **My Server**, click to generate an install command. It is valid for 15 minutes, once:
@@ -354,7 +366,7 @@ orch is for **small teams who trust each other**. It is a shared to-do list with
 - **Claude credentials never leave the member's machine.** The token lives in the agent's local volume and in that member's task containers. The server stores no Claude credentials. The agent mounts `~/.claude` read-only, only to estimate usage.
 - **Usage figures are estimates.** Anthropic does not publish exact subscription limits. Budgets, margins and reset times come from local logs plus a safety reserve and may be wrong. Treat them as hints.
 - **Review PRs.** Auto-mode PRs are drafts. Enable branch protection and require human review before merging. The GitHub App's `Contents: write` can push to any branch.
-- **Who can sign in.** Production requires an allowlist of GitHub logins and/or organizations (see Server installation). A task board is visible only to the project owner, active participants and GitHub collaborators; owner rights are re-checked against the GitHub ADMIN role (cached a few minutes), so a former admin loses them.
+- **Who can sign in.** Production requires admins (`ORCH_ADMIN_GITHUB_LOGINS`) and/or an allowlist of GitHub logins or organizations (see Server installation). Admins approve everyone else on the Access page; a refused sign-in creates no session, only a request form protected by a short-lived HMAC-signed token, the Origin check and a rate limit. Invite links are stored hashed and expire. A task board is visible only to the project owner, active participants and GitHub collaborators; owner rights are re-checked against the GitHub ADMIN role (cached a few minutes), so a former admin loses them.
 - **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated by delivery id and by body hash. Caddy sends HSTS and a strict Content-Security-Policy, and the server never logs query strings (they carry the OAuth code). Every state change is written to an append-only audit log.
 
 Report vulnerabilities privately through GitHub security advisories on this repository.

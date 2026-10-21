@@ -1,6 +1,7 @@
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { createAgentGateway, registerAgents } from './agents';
+import { registerAccess } from './access';
 import { registerAuth } from './auth';
 import type { Config } from './config';
 import type { PrismaClient } from './db';
@@ -75,6 +76,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     app.addHook('preClose', async () => dispatcher.stop());
     const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
+    registerAccess(app, deps);
     registerProjects(app, deps);
     registerParticipation(app, m4);
     registerTasks(app, m4);

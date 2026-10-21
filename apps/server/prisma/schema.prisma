@@ -533,3 +533,40 @@ model OAuthToken {
   @@index([grantId])
   @@index([expiresAt])
 }
+
+enum AccessGrantStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+/// Sign-in access decided by an admin from the web UI (on top of the env allowlist). Never
+/// deleted: removing someone sets DENIED, so their sessions and tokens are refused, not destroyed.
+model AccessGrant {
+  id           String            @id @default(cuid())
+  githubLogin  String            @unique // lower-cased
+  githubUserId BigInt?
+  avatarUrl    String?
+  status       AccessGrantStatus
+  note         String? // message from the requester
+  requestedAt  DateTime?
+  decidedAt    DateTime?
+  decidedBy    String? // admin login, or `invite:<id>`
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([status])
+}
+
+/// Invite link that auto-approves whoever signs in with it. Only the SHA-256 is stored.
+model AccessInvite {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique // sha256 hex of the token
+  multiUse   Boolean   @default(false)
+  expiresAt  DateTime
+  uses       Int       @default(0)
+  revokedAt  DateTime?
+  createdBy  String // admin login
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+}

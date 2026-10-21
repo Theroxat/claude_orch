@@ -30,6 +30,7 @@ const USERS = {
   alice: { id: 502, role: 'write' },
   bob: { id: 503, role: 'write' },
   rita: { id: 504, role: 'read' },
+  sam: { id: 505, role: 'read' }, // stranger: not on any list, must request access
 };
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 const userObj = (login) => ({

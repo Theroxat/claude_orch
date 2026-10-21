@@ -66,6 +66,11 @@ const ConfigSchema = z.object({
   /** Who may sign in. GitHub logins and/or orgs (case-insensitive, comma-separated). */
   ORCH_ALLOWED_GITHUB_LOGINS: csvLower,
   ORCH_ALLOWED_GITHUB_ORGS: csvLower,
+  /**
+   * Admins (GitHub logins, case-insensitive, comma-separated): always allowed to sign in, and they
+   * approve or deny access requests and create invite links on the Access page.
+   */
+  ORCH_ADMIN_GITHUB_LOGINS: csvLower,
   /** Explicit opt-out of the allowlist: any GitHub account may sign in. Production only needs it. */
   ORCH_ALLOW_ANY_GITHUB_USER: z
     .enum(['true', 'false'])
@@ -121,19 +126,55 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const c = parsed.data;
   if (c.ORCH_PUBLIC_URL) c.ORCH_BASE_URL = c.ORCH_PUBLIC_URL;
-  if (c.NODE_ENV === 'production' && !signInIsRestricted(c) && !c.ORCH_ALLOW_ANY_GITHUB_USER) {
-    throw new Error(
-      'Invalid configuration:\n  Anyone with a GitHub account could sign in. Set ' +
-        'ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS, or set ' +
-        'ORCH_ALLOW_ANY_GITHUB_USER=true to accept that.',
-    );
-  }
   return c;
 }
 
-/** True when an allowlist (logins and/or orgs) restricts who may sign in. */
+/**
+ * True when the environment restricts who may sign in: allowed logins, allowed orgs or admins,
+ * unless ORCH_ALLOW_ANY_GITHUB_USER=true.
+ * Access approved on the Access page (APPROVED grants in the database) restricts it too; see
+ * signInPolicyError.
+ */
 export function signInIsRestricted(
-  c: Pick<Config, 'ORCH_ALLOWED_GITHUB_LOGINS' | 'ORCH_ALLOWED_GITHUB_ORGS'>,
+  c: Pick<
+    Config,
+    | 'ORCH_ALLOWED_GITHUB_LOGINS'
+    | 'ORCH_ALLOWED_GITHUB_ORGS'
+    | 'ORCH_ADMIN_GITHUB_LOGINS'
+    | 'ORCH_ALLOW_ANY_GITHUB_USER'
+  >,
 ): boolean {
-  return c.ORCH_ALLOWED_GITHUB_LOGINS.length > 0 || c.ORCH_ALLOWED_GITHUB_ORGS.length > 0;
+  // The explicit opt-out wins: admins and grants then do not switch on allowlist mode.
+  if (c.ORCH_ALLOW_ANY_GITHUB_USER) return false;
+  return (
+    c.ORCH_ALLOWED_GITHUB_LOGINS.length > 0 ||
+    c.ORCH_ALLOWED_GITHUB_ORGS.length > 0 ||
+    c.ORCH_ADMIN_GITHUB_LOGINS.length > 0
+  );
+}
+
+/**
+ * Production startup rule: refuse to run when anyone with a GitHub account could sign in, unless
+ * ORCH_ALLOW_ANY_GITHUB_USER=true. `hasApprovedGrant`: whether the database holds APPROVED access
+ * grants (they restrict sign-in too). Returns the error message, or null when the server may start.
+ */
+export function signInPolicyError(c: Config, hasApprovedGrant: boolean): string | null {
+  if (c.NODE_ENV !== 'production' || c.ORCH_ALLOW_ANY_GITHUB_USER) return null;
+  if (signInIsRestricted(c) || hasApprovedGrant) return null;
+  return (
+    'Invalid configuration:\n  Anyone with a GitHub account could sign in. Set ' +
+    'ORCH_ADMIN_GITHUB_LOGINS (admins approve access on the Access page), ' +
+    'ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS, or set ' +
+    'ORCH_ALLOW_ANY_GITHUB_USER=true to accept that.'
+  );
+}
+
+/** Async startup check of signInPolicyError; reads the database only when it decides. */
+export async function assertSignInPolicy(
+  c: Config,
+  hasApprovedGrant: () => Promise<boolean>,
+): Promise<void> {
+  if (signInPolicyError(c, true) === null && signInPolicyError(c, false) === null) return;
+  const err = signInPolicyError(c, await hasApprovedGrant());
+  if (err) throw new Error(err);
 }

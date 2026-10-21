@@ -19,6 +19,10 @@
 		reverse_proxy server:3000
 	}
 
+	# Invite links are answered by the server, not the web app.
+	handle /invite/* {
+		reverse_proxy server:3000
+	}
 	handle /install.sh {
 		reverse_proxy server:3000
 	}

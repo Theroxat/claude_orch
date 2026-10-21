@@ -7,6 +7,14 @@ import {
   updateProject,
 } from '../api/endpoints';
 
+const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
+  GITHUB:
+    'Only people who are collaborators on the GitHub repository can lend their Claude capacity. Anyone else is told to ask you for access.',
+  ALLOWLIST:
+    'Only people you or an admin explicitly allowed on this server can lend their Claude capacity, whether or not they are GitHub collaborators.',
+  ALL_MEMBERS: 'Every user of this orch server can lend their Claude capacity to this project.',
+};
+
 function ParticipantsApproval({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const q = useQuery({
@@ -98,9 +106,10 @@ export function ProjectCard({ project }: { project: ProjectView }) {
             <option value="ALLOWLIST">Allowlist only</option>
           </select>
         </label>
-        <label className="field" htmlFor={`part-${id}`}>
-          Who can participate
+        <div className="field">
+          <label htmlFor={`part-${id}`}>Who can participate</label>
           <select
+            aria-describedby={`part-help-${id}`}
             id={`part-${id}`}
             value={project.whoCanParticipate}
             onChange={(e) =>
@@ -113,7 +122,10 @@ export function ProjectCard({ project }: { project: ProjectView }) {
             <option value="ALLOWLIST">Allowlist</option>
             <option value="ALL_MEMBERS">All orch users on this server</option>
           </select>
-        </label>
+          <span className="hint" id={`part-help-${id}`}>
+            {PARTICIPATE_HELP[project.whoCanParticipate]}
+          </span>
+        </div>
         <label className="field" htmlFor={`sub-${id}`}>
           Who can submit
           <select

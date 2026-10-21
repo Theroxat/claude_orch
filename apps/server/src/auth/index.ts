@@ -1,12 +1,21 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { User } from '@prisma/client';
+import type { AccessGrant, AccessGrantStatus, User } from '@prisma/client';
 import type { ApiUser } from '@orch/shared';
 import { audit } from '../audit';
 import { signInIsRestricted, type Config } from '../config';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { HttpError } from '../http/errors';
-import { decrypt, encrypt, randomToken, sha256Hex } from './crypto';
+import {
+  ACCESS_REQUEST_PURPOSE,
+  ACCESS_REQUEST_TTL_MS,
+  INVITE_COOKIE,
+  INVITE_COOKIE_PURPOSE,
+  useInvite,
+} from '../access/core';
+import { declinedPage, requestAccessPage } from '../access/pages';
+import { cookie, parseCookies } from './cookies';
+import { decrypt, encrypt, randomToken, sha256Hex, signToken, verifyToken } from './crypto';
 
 export const SESSION_COOKIE = 'orch_session';
 const STATE_COOKIE = 'orch_oauth_state';
@@ -30,7 +39,20 @@ export interface Allowlist {
    * token and it can no longer be refreshed (treated as signed out).
    */
   check(user: User): Promise<'allowed' | 'refused' | 'reauth'>;
-  isAllowed(login: string, accessToken: () => Promise<string>, cacheKey?: string): Promise<boolean>;
+  /**
+   * Admin OR env login OR allowed-org member OR APPROVED access grant (or no restriction at all).
+   * `githubId`: an APPROVED grant bound to another GitHub account id (renamed login) is ignored.
+   */
+  isAllowed(
+    login: string,
+    accessToken: () => Promise<string>,
+    cacheKey?: string,
+    githubId?: bigint,
+  ): Promise<boolean>;
+  /** ORCH_ADMIN_GITHUB_LOGINS member. */
+  isAdmin(login: string): boolean;
+  /** Drops the cached access-grant decision of a login (after approve, deny or remove). */
+  invalidate(login: string): void;
 }
 
 /** A relative in-app path that is safe to redirect to after sign-in, or null. */
@@ -47,7 +69,7 @@ export interface AuthDeps {
   github?: GithubClient;
 }
 
-export function toApiUser(u: User): ApiUser {
+export function toApiUser(u: User, isAdmin = false): ApiUser {
   return {
     id: u.id,
     githubLogin: u.login,
@@ -55,30 +77,8 @@ export function toApiUser(u: User): ApiUser {
     avatarUrl: u.avatarUrl,
     onboardingCompletedAt: u.onboardingCompletedAt?.toISOString() ?? null,
     onboardingDismissedAt: u.onboardingDismissedAt?.toISOString() ?? null,
+    isAdmin,
   };
-}
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of (header ?? '').split(';')) {
-    const i = part.indexOf('=');
-    if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
-  }
-  return out;
-}
-
-function cookie(name: string, value: string, secure: boolean, maxAgeSec: number): string {
-  return [
-    `${name}=${encodeURIComponent(value)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${maxAgeSec}`,
-    secure ? 'Secure' : '',
-  ]
-    .filter(Boolean)
-    .join('; ');
 }
 
 /** Returns a valid GitHub user-to-server token for the user, refreshing it if needed. */
@@ -119,45 +119,68 @@ export function requireUser(req: FastifyRequest): User {
   return req.user;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
-
-function refusedPage(login: string, config: Config): string {
-  const how = [
-    config.ORCH_ALLOWED_GITHUB_LOGINS.length > 0 ? 'be listed in ORCH_ALLOWED_GITHUB_LOGINS' : '',
-    config.ORCH_ALLOWED_GITHUB_ORGS.length > 0
-      ? `be an active member of one of these GitHub organizations: ${config.ORCH_ALLOWED_GITHUB_ORGS.join(', ')}`
-      : '',
-  ].filter(Boolean);
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Access denied - orch</title>
-<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
-</head><body>
-<h1>Access denied</h1>
-<p>The GitHub account <strong>${escapeHtml(login)}</strong> is not allowed on this orch server.</p>
-<p>To sign in, the account must ${escapeHtml(how.join(' or '))}. Ask the server administrator to add you.</p>
-<p><a href="/">Back to the start page</a></p>
-</body></html>`;
-}
-
 export function createAllowlist(deps: AuthDeps): Allowlist {
-  const { config } = deps;
-  const restricted = signInIsRestricted(config);
+  const { config, prisma } = deps;
+  const envRestricted = signInIsRestricted(config);
+  const ttl = config.ORCH_ALLOWLIST_CACHE_SEC * 1000;
   // Org-membership results of signed-in users, so removing someone takes effect within the TTL.
   const orgCache = new Map<string, { ok: boolean; at: number }>();
+  // Access grants by lower-cased login (same TTL), dropped by invalidate() on admin decisions.
+  const grantCache = new Map<
+    string,
+    { status: AccessGrantStatus | null; githubId: bigint | null; at: number }
+  >();
+  // Whether any APPROVED grant exists: it restricts sign-in even with no env allowlist.
+  let anyApproved: { v: boolean; at: number } | null = null;
+  const fresh = (at: number) => ttl > 0 && Date.now() - at < ttl;
 
-  /** Allowlist decision for a user token. Login list first (free), then org membership. */
+  async function restricted(): Promise<boolean> {
+    if (config.ORCH_ALLOW_ANY_GITHUB_USER) return false; // explicit opt-out wins
+    if (envRestricted) return true;
+    if (anyApproved && fresh(anyApproved.at)) return anyApproved.v;
+    const v = (await prisma.accessGrant.count({ where: { status: 'APPROVED' } })) > 0;
+    anyApproved = { v, at: Date.now() };
+    return v;
+  }
+
+  /**
+   * Status of the login's access grant, or null. A grant bound to another GitHub account id (the
+   * login was renamed and reused) does not apply to this one.
+   */
+  async function grantStatus(login: string, githubId?: bigint): Promise<AccessGrantStatus | null> {
+    let hit = grantCache.get(login);
+    if (!hit || !fresh(hit.at)) {
+      const g = await prisma.accessGrant.findUnique({ where: { githubLogin: login } });
+      hit = { status: g?.status ?? null, githubId: g?.githubUserId ?? null, at: Date.now() };
+      if (ttl > 0) grantCache.set(login, hit);
+    }
+    if (githubId !== undefined && hit.githubId !== null && hit.githubId !== githubId) return null;
+    return hit.status;
+  }
+
+  const isAdmin = (login: string) => config.ORCH_ADMIN_GITHUB_LOGINS.includes(login.toLowerCase());
+
+  function invalidate(login: string): void {
+    grantCache.delete(login.toLowerCase());
+    anyApproved = null;
+  }
+
+  /** Allowlist decision for a user token. Lists and grants first (cheap), then org membership. */
   async function isAllowed(
     login: string,
     accessToken: () => Promise<string>,
     cacheKey?: string,
+    githubId?: bigint,
   ): Promise<boolean> {
-    if (!restricted) return true;
-    if (config.ORCH_ALLOWED_GITHUB_LOGINS.includes(login.toLowerCase())) return true;
+    const lower = login.toLowerCase();
+    if (isAdmin(lower)) return true;
+    // An admin's DENIED (declined or removed) wins over the env lists, orgs and open mode.
+    const status = await grantStatus(lower, githubId);
+    if (status === 'DENIED') return false;
+    if (!(await restricted())) return true;
+    if (config.ORCH_ALLOWED_GITHUB_LOGINS.includes(lower)) return true;
+    if (status === 'APPROVED') return true;
     if (config.ORCH_ALLOWED_GITHUB_ORGS.length === 0) return false;
-    const ttl = config.ORCH_ALLOWLIST_CACHE_SEC * 1000;
     const hit = cacheKey ? orgCache.get(cacheKey) : undefined;
     if (hit && Date.now() - hit.at < ttl) return hit.ok;
     if (!deps.github) return false;
@@ -175,21 +198,30 @@ export function createAllowlist(deps: AuthDeps): Allowlist {
 
   async function check(user: User): Promise<'allowed' | 'refused' | 'reauth'> {
     try {
-      const ok = await isAllowed(user.login, () => getUserAccessToken(deps, user), user.id);
+      const ok = await isAllowed(
+        user.login,
+        () => getUserAccessToken(deps, user),
+        user.id,
+        user.githubId,
+      );
       return ok ? 'allowed' : 'refused';
     } catch (err) {
       if (err instanceof HttpError) return 'reauth';
       throw err;
     }
   }
-  return { isAllowed, check };
+  return { isAllowed, check, isAdmin, invalidate };
 }
 
 export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
   const { config, prisma } = deps;
-  if (!signInIsRestricted(config)) {
+  if (config.ORCH_ALLOW_ANY_GITHUB_USER) {
     app.log.warn(
-      'No sign-in allowlist: any GitHub account can sign in. Set ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS.',
+      'ORCH_ALLOW_ANY_GITHUB_USER=true: any GitHub account can sign in, except those declined or removed on the Access page.',
+    );
+  } else if (!signInIsRestricted(config)) {
+    app.log.warn(
+      'No sign-in allowlist in the environment: unless access was approved on the Access page, any GitHub account can sign in. Set ORCH_ADMIN_GITHUB_LOGINS (and/or ORCH_ALLOWED_GITHUB_LOGINS, ORCH_ALLOWED_GITHUB_ORGS).',
     );
   }
   const allowlist = createAllowlist(deps);
@@ -273,23 +305,118 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
       req.log.warn({ err }, 'GitHub OAuth exchange failed');
       throw new HttpError(502, 'github_error', 'GitHub sign-in failed');
     }
+    const githubId = BigInt(gh.id);
     let allowed: boolean;
     try {
-      allowed = await allowlist.isAllowed(gh.login, async () => tokens.accessToken);
+      allowed = await allowlist.isAllowed(
+        gh.login,
+        async () => tokens.accessToken,
+        undefined,
+        githubId,
+      );
     } catch (err) {
       req.log.warn({ err }, 'GitHub allowlist check failed');
       throw new HttpError(502, 'github_error', 'GitHub sign-in failed');
     }
+    const githubLogin = gh.login.toLowerCase();
+    const cookies = parseCookies(req.headers.cookie);
+    const clearCookies = [cookie(STATE_COOKIE, '', secure, 0)];
+    if (cookies[INVITE_COOKIE] !== undefined)
+      clearCookies.push(cookie(INVITE_COOKIE, '', secure, 0));
+    let grant: AccessGrant | null = null;
     if (!allowed) {
-      req.log.warn({ login: gh.login }, 'Sign-in refused: not on the allowlist');
-      await audit(prisma, {
-        actorType: 'SYSTEM',
-        action: 'auth.refused',
-        data: { login: gh.login },
-        ip: req.ip,
+      grant = await prisma.accessGrant.findUnique({ where: { githubLogin } });
+      // Invite link opened before signing in: auto-approve (never over an admin's decline).
+      const invite = verifyToken(key, INVITE_COOKIE_PURPOSE, cookies[INVITE_COOKIE]);
+      const inviteId = typeof invite?.id === 'string' ? invite.id : null;
+      if (inviteId && grant?.status !== 'DENIED' && (await useInvite(prisma, inviteId))) {
+        const decided = {
+          status: 'APPROVED' as const,
+          decidedAt: new Date(),
+          decidedBy: `invite:${inviteId}`,
+          githubUserId: githubId,
+          avatarUrl: gh.avatarUrl,
+        };
+        // Conditional on the grant not being DENIED, so a concurrent decline is never overwritten.
+        let g = await prisma.accessGrant
+          .create({ data: { githubLogin, ...decided } })
+          .catch(() => null); // already exists
+        if (!g) {
+          const res = await prisma.accessGrant.updateMany({
+            where: { githubLogin, status: { not: 'DENIED' } },
+            data: decided,
+          });
+          g =
+            res.count === 1
+              ? await prisma.accessGrant.findUnique({ where: { githubLogin } })
+              : null;
+        }
+        allowlist.invalidate(githubLogin);
+        await audit(prisma, {
+          actorType: 'SYSTEM',
+          action: 'access.invite_used',
+          data: { login: githubLogin, inviteId, grantId: g?.id ?? null, declined: !g },
+          ip: req.ip,
+        });
+        if (g) allowed = true;
+        else grant = await prisma.accessGrant.findUnique({ where: { githubLogin } });
+      }
+    }
+    if (!allowed) {
+      if (grant?.status === 'DENIED') {
+        req.log.warn({ login: gh.login }, 'Sign-in refused: access declined');
+        await audit(prisma, {
+          actorType: 'SYSTEM',
+          action: 'auth.refused',
+          data: { login: gh.login, grant: 'DENIED' },
+          ip: req.ip,
+        });
+        reply.header('Set-Cookie', clearCookies);
+        return reply
+          .status(403)
+          .type('text/html; charset=utf-8')
+          .send(declinedPage(gh.login, gh.avatarUrl));
+      } else {
+        req.log.warn({ login: gh.login }, 'Sign-in refused: not on the allowlist');
+        await audit(prisma, {
+          actorType: 'SYSTEM',
+          action: 'auth.refused',
+          data: { login: gh.login },
+          ip: req.ip,
+        });
+        // No session: a short-lived signed token lets the user ask an admin for access.
+        const token = signToken(
+          key,
+          ACCESS_REQUEST_PURPOSE,
+          { login: gh.login, id: String(gh.id), avatarUrl: gh.avatarUrl },
+          ACCESS_REQUEST_TTL_MS,
+        );
+        reply.header('Set-Cookie', clearCookies);
+        return reply
+          .status(403)
+          .type('text/html; charset=utf-8')
+          .send(
+            requestAccessPage({
+              login: gh.login,
+              avatarUrl: gh.avatarUrl,
+              token,
+              pending: grant?.status === 'PENDING',
+              note: grant?.note,
+              orgs: config.ORCH_ALLOWED_GITHUB_ORGS,
+            }),
+          );
+      }
+    } else {
+      // Signed in through an APPROVED grant: remember who it is (id and avatar).
+      const bound = await prisma.accessGrant.updateMany({
+        where: {
+          githubLogin,
+          status: 'APPROVED',
+          OR: [{ githubUserId: null }, { githubUserId: githubId }],
+        },
+        data: { githubUserId: githubId, avatarUrl: gh.avatarUrl },
       });
-      reply.header('Set-Cookie', cookie(STATE_COOKIE, '', secure, 0));
-      return reply.status(403).type('text/html; charset=utf-8').send(refusedPage(gh.login, config));
+      if (bound.count > 0) allowlist.invalidate(githubLogin); // the cached grant had no id yet
     }
     const fields = {
       login: gh.login,
@@ -318,7 +445,7 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     const next = safeNextPath(parseCookies(req.headers.cookie)[NEXT_COOKIE]);
     reply.header('Set-Cookie', [
       cookie(SESSION_COOKIE, sessionValue, secure, SESSION_TTL_MS / 1000),
-      cookie(STATE_COOKIE, '', secure, 0),
+      ...clearCookies,
       cookie(NEXT_COOKIE, '', secure, 0),
     ]);
     return reply.redirect(next ?? '/', 302);
@@ -331,5 +458,8 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     return reply.status(204).send();
   });
 
-  app.get('/api/me', async (req) => toApiUser(requireUser(req)));
+  app.get('/api/me', async (req) => {
+    const user = requireUser(req);
+    return toApiUser(user, allowlist.isAdmin(user.login));
+  });
 }

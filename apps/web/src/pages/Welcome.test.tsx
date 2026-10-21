@@ -60,6 +60,29 @@ const click = (name: string | RegExp) => fireEvent.click(screen.getByRole('butto
 afterEach(() => vi.useRealTimers());
 
 describe('setup wizard', () => {
+  it('shows the cannot-join explanation in the wizard', async () => {
+    mockApi(
+      routes(() => ALL_TODO, {
+        'GET /projects/discover': () => ({
+          json: [
+            {
+              ...discoverItem,
+              canParticipate: false,
+              cannotParticipateReason: 'NOT_GITHUB_COLLABORATOR',
+            },
+          ],
+        }),
+      }),
+    );
+    renderApp('/welcome');
+    await screen.findByRole('button', { name: "I'm joining a teammate's project" });
+    click("I'm joining a teammate's project");
+    expect(
+      await screen.findByText(/Only GitHub collaborators of octo\/repo can join/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
+
   it('shows step 1 of 7 and branches on the welcome choice', async () => {
     mockApi(routes(() => ALL_TODO));
     renderApp('/welcome');

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { ProjectViewSchema, TaskViewSchema } from '@orch/shared';
 import { signBody } from '../src/webhooks';
-import { loadConfig } from '../src/config';
+import { assertSignInPolicy, loadConfig, signInPolicyError } from '../src/config';
 import {
   FakeGithub,
   TEST_WEBHOOK_SECRET,
@@ -228,8 +228,8 @@ describe('sign-in allowlist', () => {
       const nope = await login(a, g, `mallory-${uid()}`);
       expect(nope.res.statusCode).toBe(403);
       expect(nope.res.headers['content-type']).toContain('text/html');
-      expect(nope.res.body).toContain('not allowed on this orch server');
-      expect(nope.res.body).toContain('ORCH_ALLOWED_GITHUB_LOGINS');
+      expect(nope.res.body).toContain('Request access');
+      expect(nope.res.body).toContain('action="/api/auth/access-request"');
       expect(nope.cookie).toBeUndefined();
       const ok = await login(a, g, alice.toUpperCase());
       expect(ok.res.statusCode).toBe(302);
@@ -285,13 +285,28 @@ describe('sign-in allowlist', () => {
     }
   });
 
-  it('config: production refuses to start without an allowlist unless explicitly opened', () => {
+  it('config: production refuses to start without an allowlist unless explicitly opened', async () => {
     const base = { DATABASE_URL: 'postgresql://x', NODE_ENV: 'production' };
-    expect(() => loadConfig(base)).toThrow(/ORCH_ALLOWED_GITHUB_LOGINS/);
-    expect(loadConfig({ ...base, ORCH_ALLOW_ANY_GITHUB_USER: 'true' })).toBeTruthy();
+    const noGrants = async () => false;
+    await expect(assertSignInPolicy(loadConfig(base), noGrants)).rejects.toThrow(
+      /ORCH_ALLOWED_GITHUB_LOGINS/,
+    );
+    await expect(
+      assertSignInPolicy(loadConfig({ ...base, ORCH_ALLOW_ANY_GITHUB_USER: 'true' }), noGrants),
+    ).resolves.toBeUndefined();
+    // Admins, or access approved on the Access page, restrict sign-in too.
+    await expect(
+      assertSignInPolicy(loadConfig({ ...base, ORCH_ADMIN_GITHUB_LOGINS: 'Root' }), noGrants),
+    ).resolves.toBeUndefined();
+    await expect(assertSignInPolicy(loadConfig(base), async () => true)).resolves.toBeUndefined();
+    expect(signInPolicyError(loadConfig(base), false)).toMatch(/ORCH_ADMIN_GITHUB_LOGINS/);
+    expect(signInPolicyError(loadConfig({ DATABASE_URL: 'postgresql://x' }), false)).toBeNull();
     expect(
       loadConfig({ ...base, ORCH_ALLOWED_GITHUB_ORGS: 'Acme, Beta' }).ORCH_ALLOWED_GITHUB_ORGS,
     ).toEqual(['acme', 'beta']);
+    expect(
+      loadConfig({ ...base, ORCH_ADMIN_GITHUB_LOGINS: 'Root, X' }).ORCH_ADMIN_GITHUB_LOGINS,
+    ).toEqual(['root', 'x']);
     expect(loadConfig({ DATABASE_URL: 'postgresql://x' }).ORCH_ALLOWED_GITHUB_LOGINS).toEqual([]);
   });
 });

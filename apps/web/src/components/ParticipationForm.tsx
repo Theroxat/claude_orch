@@ -9,13 +9,35 @@ export function validateBudget(raw: string): number | null {
   return n >= 0 && n <= 100 ? n : null;
 }
 
+function CannotParticipate({ item }: { item: DiscoverItem }) {
+  const { fullName } = item.project;
+  const owner = item.owner.githubLogin;
+  const reason = item.cannotParticipateReason;
+  return (
+    <p className="hint" role="note">
+      {reason === 'NOT_GITHUB_COLLABORATOR'
+        ? `Only GitHub collaborators of ${fullName} can join. Ask the owner (${owner}) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in My Projects.`
+        : reason === 'BLOCKED_BY_OWNER'
+          ? `The owner (${owner}) has blocked you from joining ${fullName}. Ask them to change this in My Projects.`
+          : `Only people on the allowlist of ${fullName} can join. Ask the owner (${owner}) to allow you, or set 'Who can participate' to 'All orch users on this server' in My Projects.`}
+    </p>
+  );
+}
+
 export function ParticipationForm({ item }: { item: DiscoverItem }) {
+  if (!item.canParticipate && !item.myParticipation?.participating) {
+    return <CannotParticipate item={item} />;
+  }
+  return <ParticipationFields item={item} />;
+}
+
+function ParticipationFields({ item }: { item: DiscoverItem }) {
   const qc = useQueryClient();
   const p = item.myParticipation;
   const id = item.project.id;
   const [participating, setParticipating] = useState(p?.participating ?? false);
   const [budget, setBudget] = useState(String(p?.budgetPercent ?? 20));
-  const [mode, setMode] = useState<ApiParticipationMode>(p?.mode ?? 'approval');
+  const [mode, setMode] = useState<ApiParticipationMode>(p?.participating ? p.mode : 'approval');
   const [touched, setTouched] = useState(false);
   const save = useMutation({
     mutationFn: (v: {
@@ -87,7 +109,7 @@ export function ParticipationForm({ item }: { item: DiscoverItem }) {
               checked={mode === 'auto'}
               onChange={() => setMode('auto')}
             />{' '}
-            Auto
+            <strong>Auto</strong>
             <span className="hint">Tasks start on my machine without asking me.</span>
           </label>
           <label className="radio">
@@ -97,7 +119,7 @@ export function ParticipationForm({ item }: { item: DiscoverItem }) {
               checked={mode === 'approval'}
               onChange={() => setMode('approval')}
             />{' '}
-            Approval
+            <strong>Approval</strong>
             <span className="hint">
               I approve each request before anything runs. Recommended to start.
             </span>

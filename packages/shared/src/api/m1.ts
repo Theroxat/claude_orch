@@ -6,7 +6,7 @@
  *   GET    /api/auth/github/login                           302 to GitHub OAuth
  *   GET    /api/auth/github/callback                        sets session cookie, 302 to "/"
  *   POST   /api/auth/logout                                 204
- *   GET    /api/me                                          ApiUser | 401
+ *   GET    /api/me                                          ApiUser (with isAdmin) | 401
  *   GET    /api/github/install-url                          InstallUrlResponse
  *   GET    /api/repos/available                             AvailableRepo[]
  *   POST   /api/projects                 AddProjectRequest  -> ProjectView (201)
@@ -37,6 +37,8 @@ export const ApiUserSchema = z.object({
   /** Setup wizard state, stored server-side (ISO timestamps). Absent = not set. */
   onboardingCompletedAt: z.string().nullish(),
   onboardingDismissedAt: z.string().nullish(),
+  /** ORCH_ADMIN_GITHUB_LOGINS member: may manage access on the Access page (/admin/access). */
+  isAdmin: z.boolean().default(false),
 });
 export type ApiUser = z.infer<typeof ApiUserSchema>;
 
@@ -119,6 +121,10 @@ export const DiscoverItemSchema = z.object({
   owner: z.object({ githubLogin: z.string(), avatarUrl: z.string().nullable() }),
   myRole: MyRole,
   myParticipation: ParticipationViewSchema.nullable(),
+  /** Additive: false when the project's policy forbids this user from participating. */
+  canParticipate: z.boolean().default(true),
+  /** Additive: why `canParticipate` is false (`NOT_GITHUB_COLLABORATOR`, `NOT_ON_ALLOWLIST`). */
+  cannotParticipateReason: z.string().nullable().default(null),
 });
 export type DiscoverItem = z.infer<typeof DiscoverItemSchema>;
 

@@ -9,7 +9,7 @@ import {
 import { audit } from '../audit';
 import { getUserAccessToken, requireUser, type AuthDeps } from '../auth';
 import { HttpError, parseBody } from '../http/errors';
-import { canSee, toOrchRole } from './roles';
+import { canParticipate, canSee, toOrchRole } from './roles';
 import { getRoleInfo, isCurrentOwner, toParticipationView, toProjectView } from './service';
 
 export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
@@ -176,10 +176,19 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
         const info = await getRoleInfo(prisma, deps.github, p, user);
         if (!canSee(p.visibility, info.role, info)) return null;
         const part = myByProject.get(p.id);
+        const allowed = canParticipate(p.participationPolicy, info.role, info);
         return {
           project: toProjectView(p),
           owner: { githubLogin: p.addedBy.login, avatarUrl: p.addedBy.avatarUrl },
           myRole: toOrchRole(info.role),
+          canParticipate: allowed,
+          cannotParticipateReason: allowed
+            ? null
+            : info.canParticipate === false
+              ? 'BLOCKED_BY_OWNER'
+              : p.participationPolicy === 'GITHUB'
+                ? 'NOT_GITHUB_COLLABORATOR'
+                : 'NOT_ON_ALLOWLIST',
           myParticipation: part ? toParticipationView(part, p.requireParticipantApproval) : null,
         };
       }),

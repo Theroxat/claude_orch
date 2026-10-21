@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
+import { AdminAccess } from './pages/AdminAccess';
 import { Backlog } from './pages/Backlog';
 import { ClaudeCode } from './pages/ClaudeCode';
 import { Discover } from './pages/Discover';
@@ -28,6 +29,7 @@ export function App() {
           <Route path="/backlog" element={<Backlog />} />
           <Route path="/claude-code" element={<ClaudeCode />} />
           <Route path="/my-server" element={<MyServer />} />
+          <Route path="/admin/access" element={<AdminAccess />} />
         </Route>
       </Route>
     </Routes>

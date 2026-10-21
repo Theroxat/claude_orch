@@ -91,7 +91,9 @@ services:
       - pnpm --filter @orch/server exec prisma migrate deploy && cd apps/server && exec node --import tsx src/main.ts
     environment:
       NODE_ENV: production
-      ORCH_ALLOW_ANY_GITHUB_USER: 'true' # E2E signs in fake users
+      ORCH_ALLOW_ANY_GITHUB_USER: 'false' # access-grants flow: only the lists below + approved strangers
+      ORCH_ADMIN_GITHUB_LOGINS: olivia
+      ORCH_ALLOWED_GITHUB_LOGINS: alice,bob,rita
       HOST: 0.0.0.0
       PORT: '3000'
       LOG_LEVEL: ${LOG_LEVEL:-info}

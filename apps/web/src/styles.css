@@ -211,6 +211,10 @@ button:disabled {
   display: block;
   margin: 6px 0;
 }
+.radio .hint {
+  display: block;
+  margin: 2px 0 0 24px;
+}
 .code {
   background: var(--bg);
   border: 1px solid var(--border);

@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { dismissOnboarding } from '../api/endpoints';
+import { dismissOnboarding, fetchPendingCount } from '../api/endpoints';
 import { useOffers } from '../pages/Requests';
 import { useMe, useResetSession } from '../auth';
 import { useOnboarding } from './GettingStarted';
@@ -20,6 +20,14 @@ const links = [
 export function Layout() {
   const me = useMe().data;
   const pending = useOffers().data?.length ?? 0;
+  const isAdmin = !!me?.isAdmin;
+  const accessPending =
+    useQuery({
+      queryKey: ['admin', 'pending-count'],
+      queryFn: fetchPendingCount,
+      enabled: isAdmin,
+      refetchInterval: 30_000,
+    }).data?.count ?? 0;
   const onboarding = useOnboarding().data?.steps;
   const navigate = useNavigate();
   const reset = useResetSession();
@@ -49,12 +57,17 @@ export function Layout() {
       <header className="topbar">
         <strong>orch</strong>
         <nav>
-          {links.map((l) => (
+          {(isAdmin ? [...links, { to: '/admin/access', label: 'Access' }] : links).map((l) => (
             <NavLink key={l.to} to={l.to} className={({ isActive }) => (isActive ? 'active' : '')}>
               {l.label}
               {l.to === '/requests' && pending > 0 && (
                 <span className="nav-badge" aria-label={`${pending} pending requests`}>
                   {pending}
+                </span>
+              )}
+              {l.to === '/admin/access' && accessPending > 0 && (
+                <span className="nav-badge" aria-label={`${accessPending} pending access requests`}>
+                  {accessPending}
                 </span>
               )}
             </NavLink>

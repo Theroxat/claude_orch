@@ -129,7 +129,7 @@ export function registerParticipation(
       orderBy: { createdAt: 'asc' },
     });
     return rows.map((r) => ({
-      user: toApiUser(r.user),
+      user: toApiUser(r.user, app.allowlist.isAdmin(r.user.login)),
       participation: toParticipationView(r, project.requireParticipantApproval),
     }));
   });

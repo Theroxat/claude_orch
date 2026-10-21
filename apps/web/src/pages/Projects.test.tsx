@@ -28,6 +28,7 @@ describe('My projects', () => {
     expect(within(card).getByLabelText('Visibility')).toHaveProperty('value', 'ALL_MEMBERS');
     expect(within(card).getByLabelText('Who can participate')).toHaveProperty('value', 'GITHUB');
     expect(within(card).getByLabelText('Who can submit')).toHaveProperty('value', 'GITHUB');
+    expect(within(card).getByText(/collaborators on the GitHub repository/)).toBeTruthy();
     expect(within(card).getByLabelText(/Require participant approval/)).toHaveProperty(
       'checked',
       true,

@@ -1,5 +1,5 @@
 import { buildApp } from './app';
-import { loadConfig } from './config';
+import { assertSignInPolicy, loadConfig } from './config';
 import { createPrisma } from './db';
 import { OctokitGithubClient } from './github';
 
@@ -28,7 +28,15 @@ const shutdown = async () => {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-app.listen({ host: config.HOST, port: config.PORT }).catch((err) => {
-  app.log.error(err);
-  process.exit(1);
-});
+// Production refuses to start when anyone could sign in (env allowlists, admins and approved
+// access grants all empty) unless ORCH_ALLOW_ANY_GITHUB_USER=true.
+assertSignInPolicy(
+  config,
+  async () => (await prisma.accessGrant.count({ where: { status: 'APPROVED' } })) > 0,
+)
+  .then(() => app.listen({ host: config.HOST, port: config.PORT }))
+  .catch(async (err) => {
+    app.log.error(err);
+    await prisma.$disconnect().catch(() => undefined);
+    process.exit(1);
+  });

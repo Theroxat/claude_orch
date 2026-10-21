@@ -67,4 +67,52 @@ describe('Discover', () => {
     expect(screen.getByText(/start on my machine without asking/)).toBeTruthy();
     expect(screen.getByText(/I approve each request/)).toBeTruthy();
   });
+
+  it('defaults to Approval and renders option names and descriptions as separate blocks', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/discover': () => ({ json: [item(null)] }),
+    });
+    renderApp('/discover');
+    const card = await screen.findByRole('article', { name: 'octo/repo' });
+    expect(within(card).getByLabelText(/^Approval/)).toHaveProperty('checked', true);
+    expect(within(card).getByLabelText(/^Auto/)).toHaveProperty('checked', false);
+    expect(within(card).getByText('Auto').tagName).toBe('STRONG');
+    expect(within(card).getByText('Approval').tagName).toBe('STRONG');
+    expect(within(card).getByText(/start on my machine/).className).toContain('hint');
+  });
+
+  it('defaults to Approval when the stored participation is off, even if its mode is auto', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/discover': () => ({
+        json: [item(part({ participating: false, mode: 'auto' }))],
+      }),
+    });
+    renderApp('/discover');
+    const card = await screen.findByRole('article', { name: 'octo/repo' });
+    expect(within(card).getByLabelText(/^Approval/)).toHaveProperty('checked', true);
+    expect(within(card).getByLabelText(/^Auto/)).toHaveProperty('checked', false);
+  });
+
+  it('explains instead of showing the form when the user cannot participate', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/discover': () => ({
+        json: [
+          {
+            ...item(null),
+            canParticipate: false,
+            cannotParticipateReason: 'NOT_GITHUB_COLLABORATOR',
+          },
+        ],
+      }),
+    });
+    renderApp('/discover');
+    const card = await screen.findByRole('article', { name: 'octo/repo' });
+    expect(within(card).getByRole('note').textContent).toBe(
+      "Only GitHub collaborators of octo/repo can join. Ask the owner (boss) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in My Projects.",
+    );
+    expect(within(card).queryByRole('button', { name: 'Save' })).toBeNull();
+  });
 });

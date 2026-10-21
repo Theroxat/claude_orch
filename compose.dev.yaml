@@ -59,6 +59,7 @@ services:
       ORCH_ALLOWED_GITHUB_LOGINS: ${ORCH_ALLOWED_GITHUB_LOGINS:-}
       ORCH_ALLOWED_GITHUB_ORGS: ${ORCH_ALLOWED_GITHUB_ORGS:-}
       ORCH_ALLOW_ANY_GITHUB_USER: ${ORCH_ALLOW_ANY_GITHUB_USER:-false}
+      ORCH_ADMIN_GITHUB_LOGINS: ${ORCH_ADMIN_GITHUB_LOGINS:-}
     depends_on:
       postgres:
         condition: service_healthy

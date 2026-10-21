@@ -59,6 +59,7 @@ describe('auth', () => {
       avatarUrl: `https://a/${u.login}.png`,
       onboardingCompletedAt: null,
       onboardingDismissedAt: null,
+      isAdmin: false,
     });
   });
 
@@ -256,6 +257,32 @@ describe('projects', () => {
 });
 
 describe('discover', () => {
+  it('exposes canParticipate and the reason for each item', async () => {
+    const a = await ownerWithProject(); // participation policy GITHUB by default
+    await api(app, a.owner)('PATCH', `/api/projects/${a.project.id}`, {
+      visibility: 'ALL_MEMBERS',
+    });
+    const reader = await loginAs(app, gh);
+    setRole(a.repo, reader, 'READ');
+    const outsider = await loginAs(app, gh);
+    const find = async (u: TestUser) =>
+      ((await api(app, u)('GET', '/api/projects/discover')).json() as DiscoverItem[]).find(
+        (i) => i.project.id === a.project.id,
+      )!;
+    expect(await find(reader)).toMatchObject({
+      canParticipate: true,
+      cannotParticipateReason: null,
+    });
+    expect(await find(outsider)).toMatchObject({
+      canParticipate: false,
+      cannotParticipateReason: 'NOT_GITHUB_COLLABORATOR',
+    });
+    await api(app, a.owner)('PATCH', `/api/projects/${a.project.id}`, {
+      whoCanParticipate: 'ALL_MEMBERS',
+    });
+    expect(await find(outsider)).toMatchObject({ canParticipate: true });
+  });
+
   it('excludes my own projects and applies visibility rules', async () => {
     const a = await ownerWithProject(); // COLLABORATORS (default)
     const b = await ownerWithProject();

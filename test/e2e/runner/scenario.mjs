@@ -370,6 +370,36 @@ async function main() {
     assert(anon.status === 401, 'anonymous /api/me is 401');
   });
 
+  await step('a2. stranger requests access, admin approves, stranger signs in', async () => {
+    const sam = new Session('sam');
+    const r1 = await sam.raw('GET', '/api/auth/github/login');
+    const authorize = new URL(r1.headers.get('location'));
+    authorize.searchParams.set('login', 'sam');
+    const r2 = await fetch(authorize, { redirect: 'manual' });
+    const cb = new URL(r2.headers.get('location'));
+    const denied = await sam.raw('GET', `${cb.pathname}${cb.search}`);
+    const html = await denied.text();
+    assert(denied.status === 403, 'stranger is refused', denied.status);
+    const token = /name="token" value="([^"]+)"/.exec(html)?.[1];
+    assert(token, 'access-request form carries a token');
+    assert(!sam.cookies.has('orch_session'), 'no session for the stranger yet');
+    const rq = await fetch(`${SERVER}/api/auth/access-request`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: SERVER },
+      body: new URLSearchParams({ token, note: 'e2e please' }),
+    });
+    assert(rq.status < 300 && /Request sent/.test(await rq.text()), 'request sent', rq.status);
+    const o = users.olivia;
+    const adm = await o.get('/api/admin/access');
+    const pending = JSON.stringify(adm.pending ?? adm);
+    assert(pending.includes('"sam"') || pending.includes('sam'), 'pending list shows sam', adm);
+    const grant = (adm.pending ?? []).find((g) => JSON.stringify(g).includes('sam'));
+    assert(grant?.id, 'pending grant has an id', adm);
+    await o.post(`/api/admin/access/grants/${grant.id}/approve`);
+    const me = await sam.signIn();
+    assert(me.githubLogin === 'sam', 'approved stranger signed in', me);
+  });
+
   await step('b1. owner adds the project; members ask to participate; owner approves', async () => {
     const o = users.olivia;
     const repos = await o.get('/api/repos/available');
