@@ -329,6 +329,8 @@ const users = {
   bob: new Session('bob'),
 };
 let project;
+/** The approved stranger from step a2, reused by the rejection step. */
+let sam;
 const agentIds = {};
 
 async function taskByIssue(n, as = users.olivia) {
@@ -401,7 +403,7 @@ async function main() {
   });
 
   await step('a2. stranger requests access, admin approves, stranger signs in', async () => {
-    const sam = new Session('sam');
+    sam = new Session('sam');
     const r1 = await sam.raw('GET', '/api/auth/github/login');
     const authorize = new URL(r1.headers.get('location'));
     authorize.searchParams.set('login', 'sam');
@@ -1238,6 +1240,69 @@ async function main() {
         runs,
       );
       for (const a of runs) recordAssignment(a.id);
+    },
+  );
+
+  // API only, last: no task is dispatched here, so earlier dispatch assertions are unaffected.
+  await step(
+    'j. owner joins and leaves their own pool; reject with a reason, member sees it, undo',
+    async () => {
+      const o = users.olivia;
+      const base = `/api/projects/${project.id}`;
+      const own = await o.api('PUT', `${base}/participation`, {
+        participating: true,
+        budgetPercent: 5,
+        mode: 'approval',
+      });
+      assert(own.status === 'active', 'owner participation is auto-approved', own);
+      const off = await o.api('PUT', `${base}/participation`, {
+        participating: false,
+        budgetPercent: 5,
+        mode: 'approval',
+      });
+      assert(off.status === 'inactive', 'owner opted out', off);
+
+      const before = project.whoCanParticipate;
+      await o.api('PATCH', base, { whoCanParticipate: 'ALL_MEMBERS' });
+      try {
+        const req = await sam.api('PUT', `${base}/participation`, {
+          participating: true,
+          budgetPercent: 10,
+          mode: 'approval',
+        });
+        assert(req.status === 'pending', 'sam is pending', req);
+        const rej = await o.post(`${base}/participants/${sam.me.id}/reject`, {
+          reason: 'e2e: not this sprint',
+        });
+        assert(rej.status === 'rejected', 'sam rejected', rej);
+        const disc = await sam.get('/api/projects/discover');
+        const mine = disc.find((i) => i.project.id === project.id)?.myParticipation;
+        assert(
+          mine?.status === 'rejected' && mine.rejectionReason === 'e2e: not this sprint',
+          'sam sees the reason in discover',
+          mine,
+        );
+        const undo = await o.post(`${base}/participants/${sam.me.id}/undo-rejection`, {
+          to: 'pending',
+        });
+        assert(undo.status === 'pending' && undo.rejectionReason === null, 'undone', undo);
+        const audit = psql(
+          `select action from "AuditLog" where "projectId"='${project.id}' and "targetUserId"='${sam.me.id}' order by id`,
+        ).map(([a]) => a);
+        assert(
+          audit.includes('participation.rejected') &&
+            audit.includes('participation.rejection_undone'),
+          'rejection and undo are audited',
+          audit,
+        );
+        await sam.api('PUT', `${base}/participation`, {
+          participating: false,
+          budgetPercent: 10,
+          mode: 'approval',
+        });
+      } finally {
+        await o.api('PATCH', base, { whoCanParticipate: before });
+      }
     },
   );
 }
