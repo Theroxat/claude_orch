@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { addProject, fetchAvailableRepos, fetchInstallUrl } from '../api/endpoints';
 import { Icon } from '../ui/Icon';
-import { Modal, closeModal } from '../ui/Modal';
+import { Modal } from '../ui/Modal';
 import { presenceProps, usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 
@@ -129,7 +129,8 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
 export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   return (
     <Modal label="Add repository" title="Add repository" onClose={onClose} wide>
-      <RepoPicker onAdded={() => closeModal(onClose)} />
+      {/* Closes in the same render as the new project card appears, which animates in. */}
+      <RepoPicker onAdded={onClose} />
     </Modal>
   );
 }
