@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useMe } from '../auth';
 import {
   createInvite,
@@ -11,6 +11,8 @@ import {
   type AccessInvite,
 } from '../api/endpoints';
 import { CopyButton } from '../components/CopyButton';
+import { presenceProps, usePresence } from '../ui/presence';
+import { useToast } from '../ui/Toast';
 
 const KEY = ['admin', 'access'];
 const COUNT_KEY = ['admin', 'pending-count'];
@@ -45,6 +47,7 @@ function inviteStatus(i: AccessInvite): string {
 export function AdminAccess() {
   const me = useMe().data;
   const qc = useQueryClient();
+  const toast = useToast();
   const [login, setLogin] = useState('');
   const [multiUse, setMultiUse] = useState(false);
   const [hours, setHours] = useState(24);
@@ -64,11 +67,16 @@ export function AdminAccess() {
   const decide = useMutation({
     mutationFn: (v: { id: string; action: 'approve' | 'deny' | 'remove' }) =>
       decideGrant(v.id, v.action),
-    onSuccess: refresh,
+    onSuccess: async (g, v) => {
+      const verb = v.action === 'approve' ? 'approved' : v.action === 'deny' ? 'denied' : 'removed';
+      toast(`${g.grant.githubLogin} ${verb}`, v.action === 'approve' ? 'ok' : 'info');
+      await refresh();
+    },
   });
   const add = useMutation({
     mutationFn: () => preApprove(login.trim().replace(/^@/, '')),
-    onSuccess: async () => {
+    onSuccess: async (g) => {
+      toast(`${g.grant.githubLogin} pre-approved`);
       setLogin('');
       await refresh();
     },
@@ -82,11 +90,17 @@ export function AdminAccess() {
   });
   const revoke = useMutation({
     mutationFn: (id: string) => revokeInvite(id),
-    onSuccess: refresh,
+    onSuccess: async () => {
+      toast('Invite link revoked', 'info');
+      await refresh();
+    },
   });
 
-  if (me && !me.isAdmin) return <p className="hint">Admins only.</p>;
   const d = access.data;
+  const pending = usePresence(d?.pending, (g) => g.id);
+  const approved = usePresence(d?.approved, (g) => g.id);
+  const invites = usePresence(d?.invites, (i) => i.id);
+  if (me && !me.isAdmin) return <p className="hint">Admins only.</p>;
   const remove = (g: AccessGrant) => {
     if (
       window.confirm(
@@ -99,169 +113,198 @@ export function AdminAccess() {
 
   return (
     <div>
-      <h1>Access</h1>
+      <header className="page-head">
+        <div>
+          <h1>Access</h1>
+          <p className="lede">
+            Decide who may sign in to this orch server: answer requests, pre-approve logins and send
+            invite links.
+          </p>
+        </div>
+      </header>
       {err && <p className="error">{err.message}</p>}
       {access.isPending && <p className="hint">Loading...</p>}
       {d && (
         <>
-          <div className="card">
-            <h2>Pending requests</h2>
+          <section className="card" aria-label="Pending requests">
+            <div className="card-head">
+              <h2>Pending requests</h2>
+              {d.pending.length > 0 && <span className="badge pending">{d.pending.length}</span>}
+            </div>
             {d.pending.length === 0 && <p className="hint">No pending requests.</p>}
-            {d.pending.map((g) => (
-              <div className="row between" key={g.id}>
-                <div className="row">
-                  <Avatar g={g} />
-                  <strong>{g.githubLogin}</strong>
-                  {g.note && <span>{g.note}</span>}
-                  {g.requestedAt && (
-                    <span className="hint">{new Date(g.requestedAt).toLocaleString()}</span>
-                  )}
-                </div>
-                <div className="row">
-                  <button
-                    className="primary"
-                    disabled={decide.isPending}
-                    onClick={() => decide.mutate({ id: g.id, action: 'approve' })}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="danger"
-                    disabled={decide.isPending}
-                    onClick={() => decide.mutate({ id: g.id, action: 'deny' })}
-                  >
-                    Deny
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="card">
-            <h2>Members</h2>
-            {d.approved.length === 0 && <p className="hint">No approved members yet.</p>}
-            {d.approved.map((g) => (
-              <div className="row between" key={g.id}>
-                <div className="row">
-                  <Avatar g={g} />
-                  <strong>{g.githubLogin}</strong>
-                  {g.decidedBy && <span className="hint">approved by {g.decidedBy}</span>}
-                </div>
-                <button className="danger" disabled={decide.isPending} onClick={() => remove(g)}>
-                  Remove
-                </button>
-              </div>
-            ))}
-            <form
-              className="row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (login.trim()) add.mutate();
-              }}
-            >
-              <label className="field">
-                Add a GitHub login
-                <input value={login} onChange={(e) => setLogin(e.target.value)} />
-              </label>
-              <button type="submit" disabled={add.isPending || !login.trim()}>
-                Pre-approve
-              </button>
-            </form>
-          </div>
-
-          <div className="card">
-            <h2>Invite links</h2>
-            <form
-              className="row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                invite.mutate();
-              }}
-            >
-              <label className="field">
-                Type
-                <select
-                  value={multiUse ? 'multi' : 'single'}
-                  onChange={(e) => setMultiUse(e.target.value === 'multi')}
-                >
-                  <option value="single">Single-use</option>
-                  <option value="multi">Multi-use</option>
-                </select>
-              </label>
-              <label className="field">
-                Expires after
-                <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
-                  {EXPIRIES.map((x) => (
-                    <option key={x.hours} value={x.hours}>
-                      {x.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={invite.isPending}>
-                Create invite link
-              </button>
-            </form>
-            {created && (
-              <div>
-                <p>
-                  <code data-testid="invite-url">{created}</code>
-                </p>
-                <CopyButton text={created} />
-                <p className="hint">This link won't be shown again. Copy it now.</p>
-              </div>
-            )}
-            {d.invites.length === 0 && <p className="hint">No invite links.</p>}
-            {d.invites.map((i) => {
-              const status = inviteStatus(i);
-              return (
-                <div className="row between" key={i.id}>
-                  <span>
-                    {i.multiUse ? 'Multi-use' : 'Single-use'} · <strong>{status}</strong> · {i.uses}{' '}
-                    {i.uses === 1 ? 'use' : 'uses'} · expires{' '}
-                    {new Date(i.expiresAt).toLocaleString()}
-                  </span>
-                  {status === 'active' && (
+            <div>
+              {pending.map(({ key, item: g, phase }) => (
+                <div className="list-row" key={key} {...presenceProps(phase)}>
+                  <div className="who">
+                    <Avatar g={g} />
+                    <strong>{g.githubLogin}</strong>
+                    {g.note && <span>{g.note}</span>}
+                    {g.requestedAt && (
+                      <span className="hint">{new Date(g.requestedAt).toLocaleString()}</span>
+                    )}
+                  </div>
+                  <div className="row">
+                    <button
+                      className="primary"
+                      disabled={decide.isPending}
+                      onClick={() => decide.mutate({ id: g.id, action: 'approve' })}
+                    >
+                      Approve
+                    </button>
                     <button
                       className="danger"
-                      disabled={revoke.isPending}
-                      onClick={() => revoke.mutate(i.id)}
+                      disabled={decide.isPending}
+                      onClick={() => decide.mutate({ id: g.id, action: 'deny' })}
                     >
-                      Revoke
+                      Deny
                     </button>
-                  )}
+                  </div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
+          </section>
+
+          <div className="split">
+            <section className="card" aria-label="Members">
+              <h2>Members</h2>
+              {d.approved.length === 0 && <p className="hint">No approved members yet.</p>}
+              <div>
+                {approved.map(({ key, item: g, phase }) => (
+                  <div className="list-row" key={key} {...presenceProps(phase)}>
+                    <div className="who">
+                      <Avatar g={g} />
+                      <strong>{g.githubLogin}</strong>
+                      {g.decidedBy && <span className="hint">approved by {g.decidedBy}</span>}
+                    </div>
+                    <button
+                      className="danger"
+                      disabled={decide.isPending}
+                      onClick={() => remove(g)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <form
+                className="invite-form card-foot"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (login.trim()) add.mutate();
+                }}
+              >
+                <label className="field">
+                  Add a GitHub login
+                  <input value={login} onChange={(e) => setLogin(e.target.value)} />
+                </label>
+                <button type="submit" disabled={add.isPending || !login.trim()}>
+                  Pre-approve
+                </button>
+              </form>
+            </section>
+
+            <section className="card" aria-label="Invite links">
+              <h2>Invite links</h2>
+              <form
+                className="invite-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  invite.mutate();
+                }}
+              >
+                <label className="field">
+                  Type
+                  <select
+                    value={multiUse ? 'multi' : 'single'}
+                    onChange={(e) => setMultiUse(e.target.value === 'multi')}
+                  >
+                    <option value="single">Single-use</option>
+                    <option value="multi">Multi-use</option>
+                  </select>
+                </label>
+                <label className="field">
+                  Expires after
+                  <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
+                    {EXPIRIES.map((x) => (
+                      <option key={x.hours} value={x.hours}>
+                        {x.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="submit" className="primary" disabled={invite.isPending}>
+                  Create invite link
+                </button>
+              </form>
+              {created && (
+                <div className="invite-created reveal" key={created}>
+                  <code data-testid="invite-url">{created}</code>
+                  <CopyButton text={created} />
+                  <p className="hint">This link won't be shown again. Copy it now.</p>
+                </div>
+              )}
+              {d.invites.length === 0 && <p className="hint">No invite links.</p>}
+              <div>
+                {invites.map(({ key, item: i, phase }) => {
+                  const status = inviteStatus(i);
+                  return (
+                    <div className="list-row" key={key} {...presenceProps(phase)}>
+                      <span className="who">
+                        <span className={`badge ${status === 'active' ? 'ok' : 'off'}`}>
+                          {status}
+                        </span>
+                        <strong>{i.multiUse ? 'Multi-use' : 'Single-use'}</strong>
+                        <span className="hint">
+                          {i.uses} {i.uses === 1 ? 'use' : 'uses'}, expires{' '}
+                          {new Date(i.expiresAt).toLocaleString()}
+                        </span>
+                      </span>
+                      {status === 'active' && (
+                        <button
+                          className="danger"
+                          disabled={revoke.isPending}
+                          onClick={() => revoke.mutate(i.id)}
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
           </div>
 
-          <div className="card">
+          <section className="card" aria-label="Configured on the server">
             <h2>Configured on the server</h2>
             <p className="hint">
               These entries are configured on the server (environment) and cannot be changed here.
             </p>
             {d.configured.allowAny && (
-              <p className="hint">Any GitHub account is allowed on this server.</p>
+              <p className="warning">Any GitHub account is allowed on this server.</p>
             )}
-            {(
-              [
-                ['Logins', d.configured.logins],
-                ['Organizations', d.configured.orgs],
-                ['Admins', d.configured.admins],
-              ] as const
-            ).map(([label, items]) => (
-              <p key={label}>
-                <strong>{label}:</strong> {items.length ? items.join(', ') : 'none'}
-              </p>
-            ))}
-          </div>
+            <dl className="config-list">
+              {(
+                [
+                  ['Logins', d.configured.logins],
+                  ['Organizations', d.configured.orgs],
+                  ['Admins', d.configured.admins],
+                ] as const
+              ).map(([label, items]) => (
+                <Fragment key={label}>
+                  <dt>{label}</dt>
+                  <dd>{items.length ? items.join(', ') : 'none'}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          </section>
 
           {d.denied.length > 0 && (
             <details className="card">
               <summary>Declined ({d.denied.length})</summary>
               {d.denied.map((g) => (
-                <div className="row between" key={g.id}>
-                  <div className="row">
+                <div className="list-row" key={g.id}>
+                  <div className="who">
                     <Avatar g={g} />
                     <strong>{g.githubLogin}</strong>
                   </div>

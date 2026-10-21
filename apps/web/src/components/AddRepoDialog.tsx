@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { addProject, fetchAvailableRepos, fetchInstallUrl } from '../api/endpoints';
+import { Icon } from '../ui/Icon';
+import { Modal, closeModal } from '../ui/Modal';
+import { presenceProps, usePresence } from '../ui/presence';
+import { useToast } from '../ui/Toast';
 
 const ADMIN_NOTE =
   'Only repositories where you are an admin are listed: the project owner must be a repository admin.';
@@ -8,6 +12,7 @@ const ADMIN_NOTE =
 /** Repository list + "Install the GitHub App" guide. Shared by the dialog and the setup wizard. */
 export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: number }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const repos = useQuery({
     queryKey: ['repos', 'available'],
     queryFn: fetchAvailableRepos,
@@ -16,7 +21,8 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
   const install = useQuery({ queryKey: ['install-url'], queryFn: fetchInstallUrl });
   const add = useMutation({
     mutationFn: (githubRepoId: number) => addProject({ githubRepoId }),
-    onSuccess: async () => {
+    onSuccess: async (p) => {
+      toast(`${p.fullName} added to orch`);
       await qc.invalidateQueries({ queryKey: ['projects'] });
       await qc.invalidateQueries({ queryKey: ['repos'] });
       await qc.invalidateQueries({ queryKey: ['onboarding'] });
@@ -30,6 +36,7 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
     return () => window.removeEventListener('focus', onFocus);
   }, [refetchRepos]);
   const list = repos.data ?? [];
+  const rows = usePresence(repos.data, (r) => String(r.githubRepoId));
   const noRepos = repos.isSuccess && list.length === 0;
   return (
     <>
@@ -37,10 +44,11 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
       {repos.error && <p className="error">{repos.error.message}</p>}
       {add.error && <p className="error">{add.error.message}</p>}
       <ul className="list">
-        {list.map((r) => (
-          <li key={r.githubRepoId}>
-            <span>
-              {r.fullName} {r.private && <span className="badge">private</span>}
+        {rows.map(({ key, item: r, phase }) => (
+          <li key={key} {...presenceProps(phase)}>
+            <span className="who">
+              <strong>{r.fullName}</strong>
+              {r.private && <span className="badge">private</span>}
             </span>
             {r.alreadyAdded ? (
               <span className="badge ok">Added</span>
@@ -74,6 +82,7 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
                   target="_blank"
                   rel="noopener noreferrer"
                 >
+                  <Icon name="github" />
                   Install the GitHub App
                 </a>
               ) : (
@@ -119,14 +128,8 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
 
 export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   return (
-    <div className="modal-backdrop">
-      <div className="modal" role="dialog" aria-label="Add repository">
-        <div className="row between">
-          <h2>Add repository</h2>
-          <button onClick={onClose}>Close</button>
-        </div>
-        <RepoPicker onAdded={onClose} />
-      </div>
-    </div>
+    <Modal label="Add repository" title="Add repository" onClose={onClose} wide>
+      <RepoPicker onAdded={() => closeModal(onClose)} />
+    </Modal>
   );
 }

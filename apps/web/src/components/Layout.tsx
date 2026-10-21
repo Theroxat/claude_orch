@@ -1,10 +1,17 @@
-import { useEffect, useRef } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router';
+import { Suspense, ViewTransition, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { dismissOnboarding, fetchPendingCount } from '../api/endpoints';
-import { useOffers } from '../pages/Requests';
+import { useOffers } from '../api/offers';
 import { useMe, useResetSession } from '../auth';
+import { preload } from '../routes';
+import { Brand } from '../ui/Brand';
+import { Icon } from '../ui/Icon';
+import { motionAllowed } from '../ui/motion';
+import { PageFallback } from '../ui/PageFallback';
+import { useChangeCount } from '../ui/presence';
+import { useTheme } from '../ui/theme';
 import { AgentUpdateBanner } from './AgentUpdateBanner';
 import { useOnboarding } from './GettingStarted';
 import { VersionFooter } from './VersionFooter';
@@ -19,6 +26,21 @@ const links = [
   { to: '/my-server', label: 'My Server' },
 ];
 
+/** Count bubble on a station; replays a short pulse when the number changes. */
+function Count({ n, label }: { n: number; label: string }) {
+  const changes = useChangeCount(n);
+  return (
+    <span
+      key={changes}
+      className="nav-badge"
+      data-changed={changes > 0 || undefined}
+      aria-label={label}
+    >
+      {n}
+    </span>
+  );
+}
+
 export function Layout() {
   const me = useMe().data;
   const pending = useOffers().data?.length ?? 0;
@@ -32,9 +54,26 @@ export function Layout() {
     }).data?.count ?? 0;
   const onboarding = useOnboarding().data?.steps;
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const reset = useResetSession();
   const qc = useQueryClient();
   const redirected = useRef(false);
+  const [theme, toggleTheme] = useTheme();
+  // The shell draws itself once per load; later navigations only move the page.
+  const [booting, setBooting] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setBooting(false), 1600);
+    return () => clearTimeout(t);
+  }, []);
+  // Keep the current station in view when the line scrolls (narrow screens).
+  const line = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = line.current;
+    const current = nav?.querySelector<HTMLElement>('.station.active');
+    if (!nav || !current || nav.scrollWidth <= nav.clientWidth) return;
+    const left = current.offsetLeft - (nav.clientWidth - current.offsetWidth) / 2;
+    nav.scrollTo?.({ left, behavior: motionAllowed() ? 'smooth' : 'auto' });
+  }, [pathname]);
   const incomplete = !!onboarding && onboarding.some((x) => !x.done);
   // First visit only: send a member with unfinished onboarding to the wizard once. The server
   // remembers it (dismissedAt), so a reload or another browser does not redirect again.
@@ -54,56 +93,93 @@ export function Layout() {
       navigate('/login', { replace: true });
     },
   });
+  const nav = isAdmin ? [...links, { to: '/admin/access', label: 'Access' }] : links;
+  const doneSteps = onboarding?.filter((x) => x.done).length ?? 0;
   return (
-    <div>
+    <div className={`shell${booting ? ' booting' : ''}`}>
       <header className="topbar">
-        <strong>orch</strong>
-        <nav>
-          {(isAdmin ? [...links, { to: '/admin/access', label: 'Access' }] : links).map((l) => (
-            <NavLink key={l.to} to={l.to} className={({ isActive }) => (isActive ? 'active' : '')}>
-              {l.label}
-              {l.to === '/requests' && pending > 0 && (
-                <span className="nav-badge" aria-label={`${pending} pending requests`}>
-                  {pending}
-                </span>
-              )}
-              {l.to === '/admin/access' && accessPending > 0 && (
-                <span className="nav-badge" aria-label={`${accessPending} pending access requests`}>
-                  {accessPending}
-                </span>
-              )}
+        <div className="topbar-row">
+          <Link to="/projects" className="brand-link" aria-label="orch home">
+            <Brand />
+          </Link>
+          <div className="topbar-tools">
+            {incomplete && (
+              <NavLink
+                to="/welcome"
+                className="progress-pill"
+                onMouseEnter={() => preload('/welcome')}
+              >
+                Setup wizard
+              </NavLink>
+            )}
+            {onboarding && (
+              <NavLink
+                to="/projects"
+                className="progress-pill"
+                aria-label={`Getting started: ${doneSteps} of ${onboarding.length} steps done`}
+                style={{ '--done': doneSteps / Math.max(1, onboarding.length) } as CSSProperties}
+              >
+                <span className="pill-meter" aria-hidden="true" />
+                {doneSteps}/{onboarding.length}
+              </NavLink>
+            )}
+            <button
+              type="button"
+              className="ghost icon-button"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+            >
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+            </button>
+            {me && (
+              <div className="user">
+                {me.avatarUrl ? (
+                  <img className="avatar" src={me.avatarUrl} alt={me.githubLogin} />
+                ) : (
+                  <span className="avatar" data-initial={me.githubLogin.slice(0, 1)} />
+                )}
+                <span className="user-name">{me.name ?? me.githubLogin}</span>
+                <button type="button" className="ghost" onClick={() => logout.mutate()}>
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <nav className="line" aria-label="Main" ref={line}>
+          {nav.map((l, i) => (
+            <NavLink
+              key={l.to}
+              to={l.to}
+              className={({ isActive }) => `station${isActive ? ' active' : ''}`}
+              style={{ '--i': i } as CSSProperties}
+              onMouseEnter={() => preload(l.to)}
+              onFocus={() => preload(l.to)}
+            >
+              <span className="stop" aria-hidden="true" />
+              <span className="station-name">
+                {l.label}
+                {l.to === '/requests' && pending > 0 && (
+                  <Count n={pending} label={`${pending} pending requests`} />
+                )}
+                {l.to === '/admin/access' && accessPending > 0 && (
+                  <Count n={accessPending} label={`${accessPending} pending access requests`} />
+                )}
+              </span>
             </NavLink>
           ))}
         </nav>
-        {incomplete && (
-          <NavLink to="/welcome" className="progress-pill">
-            Setup wizard
-          </NavLink>
-        )}
-        {onboarding && (
-          <NavLink
-            to="/projects"
-            className="progress-pill"
-            aria-label={`Getting started: ${onboarding.filter((x) => x.done).length} of ${onboarding.length} steps done`}
-          >
-            {onboarding.filter((x) => x.done).length}/{onboarding.length}
-          </NavLink>
-        )}
-        {me && (
-          <div className="user">
-            {me.avatarUrl ? (
-              <img className="avatar" src={me.avatarUrl} alt={me.githubLogin} />
-            ) : (
-              <span className="avatar" />
-            )}
-            <span>{me.name ?? me.githubLogin}</span>
-            <button onClick={() => logout.mutate()}>Log out</button>
-          </div>
-        )}
       </header>
       <AgentUpdateBanner />
-      <main>
-        <Outlet />
+      <main className="page">
+        <ViewTransition key={pathname} enter="page-in" exit="page-out" default="none">
+          <div className="page-body">
+            <Suspense fallback={<PageFallback />}>
+              <Outlet />
+            </Suspense>
+          </div>
+        </ViewTransition>
       </main>
       <VersionFooter />
     </div>

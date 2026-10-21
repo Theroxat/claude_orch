@@ -4,18 +4,28 @@ import { fetchMyProjects } from '../api/endpoints';
 import { AddRepoDialog } from '../components/AddRepoDialog';
 import { GettingStarted } from '../components/GettingStarted';
 import { ProjectCard } from '../components/ProjectCard';
+import { usePresence } from '../ui/presence';
 
 export function Projects() {
   const [adding, setAdding] = useState(false);
   const q = useQuery({ queryKey: ['projects', 'mine'], queryFn: fetchMyProjects });
+  const projects = usePresence(q.data, (p) => p.id);
   return (
     <section>
-      <div className="row between">
-        <h1>My projects</h1>
-        <button className="primary" onClick={() => setAdding(true)}>
-          Add repository
-        </button>
-      </div>
+      <header className="page-head">
+        <div>
+          <h1>My projects</h1>
+          <p className="lede">
+            Repositories you own in orch, who can see them, and who may lend capacity or submit
+            tasks.
+          </p>
+        </div>
+        <div className="page-actions">
+          <button className="primary" onClick={() => setAdding(true)}>
+            Add repository
+          </button>
+        </div>
+      </header>
       <GettingStarted />
       {q.isPending && <p className="hint">Loading...</p>}
       {q.error && <p className="error">{q.error.message}</p>}
@@ -28,8 +38,8 @@ export function Projects() {
           </button>
         </div>
       )}
-      {q.data?.map((p) => (
-        <ProjectCard key={p.id} project={p} />
+      {projects.map(({ key, item, phase }) => (
+        <ProjectCard key={key} project={item} phase={phase} />
       ))}
       {adding && <AddRepoDialog onClose={() => setAdding(false)} />}
     </section>

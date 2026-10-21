@@ -6,6 +6,8 @@ import {
   fetchParticipants,
   updateProject,
 } from '../api/endpoints';
+import { presenceProps, usePresence, type Phase } from '../ui/presence';
+import { useToast } from '../ui/Toast';
 
 const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
   GITHUB:
@@ -17,40 +19,59 @@ const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
 
 function ParticipantsApproval({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const q = useQuery({
     queryKey: ['projects', projectId, 'participants'],
     queryFn: () => fetchParticipants(projectId),
   });
   const decide = useMutation({
-    mutationFn: (v: { userId: string; decision: 'approve' | 'reject' }) =>
+    mutationFn: (v: { userId: string; login: string; decision: 'approve' | 'reject' }) =>
       decideParticipant(projectId, v.userId, v.decision),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects', projectId, 'participants'] }),
+    onSuccess: (_r, v) => {
+      toast(v.decision === 'approve' ? `${v.login} approved` : `${v.login} rejected`);
+      return qc.invalidateQueries({ queryKey: ['projects', projectId, 'participants'] });
+    },
   });
-  const pending = (q.data ?? []).filter((p) => p.participation.status === 'pending');
+  const pending = q.data?.filter((p) => p.participation.status === 'pending');
+  const rows = usePresence(pending, (p) => p.user.id);
   return (
-    <div>
+    <div className="subpanel">
       <h3>Pending participants</h3>
       {q.error && <p className="error">{q.error.message}</p>}
       {decide.error && <p className="error">{decide.error.message}</p>}
-      {q.isSuccess && pending.length === 0 && <p className="hint">No pending requests.</p>}
+      {q.isSuccess && pending?.length === 0 && <p className="hint">No pending requests.</p>}
       <ul className="list">
-        {pending.map((p) => (
-          <li key={p.user.id}>
-            <span>
-              {p.user.githubLogin} ({p.participation.budgetPercent}%, {p.participation.mode})
+        {rows.map(({ key, item: p, phase }) => (
+          <li key={key} {...presenceProps(phase)}>
+            <span className="who">
+              <strong>{p.user.githubLogin}</strong>
+              <span className="badge">{p.participation.budgetPercent}%</span>
+              <span className="badge">{p.participation.mode}</span>
             </span>
             <span className="row">
               <button
                 className="primary"
                 aria-label={`Approve ${p.user.githubLogin}`}
-                onClick={() => decide.mutate({ userId: p.user.id, decision: 'approve' })}
+                onClick={() =>
+                  decide.mutate({
+                    userId: p.user.id,
+                    login: p.user.githubLogin,
+                    decision: 'approve',
+                  })
+                }
               >
                 Approve
               </button>
               <button
                 className="danger"
                 aria-label={`Reject ${p.user.githubLogin}`}
-                onClick={() => decide.mutate({ userId: p.user.id, decision: 'reject' })}
+                onClick={() =>
+                  decide.mutate({
+                    userId: p.user.id,
+                    login: p.user.githubLogin,
+                    decision: 'reject',
+                  })
+                }
               >
                 Reject
               </button>
@@ -62,23 +83,31 @@ function ParticipantsApproval({ projectId }: { projectId: string }) {
   );
 }
 
-export function ProjectCard({ project }: { project: ProjectView }) {
+export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView; phase?: Phase }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const update = useMutation({
     mutationFn: (patch: UpdateProjectRequest) => updateProject(project.id, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects', 'mine'] }),
+    onSuccess: () => {
+      toast(`${project.fullName} settings saved`);
+      return qc.invalidateQueries({ queryKey: ['projects', 'mine'] });
+    },
   });
   const remove = useMutation({
     mutationFn: () => deleteProject(project.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects', 'mine'] }),
+    onSuccess: () => {
+      toast(`${project.fullName} removed from orch`);
+      return qc.invalidateQueries({ queryKey: ['projects', 'mine'] });
+    },
   });
   const id = project.id;
   return (
-    <article className="card" aria-label={project.fullName}>
-      <div className="row between">
-        <h2>
-          {project.fullName} {project.isPrivate && <span className="badge">private</span>}
-        </h2>
+    <article className="card" aria-label={project.fullName} {...presenceProps(phase)}>
+      <div className="card-head">
+        <div className="row">
+          <h2>{project.fullName}</h2>
+          {project.isPrivate && <span className="badge">private</span>}
+        </div>
         <button
           className="danger"
           disabled={remove.isPending}
@@ -140,12 +169,12 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           </select>
         </label>
         <label className="field">
-          <span>
+          <span className="check-line">
             <input
               type="checkbox"
               checked={project.requireParticipantApproval}
               onChange={(e) => update.mutate({ requireParticipantApproval: e.target.checked })}
-            />{' '}
+            />
             Require participant approval
           </span>
           <span className="hint">New participants stay pending until you approve them.</span>
