@@ -16,10 +16,10 @@ function CannotParticipate({ item }: { item: DiscoverItem }) {
   return (
     <p className="hint" role="note">
       {reason === 'NOT_GITHUB_COLLABORATOR'
-        ? `Only GitHub collaborators of ${fullName} can join. Ask the owner (${owner}) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in My Projects.`
+        ? `Only GitHub collaborators of ${fullName} can join. Ask the owner (${owner}) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in Projects.`
         : reason === 'BLOCKED_BY_OWNER'
-          ? `The owner (${owner}) has blocked you from joining ${fullName}. Ask them to change this in My Projects.`
-          : `Only people on the allowlist of ${fullName} can join. Ask the owner (${owner}) to allow you, or set 'Who can participate' to 'All orch users on this server' in My Projects.`}
+          ? `The owner (${owner}) has blocked you from joining ${fullName}. Ask them to change this in Projects.`
+          : `Only people on the allowlist of ${fullName} can join. Ask the owner (${owner}) to allow you, or set 'Who can participate' to 'All orch users on this server' in Projects.`}
     </p>
   );
 }

@@ -140,7 +140,7 @@ function prPayload(action, pr) {
       merged: pr.merged,
       merge_commit_sha: pr.merge_commit_sha,
       title: pr.title,
-      head: { ref: pr.head.ref, sha: pr.head.sha },
+      head: { ref: pr.head.ref, sha: pr.head.sha, repo: { id: REPO_ID } },
       base: { ref: pr.base.ref, sha: pr.base.sha },
     },
     repository: { id: REPO_ID, full_name: 'acme/widgets', name: 'widgets', default_branch: 'main' },

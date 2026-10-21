@@ -529,3 +529,109 @@ export function sanitizeComposeModel(
   }
   return { model: copy, stripped };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Missing env_file tolerance
+// ---------------------------------------------------------------------------------------------
+
+const ENV_EXAMPLES = ['.env.example', '.env.sample', '.env.template'];
+
+/** `env_file` paths per service of a YAML compose text (only what the scanner understands). */
+function serviceEnvFiles(text: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const lines = yamlLines(text);
+  const top = lines.findIndex((l) => l.indent === 0 && /^services\s*:\s*$/.test(l.text));
+  if (top < 0) return out;
+  const svcIndent = lines[top + 1]?.indent ?? 0;
+  if (svcIndent === 0) return out;
+  let name = '';
+  for (let i = top + 1; i < lines.length; i++) {
+    const l = lines[i] as Line;
+    if (l.indent === 0) break;
+    if (l.indent === svcIndent) {
+      name = /^["']?([\w.-]+)["']?\s*:/.exec(l.text)?.[1] ?? '';
+    } else if (name !== '' && /^env_file["']?\s*:/.test(l.text)) {
+      const refs: Ref[] = [];
+      const problems: string[] = [];
+      blockRefs(lines, i, 'env_file', ENV_KEYS, 'env', refs, problems);
+      if (problems.length === 0 && refs.length > 0)
+        out.set(
+          name,
+          refs.map((r) => r.path),
+        );
+    }
+  }
+  return out;
+}
+
+const yamlStr = (s: string): string => JSON.stringify(s);
+
+/**
+ * A repository's `.env` is usually gitignored, so a fresh clone lacks the file a service names in
+ * `env_file`, and docker refuses to load the model. For each in-clone entry that is missing, this
+ * plans a compose override (never a file in the clone): the entry is replaced by a sibling
+ * `.env.example` / `.env.sample` / `.env.template` when there is one, else dropped. Entries outside
+ * the clone are left alone (the source scan refuses them). Returns the override text (null when
+ * nothing is missing) and one warning per missing file.
+ */
+export function planEnvFileFallbacks(
+  root: string,
+  file: string,
+): { override: string | null; warnings: string[] } {
+  const none = { override: null, warnings: [] };
+  const f = isAbsolute(file) ? file : resolve(root, file);
+  let text: string;
+  try {
+    text = stripBom(readFileSync(realPathLoose(f), 'utf8'));
+  } catch {
+    return none;
+  }
+  if (/^\s*\{/.test(text)) return none;
+  const base = dirname(realPathLoose(f));
+  const shown = (p: string): string => relative(realPathLoose(root), p) || p;
+  const warnings: string[] = [];
+  const blocks: string[] = [];
+  for (const [svc, paths] of serviceEnvFiles(text)) {
+    const keep: string[] = [];
+    let changed = false;
+    for (const p of paths) {
+      if (REMOTE.test(p) || p.includes('$') || p === '') return none;
+      const target = resolveInside(root, base, p);
+      if (target === null) {
+        keep.push(p); // outside the clone: refused by the source scan
+        continue;
+      }
+      if (existsSync(target)) {
+        keep.push(target);
+        continue;
+      }
+      changed = true;
+      const dir = dirname(target);
+      const example = ENV_EXAMPLES.map((n) => resolveInside(root, dir, n)).find(
+        (c): c is string => c !== null && existsSync(c) && statSync(c).isFile(),
+      );
+      const label = shown(target);
+      if (example) {
+        keep.push(example);
+        warnings.push(
+          `env file ${label} not found in the repository; using ${shown(example)} instead.`,
+        );
+      } else {
+        warnings.push(
+          `env file ${label} not found in the repository; continuing without it. Commit a .env.example or make it optional.`,
+        );
+      }
+    }
+    if (changed) {
+      const items = keep.map((k) => `        - path: ${yamlStr(k)}\n          required: false`);
+      blocks.push(
+        `  ${yamlStr(svc)}:\n    env_file: !override${items.length ? `\n${items.join('\n')}` : ' []'}\n`,
+      );
+    }
+  }
+  if (blocks.length === 0) return none;
+  return {
+    override: `# Written by orch: tolerate env files missing from the clone.\nservices:\n${blocks.join('')}`,
+    warnings,
+  };
+}
