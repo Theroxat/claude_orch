@@ -1231,4 +1231,47 @@ describe('participation sync (config.update) and not_participating backoff', () 
     await tickAt(10 * 60_000); // past every backoff, usage still fresh
     expect(autoOffers(m, t.id)).toHaveLength(4);
   });
+
+  it('a failed run sends the task back to TODO and it is re-offered after a short backoff', async () => {
+    const { owner, project: p, repo } = await project();
+    const m = await member(p.id);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    const t = await createTask(owner, p.id);
+    const failOffer = async (n: number) => {
+      await until(() => autoOffers(m, t.id).length === n);
+      const o = autoOffers(m, t.id)[n - 1]!;
+      expect(
+        (
+          await m.client.call(
+            agentMessage('offer.accept', {
+              assignmentId: o.payload.assignmentId,
+              execMode: 'AUTO',
+            }),
+          )
+        ).ok,
+      ).toBe(true);
+      const fin = await m.client.call(
+        agentMessage('task.finished', {
+          assignmentId: o.payload.assignmentId,
+          seq: 1,
+          outcome: 'failed',
+          usage: { weighted: 0, input: 0, output: 0 },
+          error: 'docker compose failed (exit 1): env file .env not found',
+        }),
+      );
+      expect(fin.ok).toBe(true);
+      expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe('TODO');
+      await settle();
+    };
+    await failOffer(1);
+    await tickAt(30_000);
+    expect(autoOffers(m, t.id)).toHaveLength(1); // no immediate re-offer
+    await tickAt(61_000);
+    await until(() => autoOffers(m, t.id).length === 2); // re-offered after 1 min, not 24 h
+    await failOffer(2);
+    await tickAt(61_000);
+    expect(autoOffers(m, t.id)).toHaveLength(2); // second backoff is 2 min
+    await tickAt(121_000);
+    await until(() => autoOffers(m, t.id).length === 3);
+  });
 });

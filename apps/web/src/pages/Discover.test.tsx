@@ -111,7 +111,7 @@ describe('Discover', () => {
     renderApp('/discover');
     const card = await screen.findByRole('article', { name: 'octo/repo' });
     expect(within(card).getByRole('note').textContent).toBe(
-      "Only GitHub collaborators of octo/repo can join. Ask the owner (boss) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in My Projects.",
+      "Only GitHub collaborators of octo/repo can join. Ask the owner (boss) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in Projects.",
     );
     expect(within(card).queryByRole('button', { name: 'Save' })).toBeNull();
   });

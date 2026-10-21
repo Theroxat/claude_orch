@@ -456,6 +456,24 @@ describe('ManualExecutor cleanup and restart', () => {
     expect(rec.warnings.join(' ')).toContain('published ports');
   });
 
+  it('a missing env_file in the clone is dropped with a warning; compose gets an override', async () => {
+    const t = setup({
+      files: { 'compose.yaml': 'services:\n  db:\n    image: x\n    env_file: .env\n' },
+    });
+    t.docker.composeModel = { name: 'p', services: { db: { image: 'x' } } };
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state).toBe('running');
+    expect(rec.warnings.join(' ')).toContain('env file .env not found in the repository');
+    const cfg = t.docker.calls.find((c) => c[0] === 'composeConfig')!;
+    expect((cfg[2] as string[]).map((f) => f.split('/').pop())).toEqual([
+      'compose.yaml',
+      'compose.orch.envfix.yaml',
+    ]);
+    expect(existsSync(join(t.cfg.workDir, 'asg_1', 'src', '.env'))).toBe(false);
+  });
+
   it('after a restart: fails tasks whose container vanished or whose preparation was cut', async () => {
     const t = setup();
     t.ex.handle(offerMsg());

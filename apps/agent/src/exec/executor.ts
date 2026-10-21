@@ -46,6 +46,7 @@ import {
 import {
   ComposeGuardError,
   checkComposeModel,
+  planEnvFileFallbacks,
   sanitizeComposeModel,
   scanComposeSources,
 } from './compose-guard';
@@ -848,14 +849,21 @@ export class ManualExecutor {
     const project = composeProject(id);
     const early = scanComposeSources(r.cloneDir, compose);
     if (early.length > 0) throw new ComposeGuardError(early);
-    const model = await this.deps.docker.composeConfig(project, [compose], r.cloneDir);
+    // A gitignored .env is absent from a fresh clone: fall back to the example or drop the entry.
+    const envFix = planEnvFileFallbacks(r.cloneDir, compose);
+    const files = [compose];
+    if (envFix.override !== null) {
+      const fix = join(r.taskDir, 'compose.orch.envfix.yaml');
+      this.deps.fs.writeFile(fix, envFix.override);
+      files.push(fix);
+      for (const w of envFix.warnings) this.warn(id, w);
+    }
+    const model = await this.deps.docker.composeConfig(project, files, r.cloneDir);
     const problems = checkComposeModel(model, r.cloneDir, project);
     if (problems.length > 0) throw new ComposeGuardError(problems);
     const safe = sanitizeComposeModel(model, labels);
     if (safe.stripped.length > 0) {
-      const w = `compose: ${safe.stripped.join('; ')}`.slice(0, 1000);
-      this.log.warn(w, { issue: r.issueNumber });
-      this.store.update(id, { warnings: [...r.warnings, w] });
+      this.warn(id, `compose: ${safe.stripped.join('; ')}`.slice(0, 1000));
     }
     const checked = join(r.taskDir, 'compose.orch.checked.json');
     this.deps.fs.writeFile(checked, JSON.stringify(safe.model, null, 2));
@@ -866,6 +874,13 @@ export class ManualExecutor {
     );
     this.store.update(id, { composeProject: project });
     await this.deps.docker.composeUp(project, [checked, override], r.cloneDir);
+  }
+
+  /** Logs a warning and records it on the task (shown by `orch status` and the run log). */
+  private warn(id: string, w: string): void {
+    const r = this.store.get(id) as TaskRecord;
+    this.log.warn(w, { issue: r.issueNumber });
+    this.store.update(id, { warnings: [...r.warnings, w] });
   }
 
   private claudeArgv(r: TaskRecord, prompt: string | null): string[] {

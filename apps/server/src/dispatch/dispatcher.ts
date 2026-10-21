@@ -49,8 +49,8 @@ export interface DispatcherDeps {
 const HOLDS_SLOT = ['ACCEPTED', 'RUNNING'] as const;
 const LIVE = ['ACCEPTED', 'RUNNING', 'PUSHED'] as const;
 /**
- * A member who rejected, let expire, failed or lost a task is not asked again for 24 h (except a
- * `not_participating` rejection by the agent's guard: see the backoff below).
+ * A member who rejected, let expire or lost a task is not asked again for 24 h (except a
+ * `not_participating` rejection by the agent's guard or a failed run: see the backoff below).
  */
 const SHUT_OUT = ['REJECTED', 'EXPIRED', 'FAILED', 'LOST'] as const;
 const SHUT_OUT_MS = 24 * 3600_000;
@@ -71,8 +71,18 @@ export function notParticipatingBackoffMs(rejections: number): number {
   );
 }
 
+/**
+ * A FAILED run is often a repository configuration problem the owner fixes at once (missing env
+ * file...), so the member is offered the task again after the same exponential backoff instead of
+ * being shut out for 24 h; after this many failures within the window, the 24 h shut-out applies.
+ */
+export const FAILED_RETRIES_BEFORE_SHUT_OUT = 5;
+
 const isNotParticipating = (a: { status: string; reason: string | null }) =>
   a.status === 'REJECTED' && (a.reason ?? '').startsWith('not_participating');
+
+const isRetryable = (a: { status: string; reason: string | null }) =>
+  isNotParticipating(a) || a.status === 'FAILED';
 
 const dispatchTaskInclude = {
   project: true,
@@ -356,20 +366,28 @@ export class Dispatcher {
           },
         ],
       },
-      select: { userId: true, status: true, reason: true, respondedAt: true, updatedAt: true },
+      select: {
+        userId: true,
+        status: true,
+        reason: true,
+        respondedAt: true,
+        finishedAt: true,
+        updatedAt: true,
+      },
     });
     const excluded = new Set<string>();
     // not_participating rejections per user: count and the latest one (backoff, not shut-out).
-    const npRejections = new Map<string, { n: number; last: Date }>();
+    const npRejections = new Map<string, { n: number; failed: number; last: Date }>();
     for (const a of previous) {
-      if (!isNotParticipating(a)) {
+      if (!isRetryable(a)) {
         excluded.add(a.userId);
         continue;
       }
-      const at = a.respondedAt ?? a.updatedAt;
+      const at = (a.status === 'FAILED' ? a.finishedAt : a.respondedAt) ?? a.updatedAt;
       const cur = npRejections.get(a.userId);
       npRejections.set(a.userId, {
         n: (cur?.n ?? 0) + 1,
+        failed: (cur?.failed ?? 0) + (a.status === 'FAILED' ? 1 : 0),
         last: cur && cur.last > at ? cur.last : at,
       });
     }
@@ -382,6 +400,7 @@ export class Dispatcher {
       if (!p.allowedModels.includes(task.model)) continue;
       if (excluded.has(p.userId)) continue;
       const np = npRejections.get(p.userId);
+      if (np && np.failed >= FAILED_RETRIES_BEFORE_SHUT_OUT) continue;
       if (
         np &&
         p.updatedAt.getTime() <= np.last.getTime() &&
