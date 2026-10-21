@@ -108,4 +108,27 @@ describe('Admin access', () => {
     expect(await screen.findByText('Admins only.')).toBeTruthy();
     expect(screen.queryByRole('link', { name: /Access/ })).toBeNull();
   });
+
+  it('clears an old error once a later action succeeds', async () => {
+    mockApi({
+      'GET /me': () => ({ json: admin }),
+      'GET /admin/access/pending-count': () => ({ json: { count: 1 } }),
+      'GET /admin/access': () => ({ json: access }),
+      'POST /admin/access/grants/g1/deny': () => ({
+        status: 500,
+        json: { error: { code: 'boom', message: 'Deny exploded' } },
+      }),
+      'POST /admin/access/grants': () => ({ json: { grant: grant({ githubLogin: 'carol' }) } }),
+    });
+    renderApp('/admin/access');
+    fireEvent.click(await screen.findByRole('button', { name: 'Deny' }));
+    expect(await screen.findByText('Deny exploded')).toBeTruthy();
+    // A different action succeeds: the stale failure must go away.
+    fireEvent.change(screen.getByLabelText('Add a GitHub login'), { target: { value: 'carol' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Pre-approve' }));
+    await waitFor(() => expect(screen.queryByText('Deny exploded')).toBeNull());
+    // A fresh failure still shows.
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(await screen.findByText('Deny exploded')).toBeTruthy();
+  });
 });

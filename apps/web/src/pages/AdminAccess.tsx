@@ -52,6 +52,13 @@ export function AdminAccess() {
   const [multiUse, setMultiUse] = useState(false);
   const [hours, setHours] = useState(24);
   const [created, setCreated] = useState<string | null>(null);
+  // One slot for the last failed action: starting any new action clears it, so an old failure
+  // never lingers once something else has succeeded.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const tracked = {
+    onMutate: () => setActionError(null),
+    onError: (e: Error) => setActionError(e.message),
+  };
   const access = useQuery({
     queryKey: KEY,
     queryFn: fetchAccess,
@@ -65,6 +72,7 @@ export function AdminAccess() {
     ]);
   };
   const decide = useMutation({
+    ...tracked,
     mutationFn: (v: { id: string; action: 'approve' | 'deny' | 'remove' }) =>
       decideGrant(v.id, v.action),
     onSuccess: async (g, v) => {
@@ -74,6 +82,7 @@ export function AdminAccess() {
     },
   });
   const add = useMutation({
+    ...tracked,
     mutationFn: () => preApprove(login.trim().replace(/^@/, '')),
     onSuccess: async (g) => {
       toast(`${g.grant.githubLogin} pre-approved`);
@@ -82,6 +91,7 @@ export function AdminAccess() {
     },
   });
   const invite = useMutation({
+    ...tracked,
     mutationFn: () => createInvite({ multiUse, expiresInHours: hours }),
     onSuccess: async (r) => {
       setCreated(r.url);
@@ -89,6 +99,7 @@ export function AdminAccess() {
     },
   });
   const revoke = useMutation({
+    ...tracked,
     mutationFn: (id: string) => revokeInvite(id),
     onSuccess: async () => {
       toast('Invite link revoked', 'info');
@@ -109,7 +120,7 @@ export function AdminAccess() {
     )
       decide.mutate({ id: g.id, action: 'remove' });
   };
-  const err = decide.error ?? add.error ?? invite.error ?? revoke.error ?? access.error;
+  const err = actionError ?? access.error?.message;
 
   return (
     <div>
@@ -122,7 +133,7 @@ export function AdminAccess() {
           </p>
         </div>
       </header>
-      {err && <p className="error">{err.message}</p>}
+      {err && <p className="error">{err}</p>}
       {access.isPending && <p className="hint">Loading...</p>}
       {d && (
         <>
