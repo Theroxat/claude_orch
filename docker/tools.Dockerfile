@@ -12,6 +12,7 @@ ENV COREPACK_HOME=/opt/corepack \
 
 RUN corepack enable \
  && corepack prepare pnpm@12.14.0 --activate \
+ && pnpm --version \
  && chmod -R a+rX /opt/corepack \
  && mkdir -p /tmp/home && chmod 1777 /tmp/home
 
