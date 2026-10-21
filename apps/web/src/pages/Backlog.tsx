@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectTaskAccess, TaskStatus, TaskView } from '@orch/shared';
 import { useState } from 'react';
+import { useSearchParams } from 'react-router';
 import {
   approveTask,
   fetchDiscover,
@@ -24,6 +25,7 @@ function Column({
   onApprove,
   retrying,
   onRetry,
+  focusId,
 }: {
   status: TaskStatus;
   label: string;
@@ -33,6 +35,7 @@ function Column({
   onApprove: (id: string) => void;
   retrying: boolean;
   onRetry: (id: string) => void;
+  focusId: string | null;
 }) {
   const cards = usePresence(tasks, (t) => t.id);
   return (
@@ -51,6 +54,7 @@ function Column({
             onApprove={onApprove}
             retrying={retrying}
             onRetry={onRetry}
+            highlighted={t.id === focusId}
           />
         </div>
       ))}
@@ -74,6 +78,8 @@ export function Backlog() {
   const toast = useToast();
   const [filter, setFilter] = useState('');
   const [creating, setCreating] = useState(false);
+  const [params] = useSearchParams();
+  const focusId = params.get('task');
   const [notice, setNotice] = useState<string | null>(null);
   // Only names are read from these lists; the rights come from board.access.
   const mine = useQuery({ queryKey: ['projects', 'mine'], queryFn: fetchMyProjects });
@@ -115,6 +121,7 @@ export function Backlog() {
     ? canCreateIn(access[filter])
     : projects.some((p) => canCreateIn(access[p.id]));
   const allTasks: TaskView[] = board.data ? COLUMNS.flatMap((c) => board.data[c.status]) : [];
+  const focusMissing = !!focusId && !!board.data && !allTasks.some((t) => t.id === focusId);
 
   return (
     <section>
@@ -155,6 +162,11 @@ export function Backlog() {
           {notice}
         </p>
       )}
+      {focusMissing && (
+        <p className="notice" role="status">
+          This task is not on the board (it may belong to a project you cannot see).
+        </p>
+      )}
       {imp.error && <p className="error">{imp.error.message}</p>}
       {approve.error && <p className="error">{approve.error.message}</p>}
       {retry.error && <p className="error">{retry.error.message}</p>}
@@ -173,6 +185,7 @@ export function Backlog() {
               onApprove={(id) => approve.mutate(id)}
               retrying={retry.isPending}
               onRetry={(id) => retry.mutate(id)}
+              focusId={focusId}
             />
           ))}
         </div>

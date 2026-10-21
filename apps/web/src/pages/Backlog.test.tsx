@@ -360,4 +360,34 @@ describe('Backlog', () => {
     expect(within(card).getByText(/@alice:/).textContent).toContain('Agents are paused');
     expect(within(card).getByText(/@bob:/).textContent).toContain('eligible');
   });
+
+  it('focuses and highlights the task given by ?task=', async () => {
+    mockApi(
+      base({
+        'GET /tasks': () => ({
+          json: board({
+            TODO: [task()],
+            IN_PROGRESS: [
+              task({ id: 't2', issueNumber: 2, title: 'Running', status: 'IN_PROGRESS' }),
+            ],
+          }),
+        }),
+      }),
+    );
+    renderApp('/backlog?task=t2');
+    const card = await screen.findByRole('article', { name: 'Task #2' });
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    expect(card.getAttribute('data-highlighted')).toBe('true');
+    expect(
+      screen.getByRole('article', { name: 'Task #1' }).getAttribute('data-highlighted'),
+    ).toBeNull();
+    expect(screen.queryByText(/not on the board/)).toBeNull();
+  });
+
+  it('says so when the ?task= target is not on the board', async () => {
+    mockApi(base({ 'GET /tasks': () => ({ json: board({ TODO: [task()] }) }) }));
+    renderApp('/backlog?task=ghost');
+    expect(await screen.findByText(/not on the board/)).toBeTruthy();
+    expect(document.querySelector('[data-highlighted]')).toBeNull();
+  });
 });

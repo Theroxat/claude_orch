@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { BlockReason, TaskView } from '@orch/shared';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchWhyNotRunning } from '../api/endpoints';
 import { relative } from '../time';
 
@@ -69,6 +69,7 @@ export function TaskCard({
   onApprove,
   retrying = false,
   onRetry,
+  highlighted = false,
 }: {
   task: TaskView;
   canApprove: boolean;
@@ -76,10 +77,24 @@ export function TaskCard({
   onApprove: (id: string) => void;
   retrying?: boolean;
   onRetry?: (id: string) => void;
+  /** Targeted by `/backlog?task=<id>`: scrolled into view, focused and outlined. */
+  highlighted?: boolean;
 }) {
   const unmet = unmetDeps(task);
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!highlighted) return;
+    ref.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    ref.current?.focus({ preventScroll: true });
+  }, [highlighted]);
   return (
-    <article className="task-card" aria-label={`Task #${task.issueNumber}`}>
+    <article
+      ref={ref}
+      className="task-card"
+      aria-label={`Task #${task.issueNumber}`}
+      data-highlighted={highlighted || undefined}
+      tabIndex={highlighted ? -1 : undefined}
+    >
       <div className="row between">
         <a className="issue" href={task.issueUrl} target="_blank" rel="noreferrer">
           #{task.issueNumber}
