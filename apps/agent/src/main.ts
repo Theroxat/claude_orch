@@ -25,7 +25,7 @@ function readClaudeToken(secretsDir: string): string | null {
   }
 }
 
-function execOptions(cfg: AgentConfig, log: Logger): AgentOptions['exec'] {
+function execOptions(cfg: AgentConfig, log: Logger, agentId: string): AgentOptions['exec'] {
   if (!cfg.workDir) {
     log.warn('ORCH_WORK_DIR is not set: task execution is disabled');
     return undefined;
@@ -46,6 +46,7 @@ function execOptions(cfg: AgentConfig, log: Logger): AgentOptions['exec'] {
   }
   return {
     config: {
+      agentId,
       workDir: cfg.workDir,
       dataDir: cfg.dataDir,
       maxConcurrent: cfg.maxConcurrent,
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
     usageIntervalExplicit: cfg.usageIntervalExplicit,
     usageSource: jsonlUsageSource({ root: cfg.claudeUsageRoot, plan: cfg.plan }),
     logger: log,
-    exec: execOptions(cfg, log),
+    exec: execOptions(cfg, log, cred.agentId),
   });
   agent.client.on('fatal', () => {
     log.error('the agent stays up for `orch status` but will not reconnect');

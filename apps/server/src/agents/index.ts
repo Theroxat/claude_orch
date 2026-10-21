@@ -101,7 +101,7 @@ export function registerAgents(
     const body: CreateEnrollmentTokenResponse = {
       token,
       expiresAt: expiresAt.toISOString(),
-      installCommand: `curl -fsSL ${baseUrl}/install.sh | sh -s -- --token ${token}`,
+      installCommand: `curl -fsSL ${baseUrl}/install.sh | ORCH_TOKEN=${token} sh`,
     };
     return reply.status(201).send(body);
   });

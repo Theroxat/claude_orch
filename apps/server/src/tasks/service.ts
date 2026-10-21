@@ -71,10 +71,20 @@ export function effectiveStatus(t: TaskRow): TaskStatus | 'CANCELLED' {
 
 const DISPATCH_VIEW = { POOL: 'pool', MEMBERS: 'members', BROADCAST: 'broadcast' } as const;
 
-export function toTaskView(t: TaskRow, access: Access, viewer: Pick<User, 'id'>): TaskView {
+/** Web URL of a GitHub issue, on the configured GitHub web host. */
+export function issueUrlFor(webUrl: string, fullName: string, issueNumber: number): string {
+  return `${webUrl}/${fullName}/issues/${issueNumber}`;
+}
+
+export function toTaskView(
+  t: TaskRow,
+  access: Access,
+  viewer: Pick<User, 'id'>,
+  webUrl: string,
+): TaskView {
   const status = effectiveStatus(t);
   if (status === 'CANCELLED') throw new HttpError(410, 'task_cancelled', 'The task was cancelled');
-  const issueUrl = `https://github.com/${t.project.fullName}/issues/${t.githubIssueNumber}`;
+  const issueUrl = issueUrlFor(webUrl, t.project.fullName, t.githubIssueNumber);
   return {
     id: t.id,
     projectId: t.projectId,
@@ -239,10 +249,11 @@ export class TaskService {
   // ---------- access ----------
 
   async accessFor(project: ProjectWithInstallation, user: User): Promise<Access> {
-    if (project.addedById === user.id) {
+    const info = await getRoleInfo(this.prisma, this.deps.github, project, user);
+    // The stored owner keeps owner powers only while GitHub still says ADMIN (cached role).
+    if (project.addedById === user.id && (!this.deps.github || info.role === 'ADMIN')) {
       return { isOwner: true, role: 'ADMIN', canSubmit: true, canPropose: true };
     }
-    const info = await getRoleInfo(this.prisma, this.deps.github, project, user);
     const policy = project.submissionPolicy === 'ALLOWLIST' ? 'ALLOWLIST' : 'GITHUB';
     const canSubmit = roleCanSubmit(policy, info.role, info);
     return {
@@ -262,15 +273,18 @@ export class TaskService {
     return p;
   }
 
-  /** A project the user may look at: owner, participant or collaborator. 404 otherwise. */
+  /** A project the user may look at: owner, ACTIVE participant or GitHub collaborator. 404 otherwise. */
   async visibleProject(id: string, user: User): Promise<[ProjectWithInstallation, Access]> {
     const project = await this.projectFor(id);
     const access = await this.accessFor(project, user);
     if (!access.isOwner && access.role === 'NONE') {
+      // A pending, rejected or inactive participation row grants no view of the board.
       const part = await this.prisma.participation.findUnique({
         where: { userId_projectId: { userId: user.id, projectId: id } },
       });
-      if (!part) throw new HttpError(404, 'not_found', 'Project not found');
+      if (!part || participationStatus(part, project.requireParticipantApproval) !== 'active') {
+        throw new HttpError(404, 'not_found', 'Project not found');
+      }
     }
     return [project, access];
   }
@@ -284,14 +298,14 @@ export class TaskService {
       orderBy: { githubIssueNumber: 'asc' },
     });
     return groupBoard(
-      rows.map((t) => toTaskView(t, access, user)),
+      rows.map((t) => toTaskView(t, access, user, this.deps.config.GITHUB_WEB_URL)),
       {
         [project.id]: toProjectAccess(access),
       },
     );
   }
 
-  /** Tasks of every project the user owns or participates in. */
+  /** Tasks of every project the user owns or actively participates in. */
   async listMine(user: User): Promise<TaskBoard> {
     const projects = await this.prisma.project.findMany({
       where: {
@@ -303,14 +317,19 @@ export class TaskService {
     const views: TaskView[] = [];
     const accessMap: Record<string, ProjectTaskAccess> = {};
     for (const p of projects) {
-      const access = await this.accessFor(p, user);
+      let access: Access;
+      try {
+        [, access] = await this.visibleProject(p.id, user);
+      } catch {
+        continue; // pending, rejected or inactive participation: not visible
+      }
       accessMap[p.id] = toProjectAccess(access);
       const rows = await this.prisma.task.findMany({
         where: { projectId: p.id, status: { not: 'CANCELLED' } },
         include: taskInclude,
         orderBy: { githubIssueNumber: 'asc' },
       });
-      views.push(...rows.map((t) => toTaskView(t, access, user)));
+      views.push(...rows.map((t) => toTaskView(t, access, user, this.deps.config.GITHUB_WEB_URL)));
     }
     return groupBoard(views, accessMap);
   }
@@ -329,7 +348,7 @@ export class TaskService {
   }
 
   view(t: TaskRow, access: Access, user: User) {
-    return toTaskView(t, access, user);
+    return toTaskView(t, access, user, this.deps.config.GITHUB_WEB_URL);
   }
 
   // ---------- dependencies ----------

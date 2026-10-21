@@ -392,6 +392,8 @@ model TaskTarget {
 model WebhookDelivery {
   deliveryId  String    @id
   event       String
+  /// sha256 of the raw body: a replay under a fresh delivery id is still caught.
+  bodyHash    String?   @unique
   receivedAt  DateTime  @default(now())
   processedAt DateTime?
 

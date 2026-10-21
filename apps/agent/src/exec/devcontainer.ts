@@ -5,7 +5,8 @@
  * spec itself, so nothing here can add mounts, capabilities or privileges.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { realPathLoose, resolveInside } from './paths';
 
 export type PostCreateCommand = string | string[] | Record<string, string | string[]>;
 
@@ -83,14 +84,25 @@ export class DevEnvError extends Error {
 
 const isFile = (p: string) => existsSync(p) && statSync(p).isFile();
 
-/** Resolves `p` against `base` and refuses anything outside `root` (the clone). */
+/**
+ * Resolves `p` against `base` and returns its real path, refusing anything outside `root` (the
+ * clone), including through symlinks.
+ */
 function inside(root: string, base: string, p: string, what: string): string {
-  const abs = resolve(base, p);
-  const rel = relative(root, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  const real = resolveInside(root, base, p);
+  if (real === null) {
     throw new DevEnvError(`devcontainer ${what} "${p}" points outside the repository`);
   }
-  return abs;
+  return real;
+}
+
+/** `rel` inside the clone when it is a regular file whose real path stays in the clone. */
+function repoFile(clone: string, rel: string, what: string): string | null {
+  const f = join(clone, rel);
+  if (!isFile(f)) return null;
+  const real = resolveInside(clone, clone, rel);
+  if (real === null) throw new DevEnvError(`${what} "${rel}" is a symlink out of the repository`);
+  return real;
 }
 
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -197,16 +209,16 @@ export function fromDevcontainer(clone: string, file: string): DevEnv {
 /** PLAN 5.2 precedence. `defaultImage` is used when the repo defines nothing. */
 export function selectDevEnv(clone: string, defaultImage: string): DevEnv {
   for (const rel of ['.devcontainer/devcontainer.json', '.devcontainer.json']) {
-    const f = join(clone, rel);
-    if (isFile(f)) return fromDevcontainer(clone, f);
+    const f = repoFile(clone, rel, 'devcontainer');
+    if (f) return fromDevcontainer(clone, f);
   }
-  const dockerfile = join(clone, 'Dockerfile');
-  if (isFile(dockerfile)) {
+  const dockerfile = repoFile(clone, 'Dockerfile', 'Dockerfile');
+  if (dockerfile) {
     return {
       kind: 'build',
       source: 'dockerfile',
       dockerfile,
-      context: clone,
+      context: realPathLoose(clone),
       args: {},
       containerEnv: {},
       postCreateCommand: null,
@@ -225,11 +237,11 @@ export function selectDevEnv(clone: string, defaultImage: string): DevEnv {
   };
 }
 
-/** The repo's compose file for sidecars, if any. */
+/** The repo's compose file for sidecars, if any (its real path, refused if it leaves the clone). */
 export function findComposeFile(clone: string): string | null {
   for (const name of ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']) {
-    const f = join(clone, name);
-    if (isFile(f)) return f;
+    const f = repoFile(clone, name, 'compose file');
+    if (f) return f;
   }
   return null;
 }

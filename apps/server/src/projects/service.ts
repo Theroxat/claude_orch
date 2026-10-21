@@ -43,6 +43,22 @@ export function toParticipationView(p: Participation, requireApproval: boolean):
   };
 }
 
+/**
+ * Is the user still the owner of the project? The owner is whoever added it, as long as GitHub
+ * still gives them the ADMIN role on the repo (cached role, re-synced every few minutes). Without a
+ * GitHub client the role cannot be re-checked and the stored owner is kept.
+ */
+export async function isCurrentOwner(
+  prisma: PrismaClient,
+  github: GithubClient | undefined,
+  project: Project & { installation: { githubInstallationId: bigint } },
+  user: Pick<User, 'id' | 'login'>,
+): Promise<boolean> {
+  if (project.addedById !== user.id) return false;
+  if (!github) return true;
+  return (await getRoleInfo(prisma, github, project, user)).role === 'ADMIN';
+}
+
 export interface RoleInfo {
   role: GithubRole;
   canSubmit: boolean | null;

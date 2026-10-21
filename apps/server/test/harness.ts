@@ -43,6 +43,14 @@ export class FakeGithub implements GithubClient {
     if (!u) throw new Error('bad token');
     return u;
   }
+  orgs = new Map<string, Set<string>>(); // by access token -> org names (lower-case)
+  orgCalls = 0;
+  failOrgs = false;
+  async isOrgMember(accessToken: string, org: string): Promise<boolean> {
+    this.orgCalls++;
+    if (this.failOrgs) throw new Error('github down');
+    return this.orgs.get(accessToken)?.has(org.toLowerCase()) ?? false;
+  }
   async listUserRepos(accessToken: string): Promise<GithubRepoAccess[]> {
     return this.repos.get(accessToken) ?? [];
   }

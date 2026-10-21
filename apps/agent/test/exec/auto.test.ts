@@ -43,6 +43,7 @@ function setup(opts: { paused?: boolean; max?: number; mode?: Mode; models?: str
   const state = { paused: opts.paused ?? false, mode: opts.mode ?? ('AUTO' as Mode) };
   let n = 0;
   const cfg: ExecutorConfig = {
+    agentId: 'agt_test',
     workDir: join(tmp.dir, 'work'),
     dataDir: join(tmp.dir, 'data'),
     maxConcurrent: opts.max ?? 1,

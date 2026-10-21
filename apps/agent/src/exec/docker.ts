@@ -4,7 +4,10 @@
  */
 import { spawn } from 'node:child_process';
 import { isAbsolute, relative } from 'node:path';
+import { AGENT_LABEL } from './naming';
 import { childEnv, runOk, type CommandRunner, type RunResult } from './runner';
+
+const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 
 export interface BuildSpec {
   tag: string;
@@ -29,14 +32,24 @@ export interface DockerOps {
   remove(container: string): Promise<void>;
   removeImage(tag: string): Promise<void>;
   exists(container: string): Promise<boolean>;
-  /** Names and label values of containers / networks carrying `label`. */
+  /** Freezes / resumes every process of a container (best effort, used while committing). */
+  pause(container: string): Promise<void>;
+  unpause(container: string): Promise<void>;
+  /**
+   * Names and `label` values of the containers / networks carrying `label` AND
+   * `orch.agent=<agentId>` (never another agent's resources on a shared daemon).
+   */
   listLabeled(
     kind: 'container' | 'network',
     label: string,
+    agentId: string,
   ): Promise<{ name: string; value: string }[]>;
+  /** The resolved model of `docker compose config --format json` (not trusted: validate it). */
+  composeConfig(project: string, files: string[], cwd: string): Promise<unknown>;
   composeUp(project: string, files: string[], cwd: string): Promise<void>;
   composeDown(project: string): Promise<void>;
-  composeProjects(prefix: string): Promise<string[]>;
+  /** Compose projects named `<prefix>...` whose containers carry `orch.agent=<agentId>`. */
+  composeProjects(prefix: string, agentId: string): Promise<string[]>;
 }
 
 const labelArgs = (labels: Record<string, string>) =>
@@ -132,19 +145,20 @@ export class CliDocker implements DockerOps {
     return r.code === 0;
   }
 
-  async listLabeled(kind: 'container' | 'network', label: string) {
-    const fmt = `{{.Name}}\t{{.Label "${label}"}}`;
+  async pause(container: string): Promise<void> {
+    await this.d(['pause', container], undefined, 60_000);
+  }
+
+  async unpause(container: string): Promise<void> {
+    await this.d(['unpause', container], undefined, 60_000);
+  }
+
+  async listLabeled(kind: 'container' | 'network', label: string, agentId: string) {
+    const filters = ['--filter', `label=${label}`, '--filter', `label=${AGENT_LABEL}=${agentId}`];
     const args =
       kind === 'container'
-        ? [
-            'ps',
-            '-a',
-            '--filter',
-            `label=${label}`,
-            '--format',
-            `{{.Names}}\t{{.Label "${label}"}}`,
-          ]
-        : ['network', 'ls', '--filter', `label=${label}`, '--format', fmt];
+        ? ['ps', '-a', ...filters, '--format', `{{.Names}}\t{{.Label "${label}"}}`]
+        : ['network', 'ls', ...filters, '--format', `{{.Name}}\t{{.Label "${label}"}}`];
     const out = await this.d(args);
     return out
       .split('\n')
@@ -153,6 +167,17 @@ export class CliDocker implements DockerOps {
         const [name = '', value = ''] = l.split('\t');
         return { name, value };
       });
+  }
+
+  async composeConfig(project: string, files: string[], cwd: string): Promise<unknown> {
+    const args = ['compose', '-p', project, '--project-directory', cwd];
+    for (const f of files) args.push('-f', f);
+    const out = await this.d([...args, 'config', '--format', 'json'], undefined, 5 * 60_000);
+    try {
+      return JSON.parse(out) as unknown;
+    } catch {
+      throw new Error('docker compose config did not print JSON');
+    }
   }
 
   async composeUp(project: string, files: string[], cwd: string): Promise<void> {
@@ -167,14 +192,18 @@ export class CliDocker implements DockerOps {
     });
   }
 
-  async composeProjects(prefix: string): Promise<string[]> {
-    const r = await this.runner.run(this.bin, ['compose', 'ls', '-a', '--format', 'json']);
-    if (r.code !== 0) return [];
-    try {
-      const list = JSON.parse(r.stdout) as { Name?: string }[];
-      return list.map((p) => p.Name ?? '').filter((n) => n.startsWith(prefix));
-    } catch {
-      return [];
-    }
+  async composeProjects(prefix: string, agentId: string): Promise<string[]> {
+    const out = await this.d([
+      'ps',
+      '-a',
+      '--filter',
+      `label=${AGENT_LABEL}=${agentId}`,
+      '--filter',
+      `label=${COMPOSE_PROJECT_LABEL}`,
+      '--format',
+      `{{.Label "${COMPOSE_PROJECT_LABEL}"}}`,
+    ]);
+    const names = out.split('\n').map((l) => l.trim());
+    return [...new Set(names)].filter((n) => n !== '' && n.startsWith(prefix));
   }
 }

@@ -28,6 +28,14 @@ teammate. **Kept:** each task runs in its own container; only the task's clone i
 no host home; non-root; isolated clone per task. **Dropped for v1:** egress allowlist proxy, devcontainer/compose
 sanitizing, token-injecting proxy, snapshot export (listed in section 11).
 
+**Who can sign in.** "Trusted" must be enforced: production requires `ORCH_ALLOWED_GITHUB_LOGINS` and/or
+`ORCH_ALLOWED_GITHUB_ORGS` (the server refuses to start otherwise, unless `ORCH_ALLOW_ANY_GITHUB_USER=true`). The
+visibility value `ALL_MEMBERS` means "all orch users on this server", i.e. everyone the allowlist lets in. A task
+board is visible only to the owner, active participants and GitHub collaborators; owner rights follow the GitHub
+ADMIN role. Enrollment tokens are passed to `install.sh` as `ORCH_TOKEN=<token>`, never as an argument.
+The repo's compose file is validated by the agent (privileged, host binds, docker.sock, host network, `cap_add`
+rejected), and git metadata stays outside the task container.
+
 ---
 
 ## 1. Stack decision
@@ -293,7 +301,7 @@ model AgentMessageSeen { agentId String; messageId String; seenAt DateTime
 
 1. On **My server**, the user clicks "Generate install command". The server creates an `EnrollmentToken`
    (32 random bytes, stores the SHA-256 hash, valid for 15 min) and shows the token **once**:
-   `curl -fsSL https://<domain>/install.sh | sh -s -- --token <token>`.
+   `curl -fsSL https://<domain>/install.sh | ORCH_TOKEN=<token> sh`.
 2. `install.sh` writes `~/orch/.env` (`ORCH_SERVER_URL`, `ORCH_ENROLL_TOKEN`) and starts the stack.
 3. On first boot, the agent calls `POST /agent/enroll` over HTTPS:
    `{ "token": "...", "machine": { "hostname": "...", "os": "linux", "arch": "x64", "agentVersion": "0.1.0", "dockerVersion": "27.1" } }`.
@@ -723,6 +731,7 @@ installation token can push to any branch, so branch protection is required. Org
 - **PRs (Q15):** manual-mode PRs ready for review, auto-mode PRs draft.
 - **Personal usage (Q16):** opt-in, read-only mount of `~/.claude/projects`.
 - **Hosting (Q17):** single server plus nightly `pg_dump`. The production domain is `orch.selfhostr.io`, set via env (`ORCH_DOMAIN`, used as the `.env.example` and docs example value) and never hardcoded in code.
+- **Sign-in allowlist:** logins and/or GitHub orgs, case-insensitive. Org membership is checked at login with the user token (App permission Members: read) and cached for open sessions; the login list is checked on every request. Empty in production = refuse to start.
 - **Language (Q18):** English only, no i18n scaffolding.
 - **License (Q19):** MIT.
 

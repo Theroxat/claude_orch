@@ -2,7 +2,8 @@
  * The ONLY place where task container specs are built (PLAN 5.3).
  *
  * Guarantees, asserted by the unit tests:
- *  - exactly one mount: the task clone (rw) at the workspace folder. No docker socket, no host
+ *  - exactly one mount: the task clone's worktree (rw) at the workspace folder. Its real git dir
+ *    is agent-private (`git.ts`); the worktree only holds a throwaway copy. No docker socket, no host
  *    home, no /data, no mirrors, no other task. The Claude binary is copied in (`docker cp`)
  *    instead of being mounted.
  *  - a non-root `--user uid:gid`, `--cap-drop ALL`, `no-new-privileges`, no `--privileged`,

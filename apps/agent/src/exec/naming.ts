@@ -3,6 +3,8 @@
 /** Label put on every container, network and image of a task (orphan GC after a restart). */
 export const TASK_LABEL = 'orch.task';
 export const ISSUE_LABEL = 'orch.issue';
+/** Id of the agent that created a resource: reconcile only ever touches its own. */
+export const AGENT_LABEL = 'orch.agent';
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -83,9 +85,14 @@ export function screenName(
 export const attachCommand = (screen: string) =>
   `docker compose -f ~/orch/compose.yaml exec agent screen -r ${screen}`;
 
-export const taskLabels = (assignmentId: string, issueNumber: number): Record<string, string> => ({
+export const taskLabels = (
+  assignmentId: string,
+  issueNumber: number,
+  agentId: string,
+): Record<string, string> => ({
   [TASK_LABEL]: assignmentId,
   [ISSUE_LABEL]: String(issueNumber),
+  [AGENT_LABEL]: agentId,
 });
 
 /** Claude CLI model alias for the protocol enum. */

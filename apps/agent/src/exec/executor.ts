@@ -43,9 +43,15 @@ import {
   type ProcessOps,
   type RunningProcess,
 } from './claude-run';
+import {
+  ComposeGuardError,
+  checkComposeModel,
+  sanitizeComposeModel,
+  scanComposeSources,
+} from './compose-guard';
 import { findComposeFile, postCreateArgvs, selectDevEnv } from './devcontainer';
 import type { DockerOps } from './docker';
-import type { GitIdentity, GitOps } from './git';
+import type { GitIdentity, GitOps, GitRepo } from './git';
 import {
   COMPOSE_PROJECT_PREFIX,
   TASK_LABEL,
@@ -73,6 +79,8 @@ type Usage = { weighted: number; input: number; output: number };
 const NO_USAGE: Usage = { weighted: 0, input: 0, output: 0 };
 
 export interface ExecutorConfig {
+  /** This agent's id: put on every docker resource it creates (`orch.agent`) for reconcile. */
+  agentId: string;
   /** Host path bind-mounted at the same path in the agent (PLAN 5.1). */
   workDir: string;
   dataDir: string;
@@ -632,6 +640,7 @@ export class ManualExecutor {
       seq: 0,
       taskDir,
       cloneDir: join(taskDir, 'src'),
+      gitDir: join(this.cfg.dataDir, 'git', `${id}.git`),
       container: containerName(task.issueNumber, id),
       network: networkName(id),
       image: null,
@@ -700,10 +709,14 @@ export class ManualExecutor {
       {
         const token = await this.deps.requestToken(id, 'clone');
         await this.deps.git.syncMirror(mirror, remoteUrl, token);
-        await this.deps.git.clone(mirror, remoteUrl, r0.cloneDir, token);
+        this.deps.fs.mkdir(join(this.cfg.dataDir, 'git'));
+        await this.deps.git.clone(mirror, remoteUrl, repoOf(r0), token);
       }
-      await this.deps.git.createBranch(r0.cloneDir, r0.branch, r0.baseBranch);
-      await this.deps.git.setIdentity(r0.cloneDir, this.cfg.identity);
+      const repo = repoOf(r0);
+      await this.deps.git.createBranch(repo, r0.branch, r0.baseBranch);
+      await this.deps.git.setIdentity(repo, this.cfg.identity);
+      await this.deps.git.seedTaskGit(repo);
+      // The task dir only (the private git dir lives in the agent's data dir and stays its own).
       this.deps.fs.chownR(r0.taskDir, this.cfg.uid, this.cfg.gid);
       if (this.cancelled(id)) return;
 
@@ -711,20 +724,11 @@ export class ManualExecutor {
       const env = selectDevEnv(r0.cloneDir, this.cfg.defaultImage);
       for (const w of env.warnings) this.log.warn(w, { issue: r0.issueNumber });
       this.store.update(id, { warnings: env.warnings, workspaceFolder: env.workspaceFolder });
-      const labels = taskLabels(id, r0.issueNumber);
+      const labels = taskLabels(id, r0.issueNumber, this.cfg.agentId);
       await this.deps.docker.createNetwork(r0.network, labels);
 
       const compose = findComposeFile(r0.cloneDir);
-      if (compose) {
-        const override = join(r0.taskDir, 'compose.orch.yaml');
-        this.deps.fs.writeFile(
-          override,
-          `# Written by orch: put the sidecars on the task network.\nnetworks:\n  default:\n    name: ${r0.network}\n    external: true\n`,
-        );
-        const project = composeProject(id);
-        this.store.update(id, { composeProject: project });
-        await this.deps.docker.composeUp(project, [compose, override], r0.cloneDir);
-      }
+      if (compose) await this.startSidecars(id, compose, labels);
 
       let image: string;
       if (env.kind === 'build') {
@@ -787,6 +791,39 @@ export class ManualExecutor {
       if (this.cancelled(id)) return;
       await this.fail(id, err);
     }
+  }
+
+  /**
+   * Validates the repo's compose file (sources, then the resolved model), strips published ports,
+   * labels every service, and starts the sidecars from the checked model (never the raw file).
+   */
+  private async startSidecars(
+    id: string,
+    compose: string,
+    labels: Record<string, string>,
+  ): Promise<void> {
+    const r = this.store.get(id) as TaskRecord;
+    const project = composeProject(id);
+    const early = scanComposeSources(r.cloneDir, compose);
+    if (early.length > 0) throw new ComposeGuardError(early);
+    const model = await this.deps.docker.composeConfig(project, [compose], r.cloneDir);
+    const problems = checkComposeModel(model, r.cloneDir, project);
+    if (problems.length > 0) throw new ComposeGuardError(problems);
+    const safe = sanitizeComposeModel(model, labels);
+    if (safe.stripped.length > 0) {
+      const w = `compose: ${safe.stripped.join('; ')}`.slice(0, 1000);
+      this.log.warn(w, { issue: r.issueNumber });
+      this.store.update(id, { warnings: [...r.warnings, w] });
+    }
+    const checked = join(r.taskDir, 'compose.orch.checked.json');
+    this.deps.fs.writeFile(checked, JSON.stringify(safe.model, null, 2));
+    const override = join(r.taskDir, 'compose.orch.yaml');
+    this.deps.fs.writeFile(
+      override,
+      `# Written by orch: put the sidecars on the task network.\nnetworks:\n  default:\n    name: ${r.network}\n    external: true\n`,
+    );
+    this.store.update(id, { composeProject: project });
+    await this.deps.docker.composeUp(project, [checked, override], r.cloneDir);
   }
 
   private claudeArgv(r: TaskRecord, prompt: string | null): string[] {
@@ -930,13 +967,26 @@ export class ManualExecutor {
   private async pushAndReport(id: string, usage: Usage, claudeSummary = ''): Promise<void> {
     const rec = this.store.get(id) as TaskRecord;
     const git = this.deps.git;
-    await git.commitAll(
-      rec.cloneDir,
-      `orch: remaining changes for #${rec.issueNumber}`,
-      this.cfg.identity,
+    const repo = repoOf(rec);
+    // The task's own commits live in its throwaway .git, which the agent never reads: their
+    // subjects are read inside the sandbox, and the result is squashed into one agent commit.
+    const taskSubjects = await this.taskSubjects(rec);
+    const body = taskSubjects.map((t) => `- ${t}`).join('\n');
+    // Freeze the task while staging so it cannot swap files between the checks and the commit.
+    const paused = await this.deps.docker.pause(rec.container).then(
+      () => true,
+      () => false,
     );
-    this.deps.fs.chownR(rec.cloneDir, this.cfg.uid, this.cfg.gid);
-    const ahead = await git.commitsAhead(rec.cloneDir, rec.baseBranch);
+    try {
+      await git.commitAll(
+        repo,
+        `orch: changes for #${rec.issueNumber}${body ? `\n\n${body}` : ''}`,
+        this.cfg.identity,
+      );
+    } finally {
+      if (paused) await this.deps.docker.unpause(rec.container).catch(() => undefined);
+    }
+    const ahead = await git.commitsAhead(repo, rec.baseBranch);
     if (ahead === 0) {
       this.deps.enqueue('task.finished', {
         assignmentId: id,
@@ -947,13 +997,15 @@ export class ManualExecutor {
       return;
     }
     const token = await this.deps.requestToken(id, 'push');
-    await git.push(rec.cloneDir, rec.branch, token);
+    await git.push(repo, rec.branch, token);
     const [headSha, changedFiles, subjects] = await Promise.all([
-      git.headSha(rec.cloneDir),
-      git.changedFiles(rec.cloneDir, rec.baseBranch),
-      git.subjects(rec.cloneDir, rec.baseBranch),
+      git.headSha(repo),
+      git.changedFiles(repo, rec.baseBranch),
+      git.subjects(repo, rec.baseBranch),
     ]);
-    let summary = subjects.map((s) => `- ${s}`).join('\n');
+    let summary = (taskSubjects.length > 0 ? taskSubjects : subjects)
+      .map((s) => `- ${s}`)
+      .join('\n');
     if (claudeSummary.trim()) summary += `\n\nClaude's summary:\n${redact(claudeSummary.trim())}`;
     this.deps.enqueue('task.pushed', {
       assignmentId: id,
@@ -969,6 +1021,40 @@ export class ManualExecutor {
       outcome: 'succeeded',
       usage,
     });
+  }
+
+  /**
+   * Subjects of the commits the task made in its throwaway .git, read by git INSIDE the task
+   * container (best effort: empty when the image has no git). Untrusted text, sanitized.
+   */
+  private async taskSubjects(rec: TaskRecord): Promise<string[]> {
+    try {
+      const res = await this.deps.docker.exec(rec.container, [
+        'git',
+        '-C',
+        rec.workspaceFolder,
+        'log',
+        '--format=%s',
+        '-n',
+        '50',
+        `refs/remotes/origin/${rec.baseBranch}..HEAD`,
+        '--',
+      ]);
+      if (res.code !== 0) return [];
+      return res.stdout
+        .split('\n')
+        .map((l) =>
+          l
+            .split('')
+            .filter((c) => c >= ' ' && c !== '\x7f')
+            .join('')
+            .trim()
+            .slice(0, 200),
+        )
+        .filter((l) => l !== '');
+    } catch {
+      return [];
+    }
   }
 
   // ---------- done ----------
@@ -1159,6 +1245,7 @@ export class ManualExecutor {
       this.runs.get(id)?.kill();
       if (rec.builtImage) await this.deps.docker.removeImage(rec.builtImage).catch(() => undefined);
       await this.deps.fs.remove(rec.taskDir);
+      if (rec.gitDir) await this.deps.fs.remove(rec.gitDir);
       if (rec.logFile) rmSync(rec.logFile, { force: true });
       this.store.delete(id);
     } else {
@@ -1166,6 +1253,7 @@ export class ManualExecutor {
         if (c.value === id) await this.deps.docker.remove(c.name).catch(() => undefined);
       }
       await this.deps.fs.remove(join(this.cfg.workDir, id));
+      await this.deps.fs.remove(join(this.cfg.dataDir, 'git', `${id}.git`));
       rmSync(join(this.cfg.dataDir, 'logs', `${id}.log`), { force: true });
     }
     this.log.info('task cleaned up', { assignmentId: id });
@@ -1173,7 +1261,7 @@ export class ManualExecutor {
 
   private async labeled(kind: 'container' | 'network') {
     try {
-      return await this.deps.docker.listLabeled(kind, TASK_LABEL);
+      return await this.deps.docker.listLabeled(kind, TASK_LABEL, this.cfg.agentId);
     } catch (err) {
       this.log.warn(`could not list ${kind}s`, { error: errorMessage(err) });
       return [];
@@ -1182,7 +1270,8 @@ export class ManualExecutor {
 
   /**
    * After a restart: finish pending cleanups, fail interrupted preparations, re-create screen
-   * sessions of running tasks and remove orphaned containers, networks and sidecars.
+   * sessions of running tasks and remove orphaned containers, networks and sidecars. Only the
+   * resources labeled with THIS agent's id are touched (several agents may share a daemon).
    */
   async reconcile(): Promise<void> {
     for (const rec of [...this.store.all()]) {
@@ -1232,7 +1321,11 @@ export class ManualExecutor {
     }
     const liveProjects = new Set(this.store.active().map((r) => r.composeProject));
     try {
-      for (const p of await this.deps.docker.composeProjects(COMPOSE_PROJECT_PREFIX)) {
+      const projects = await this.deps.docker.composeProjects(
+        COMPOSE_PROJECT_PREFIX,
+        this.cfg.agentId,
+      );
+      for (const p of projects) {
         if (!liveProjects.has(p)) await this.deps.docker.composeDown(p);
       }
     } catch (err) {
@@ -1279,4 +1372,14 @@ export function claimRefusalMessage(code: string, fallback?: string): string {
 }
 
 const claimKey = (fullName: string, issue: number) => `${fullName.toLowerCase()}#${issue}`;
+/** The task's private git dir + worktree. */
+function repoOf(r: TaskRecord): GitRepo {
+  if (!r.gitDir) {
+    throw new Error(
+      'This task was prepared by an older agent version (git dir inside the clone). Cancel it and take it again.',
+    );
+  }
+  return { gitDir: r.gitDir, workTree: r.cloneDir };
+}
+
 const safeName = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 100) || 'repo';

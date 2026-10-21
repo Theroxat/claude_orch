@@ -1,5 +1,5 @@
 import websocket from '@fastify/websocket';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { createAgentGateway, registerAgents } from './agents';
 import { registerAuth } from './auth';
 import type { Config } from './config';
@@ -29,9 +29,30 @@ export interface AppDeps {
   logStream?: { write(msg: string): void };
 }
 
+/** Logged URL without the query string: it carries the OAuth code and state. */
+export function redactUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  const i = url.indexOf('?');
+  return i < 0 ? url : `${url.slice(0, i)}?[redacted]`;
+}
+
 export function buildApp({ config, prisma, github, logStream }: AppDeps): FastifyInstance {
   const app = Fastify({
-    logger: { level: config.LOG_LEVEL, ...(logStream ? { stream: logStream } : {}) },
+    logger: {
+      level: config.LOG_LEVEL,
+      serializers: {
+        req(req: FastifyRequest) {
+          return {
+            method: req.method,
+            url: redactUrl(req.url),
+            host: req.host,
+            remoteAddress: req.ip,
+            remotePort: req.socket?.remotePort,
+          };
+        },
+      },
+      ...(logStream ? { stream: logStream } : {}),
+    },
     trustProxy: true,
   });
   installErrorHandling(app);

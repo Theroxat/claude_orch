@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { User } from '@prisma/client';
 import {
   AddProjectRequestSchema,
   UpdateProjectRequestSchema,
@@ -9,7 +10,7 @@ import { audit } from '../audit';
 import { getUserAccessToken, requireUser, type AuthDeps } from '../auth';
 import { HttpError, parseBody } from '../http/errors';
 import { canSee, toOrchRole } from './roles';
-import { getRoleInfo, toParticipationView, toProjectView } from './service';
+import { getRoleInfo, isCurrentOwner, toParticipationView, toProjectView } from './service';
 
 export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
   const { prisma, config } = deps;
@@ -110,10 +111,13 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
     return projects.map(toProjectView);
   });
 
-  async function ownedProject(id: string, userId: string) {
-    const project = await prisma.project.findUnique({ where: { id } });
+  async function ownedProject(id: string, user: User) {
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { installation: true },
+    });
     if (!project) throw new HttpError(404, 'not_found', 'Project not found');
-    if (project.addedById !== userId) {
+    if (!(await isCurrentOwner(prisma, deps.github, project, user))) {
       throw new HttpError(403, 'forbidden', 'Only the project owner can do this');
     }
     return project;
@@ -122,7 +126,7 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
   app.patch('/api/projects/:id', async (req) => {
     const user = requireUser(req);
     const { id } = req.params as { id: string };
-    const project = await ownedProject(id, user.id);
+    const project = await ownedProject(id, user);
     const body = parseBody(UpdateProjectRequestSchema, req.body);
     const updated = await prisma.project.update({
       where: { id: project.id },
@@ -146,7 +150,7 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
   app.delete('/api/projects/:id', async (req, reply) => {
     const user = requireUser(req);
     const { id } = req.params as { id: string };
-    const project = await ownedProject(id, user.id);
+    const project = await ownedProject(id, user);
     await prisma.project.delete({ where: { id: project.id } });
     await audit(prisma, {
       actorUserId: user.id,

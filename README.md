@@ -77,19 +77,23 @@ openssl rand -base64 32   # ORCH_ENCRYPTION_KEY
 openssl rand -hex 32      # GITHUB_WEBHOOK_SECRET
 ```
 
-| Variable                                                                       | Required | Meaning                                                                           |
-| ------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------- |
-| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                   |
-| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published               |
-| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port      |
-| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                      |
-| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)           |
-| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up           |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App (next section)                                               |
-| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                            |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)             |
-| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                 |
-| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start |
+| Variable                                                                       | Required | Meaning                                                                                |
+| ------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------------------------- |
+| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                        |
+| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                    |
+| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port           |
+| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                           |
+| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                |
+| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up                |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App (next section)                                                    |
+| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | yes (\*) | Who may sign in: GitHub logins and/or organizations, comma-separated, case-insensitive |
+| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public           |
+| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                 |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                  |
+| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                      |
+| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start      |
+
+(\*) **In production the server refuses to start** when both `ORCH_ALLOWED_GITHUB_LOGINS` and `ORCH_ALLOWED_GITHUB_ORGS` are empty, unless `ORCH_ALLOW_ANY_GITHUB_USER=true`. Without an allowlist, anyone with a GitHub account could sign in, see the projects set to "All orch users on this server" and join their pools. A user matches if their login is listed **or** they are an active member of a listed organization. Org membership is checked at login with the user's own GitHub token, and again for open sessions every `ORCH_ALLOWLIST_CACHE_SEC` seconds (default 300). Removing someone from the list or the org therefore takes effect within minutes (logins are re-checked on every request). Org checks need the GitHub App organization permission **Members: Read-only** (see below) and the App installed on, or approved by, the organization. In development and tests an empty allowlist only logs a warning.
 
 Other server knobs (dispatcher interval, offer TTLs, budget factors) have defaults and are listed in [`apps/server/src/config/index.ts`](apps/server/src/config/index.ts). To change one, add it to the `server` service `environment` in `compose.yaml`.
 
@@ -182,7 +186,7 @@ orch signs users in with GitHub and acts on repositories through one GitHub App 
 | Issues        | Read & write                                  |
 | Metadata      | Read-only (mandatory, selected automatically) |
 
-Organization permission **Members: Read-only** is not used by the current server; leave it off unless you extend orch to check organization membership.
+**Organization permissions:** set **Members: Read-only** only if you use `ORCH_ALLOWED_GITHUB_ORGS`. orch then calls `GET /user/memberships/orgs/{org}` with the signed-in user's own token. Without the permission, org checks answer "not a member" and everybody is refused. A login-only allowlist (`ORCH_ALLOWED_GITHUB_LOGINS`) needs nothing extra.
 
 **Subscribe to events:** Issues, Pull request, plus the Installation and Installation repositories events that GitHub delivers to every App (`issues`, `pull_request`, `installation`, `installation_repositories`).
 
@@ -203,8 +207,10 @@ Because a `Contents: write` installation token can push to any branch, **enable 
 4. **Install the agent.** On **My Server**, click to generate an install command. It is valid for 15 minutes, once:
 
    ```sh
-   curl -fsSL https://<domain>/install.sh | sh -s -- --token <one-time-token>
+   curl -fsSL https://<domain>/install.sh | ORCH_TOKEN=<one-time-token> sh
    ```
+
+   The token travels in an environment variable, not in a command-line argument, so it does not show up in the process list. The old `sh -s -- --token <token>` form still works but is deprecated.
 
    This needs only Docker Engine 26+ with Compose, `curl` and `sh`. It writes `~/orch/compose.yaml` and `~/orch/.env`, enrolls the machine and starts the agent. Re-run with `--force` to re-enroll; `--uninstall [--purge]` removes it.
 
@@ -300,13 +306,15 @@ CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests, installer tests, pr
 orch is for **small teams who trust each other**. It is a shared to-do list with automation, not a multi-tenant platform. Read this before you adopt it.
 
 - **Trusted teams only.** Anyone who can get an issue labeled for the pool can, in effect, write a prompt that runs on a teammate's machine. Do not use orch with strangers or with public repos where outsiders can file labeled issues.
-- **What the sandbox does.** Each task runs in its own container, non-root, with only that task's clone mounted. No docker socket, no host home directory. Each task gets an isolated clone, not your working copy.
+- **What the sandbox does.** Each task runs in its own container, non-root, with only that task's clone mounted. No docker socket, no host home directory. Each task gets an isolated clone, not your working copy. Git metadata (the bare mirror and the clone's `.git` bookkeeping) is kept outside the task container, so a task cannot rewrite hooks or config that the agent's own git would later run.
+- **The repo's compose file is validated.** When a task uses the repository's own `compose.yaml` for its dev environment, the agent checks it before starting anything and refuses `privileged`, host bind mounts, the Docker socket, host networking and `cap_add`. This validation is being completed on the agent side; until it ships, treat a repo's compose file as trusted code. It is not a defence against a hostile teammate.
 - **What the sandbox does not do.** In auto mode the agent runs `claude -p --permission-mode bypassPermissions` inside the task container. That container has **network access** and receives **the member's Claude token**. A malicious or compromised issue can therefore make Claude exfiltrate that token, call external services, or push harmful code to the task branch. There is no egress filtering in v1. The token is the member's own and can be revoked from their Claude account.
 - **The agent is root-equivalent on the member's host.** The agent container mounts `/var/run/docker.sock` to start task containers. Anyone controlling the agent controls that Docker daemon. Rootless Docker is a supported way to reduce this.
 - **Claude credentials never leave the member's machine.** The token lives in the agent's local volume and in that member's task containers. The server stores no Claude credentials. The agent mounts `~/.claude` read-only, only to estimate usage.
 - **Usage figures are estimates.** Anthropic does not publish exact subscription limits. Budgets, margins and reset times come from local logs plus a safety reserve and may be wrong. Treat them as hints.
 - **Review PRs.** Auto-mode PRs are drafts. Enable branch protection and require human review before merging. The GitHub App's `Contents: write` can push to any branch.
-- **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated. Every state change is written to an append-only audit log.
+- **Who can sign in.** Production requires an allowlist of GitHub logins and/or organizations (see Server installation). A task board is visible only to the project owner, active participants and GitHub collaborators; owner rights are re-checked against the GitHub ADMIN role (cached a few minutes), so a former admin loses them.
+- **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated by delivery id and by body hash. Caddy sends HSTS and a strict Content-Security-Policy, and the server never logs query strings (they carry the OAuth code). Every state change is written to an append-only audit log.
 
 Report vulnerabilities privately through GitHub security advisories on this repository.
 

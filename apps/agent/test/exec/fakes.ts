@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import type { TaskOfferPayload } from '@orch/shared';
 import type { ProcessOps, RunningProcess } from '../../src/exec/claude-run';
 import type { BuildSpec, DockerOps } from '../../src/exec/docker';
-import type { GitIdentity, GitOps } from '../../src/exec/git';
+import type { GitIdentity, GitOps, GitRepo } from '../../src/exec/git';
 import type { RunResult } from '../../src/exec/runner';
 import type { ScreenOps } from '../../src/exec/screen';
 import { nodeWorkspaceFs, type WorkspaceFs } from '../../src/exec/workspace';
@@ -21,22 +21,27 @@ export class FakeGit implements GitOps {
   async syncMirror(mirrorDir: string, remoteUrl: string, token: string) {
     this.calls.push(['syncMirror', mirrorDir, remoteUrl, token]);
   }
-  async clone(mirrorDir: string, remoteUrl: string, dest: string, token: string) {
-    this.calls.push(['clone', mirrorDir, remoteUrl, dest, token]);
-    mkdirSync(join(dest, '.git'), { recursive: true });
+  async clone(mirrorDir: string, remoteUrl: string, repo: GitRepo, token: string) {
+    const dest = repo.workTree;
+    this.calls.push(['clone', mirrorDir, remoteUrl, dest, token, repo.gitDir]);
+    mkdirSync(repo.gitDir, { recursive: true });
     for (const [rel, content] of Object.entries(this.files)) {
       mkdirSync(dirname(join(dest, rel)), { recursive: true });
       writeFileSync(join(dest, rel), content);
     }
   }
-  async createBranch(dir: string, branch: string, base: string) {
-    this.calls.push(['createBranch', dir, branch, base]);
+  async createBranch(repo: GitRepo, branch: string, base: string) {
+    this.calls.push(['createBranch', repo.workTree, branch, base]);
   }
-  async setIdentity(dir: string, id: GitIdentity) {
-    this.calls.push(['setIdentity', dir, id]);
+  async setIdentity(repo: GitRepo, id: GitIdentity) {
+    this.calls.push(['setIdentity', repo.workTree, id]);
   }
-  async commitAll(dir: string, message: string) {
-    this.calls.push(['commitAll', dir, message]);
+  async seedTaskGit(repo: GitRepo) {
+    this.calls.push(['seedTaskGit', repo.workTree]);
+    mkdirSync(join(repo.workTree, '.git'), { recursive: true });
+  }
+  async commitAll(repo: GitRepo, message: string) {
+    this.calls.push(['commitAll', repo.workTree, message]);
     return true;
   }
   async commitsAhead() {
@@ -51,8 +56,8 @@ export class FakeGit implements GitOps {
   async headSha() {
     return 'a'.repeat(40);
   }
-  async push(dir: string, branch: string, token: string) {
-    this.calls.push(['push', dir, branch, token]);
+  async push(repo: GitRepo, branch: string, token: string) {
+    this.calls.push(['push', repo.workTree, branch, token]);
     if (this.failPush) throw new Error('remote rejected');
   }
 }
@@ -61,8 +66,12 @@ export class FakeDocker implements DockerOps {
   calls: Call[] = [];
   containers = new Set<string>();
   networks = new Set<string>();
-  labeled: { kind: 'container' | 'network'; name: string; value: string }[] = [];
-  projects: string[] = [];
+  /** `agent` defaults to the test agent id ('agt_test'). */
+  labeled: { kind: 'container' | 'network'; name: string; value: string; agent?: string }[] = [];
+  projects: { name: string; agent?: string }[] = [];
+  /** What `composeConfig` returns (the resolved model). */
+  composeModel: unknown = { name: 'p', services: {} };
+  paused = new Set<string>();
   createEnv: Record<string, string>[] = [];
   usageJsonl = '';
 
@@ -107,8 +116,23 @@ export class FakeDocker implements DockerOps {
   async exists(container: string) {
     return this.containers.has(container);
   }
-  async listLabeled(kind: 'container' | 'network') {
-    return this.labeled.filter((l) => l.kind === kind);
+  async pause(container: string) {
+    this.calls.push(['pause', container]);
+    if (!this.containers.has(container)) throw new Error('No such container');
+    this.paused.add(container);
+  }
+  async unpause(container: string) {
+    this.calls.push(['unpause', container]);
+    this.paused.delete(container);
+  }
+  async listLabeled(kind: 'container' | 'network', _label: string, agentId: string) {
+    return this.labeled
+      .filter((l) => l.kind === kind && (l.agent ?? 'agt_test') === agentId)
+      .map(({ name, value }) => ({ name, value }));
+  }
+  async composeConfig(project: string, files: string[], cwd: string) {
+    this.calls.push(['composeConfig', project, files, cwd]);
+    return this.composeModel;
   }
   async composeUp(project: string, files: string[], cwd: string) {
     this.calls.push(['composeUp', project, files, cwd]);
@@ -116,8 +140,10 @@ export class FakeDocker implements DockerOps {
   async composeDown(project: string) {
     this.calls.push(['composeDown', project]);
   }
-  async composeProjects() {
-    return this.projects;
+  async composeProjects(prefix: string, agentId: string) {
+    return this.projects
+      .filter((p) => (p.agent ?? 'agt_test') === agentId && p.name.startsWith(prefix))
+      .map((p) => p.name);
   }
   names(): string[] {
     return this.calls.map((c) => c[0]);

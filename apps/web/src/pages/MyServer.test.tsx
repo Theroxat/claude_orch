@@ -29,7 +29,7 @@ describe('My server', () => {
   it('generates the install command, copies it and shows the expiry', async () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    const cmd = 'curl -fsSL http://x/install.sh | sh -s -- --token tok123';
+    const cmd = 'curl -fsSL http://x/install.sh | ORCH_TOKEN=tok123 sh';
     mockApi({
       'GET /me': () => ({ json: me }),
       'GET /agents/mine': () => ({ json: [] }),
@@ -62,7 +62,7 @@ describe('My server', () => {
         json: {
           token: 't',
           expiresAt: new Date(Date.now() + 1500).toISOString(),
-          installCommand: 'curl x | sh -s -- --token t',
+          installCommand: 'curl x | ORCH_TOKEN=t sh',
         },
       }),
     });

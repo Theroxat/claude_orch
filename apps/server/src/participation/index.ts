@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { User } from '@prisma/client';
 import {
   UpsertParticipationRequestSchema,
   type ParticipantItem,
@@ -9,7 +10,7 @@ import { requireUser, toApiUser, type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError, parseBody } from '../http/errors';
 import { canParticipate, canSee } from '../projects/roles';
-import { getRoleInfo, toParticipationView } from '../projects/service';
+import { getRoleInfo, isCurrentOwner, toParticipationView } from '../projects/service';
 
 export function registerParticipation(
   app: FastifyInstance,
@@ -30,7 +31,7 @@ export function registerParticipation(
       include: { installation: true },
     });
     if (!project || project.archivedAt) throw new HttpError(404, 'not_found', 'Project not found');
-    const isOwner = project.addedById === user.id;
+    const isOwner = await isCurrentOwner(prisma, deps.github, project, user);
 
     if (!isOwner) {
       const info = await getRoleInfo(prisma, deps.github, project, user);
@@ -39,6 +40,25 @@ export function registerParticipation(
       }
       if (body.participating && !canParticipate(project.participationPolicy, info.role, info)) {
         throw new HttpError(403, 'not_allowed', 'You may not participate in this project');
+      }
+    }
+
+    if (!body.participating) {
+      // Opting out never creates a row: it only switches off an existing one.
+      const existing = await prisma.participation.findUnique({
+        where: { userId_projectId: { userId: user.id, projectId: project.id } },
+      });
+      if (!existing) {
+        return {
+          id: '',
+          projectId: project.id,
+          userId: user.id,
+          participating: false,
+          budgetPercent: body.budgetPercent,
+          mode: body.mode === 'auto' ? 'auto' : 'approval',
+          status: 'inactive',
+          approvedAt: null,
+        };
       }
     }
 
@@ -87,10 +107,13 @@ export function registerParticipation(
     return toParticipationView(part, project.requireParticipantApproval);
   });
 
-  async function ownedProject(id: string, userId: string) {
-    const project = await prisma.project.findUnique({ where: { id } });
+  async function ownedProject(id: string, user: User) {
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { installation: true },
+    });
     if (!project) throw new HttpError(404, 'not_found', 'Project not found');
-    if (project.addedById !== userId) {
+    if (!(await isCurrentOwner(prisma, deps.github, project, user))) {
       throw new HttpError(403, 'forbidden', 'Only the project owner can do this');
     }
     return project;
@@ -99,7 +122,7 @@ export function registerParticipation(
   app.get('/api/projects/:id/participants', async (req): Promise<ParticipantItem[]> => {
     const user = requireUser(req);
     const { id } = req.params as { id: string };
-    const project = await ownedProject(id, user.id);
+    const project = await ownedProject(id, user);
     const rows = await prisma.participation.findMany({
       where: { projectId: project.id },
       include: { user: true },
@@ -115,7 +138,7 @@ export function registerParticipation(
     app.post(`/api/projects/:id/participants/:userId/${decision}`, async (req) => {
       const user = requireUser(req);
       const { id, userId } = req.params as { id: string; userId: string };
-      const project = await ownedProject(id, user.id);
+      const project = await ownedProject(id, user);
       const existing = await prisma.participation.findUnique({
         where: { userId_projectId: { userId, projectId: project.id } },
       });

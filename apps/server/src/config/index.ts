@@ -2,6 +2,20 @@ import { z } from 'zod';
 
 const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v);
 
+/** Comma-separated list -> trimmed, lower-cased, non-empty entries. */
+const csvLower = z.preprocess(
+  emptyToUndefined,
+  z
+    .string()
+    .default('')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+);
+
 const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -34,6 +48,16 @@ const ConfigSchema = z.object({
       .default('https://github.com')
       .transform((u) => u.replace(/\/+$/, '')),
   ),
+  /** Who may sign in. GitHub logins and/or orgs (case-insensitive, comma-separated). */
+  ORCH_ALLOWED_GITHUB_LOGINS: csvLower,
+  ORCH_ALLOWED_GITHUB_ORGS: csvLower,
+  /** Explicit opt-out of the allowlist: any GitHub account may sign in. Production only needs it. */
+  ORCH_ALLOW_ANY_GITHUB_USER: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /** How long an org-membership check of a signed-in user is cached. */
+  ORCH_ALLOWLIST_CACHE_SEC: z.coerce.number().int().nonnegative().default(300),
   ORCH_ENCRYPTION_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   // Files served to member machines. Default: resolved from the repository root.
   ORCH_INSTALL_SH_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -80,5 +104,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid configuration:\n${issues}`);
   }
-  return parsed.data;
+  const c = parsed.data;
+  if (c.NODE_ENV === 'production' && !signInIsRestricted(c) && !c.ORCH_ALLOW_ANY_GITHUB_USER) {
+    throw new Error(
+      'Invalid configuration:\n  Anyone with a GitHub account could sign in. Set ' +
+        'ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS, or set ' +
+        'ORCH_ALLOW_ANY_GITHUB_USER=true to accept that.',
+    );
+  }
+  return c;
+}
+
+/** True when an allowlist (logins and/or orgs) restricts who may sign in. */
+export function signInIsRestricted(
+  c: Pick<Config, 'ORCH_ALLOWED_GITHUB_LOGINS' | 'ORCH_ALLOWED_GITHUB_ORGS'>,
+): boolean {
+  return c.ORCH_ALLOWED_GITHUB_LOGINS.length > 0 || c.ORCH_ALLOWED_GITHUB_ORGS.length > 0;
 }

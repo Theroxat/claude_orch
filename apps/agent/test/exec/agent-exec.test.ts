@@ -110,6 +110,7 @@ describe('Agent with the manual executor', () => {
       backoff: { baseMs: 20, maxMs: 50 },
       exec: {
         config: {
+          agentId: 'agt_test',
           workDir: join(tmp.dir, 'work'),
           dataDir: join(tmp.dir, 'data'),
           maxConcurrent: 1,
@@ -256,6 +257,7 @@ describe('Agent in auto mode', () => {
       backoff: { baseMs: 20, maxMs: 50 },
       exec: {
         config: {
+          agentId: 'agt_test',
           workDir: join(tmp.dir, 'work'),
           dataDir: join(tmp.dir, 'data'),
           maxConcurrent: 1,

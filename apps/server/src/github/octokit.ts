@@ -117,6 +117,19 @@ export class OctokitGithubClient implements GithubClient {
     return { id: data.id, login: data.login, name: data.name, avatarUrl: data.avatar_url };
   }
 
+  async isOrgMember(accessToken: string, org: string): Promise<boolean> {
+    try {
+      const { data } = await this.userClient(
+        accessToken,
+      ).rest.orgs.getMembershipForAuthenticatedUser({ org });
+      return data.state === 'active';
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 404 || status === 403) return false;
+      throw err;
+    }
+  }
+
   async listUserRepos(accessToken: string): Promise<GithubRepoAccess[]> {
     const octokit = this.userClient(accessToken);
     const installations = await octokit.paginate(

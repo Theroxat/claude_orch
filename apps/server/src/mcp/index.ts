@@ -28,7 +28,13 @@ import type { AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
 import { buildPool } from '../offers';
-import { TaskService, effectiveStatus, taskInclude, type TaskRow } from '../tasks/service';
+import {
+  TaskService,
+  effectiveStatus,
+  issueUrlFor,
+  taskInclude,
+  type TaskRow,
+} from '../tasks/service';
 import { authenticatePat } from '../tokens';
 
 export interface McpDeps extends AuthDeps {
@@ -211,7 +217,11 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
           tasks: res.tasks.map(({ ref, row }) => ({
             ref,
             issueNumber: row.githubIssueNumber,
-            issueUrl: `https://github.com/${project.fullName}/issues/${row.githubIssueNumber}`,
+            issueUrl: issueUrlFor(
+              deps.config.GITHUB_WEB_URL,
+              project.fullName,
+              row.githubIssueNumber,
+            ),
             status: effectiveStatus(row),
             dependsOn: row.dependsOn.map((d) => d.dependsOn.githubIssueNumber),
           })),
@@ -291,7 +301,7 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
         return {
           project: project.fullName,
           issueNumber: t.githubIssueNumber,
-          issueUrl: `https://github.com/${project.fullName}/issues/${t.githubIssueNumber}`,
+          issueUrl: issueUrlFor(deps.config.GITHUB_WEB_URL, project.fullName, t.githubIssueNumber),
           title: t.title,
           status: effectiveStatus(t),
           size: t.size,

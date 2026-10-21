@@ -93,7 +93,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
               update.mutate({ visibility: e.target.value as ProjectView['visibility'] })
             }
           >
-            <option value="ALL_MEMBERS">All members</option>
+            <option value="ALL_MEMBERS">All orch users on this server</option>
             <option value="COLLABORATORS">Collaborators only</option>
             <option value="ALLOWLIST">Allowlist only</option>
           </select>
@@ -111,7 +111,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           >
             <option value="GITHUB">GitHub collaborators</option>
             <option value="ALLOWLIST">Allowlist</option>
-            <option value="ALL_MEMBERS">All members</option>
+            <option value="ALL_MEMBERS">All orch users on this server</option>
           </select>
         </label>
         <label className="field" htmlFor={`sub-${id}`}>

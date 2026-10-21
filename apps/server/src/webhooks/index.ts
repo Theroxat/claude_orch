@@ -15,7 +15,7 @@
  *   pull_request.closed not merged                         -> back to TODO, cleanup
  *   installation, installation_repositories                -> installations / projects updated
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { serverMessage, type WebhookResponse } from '@orch/shared';
@@ -103,7 +103,9 @@ export function registerWebhooks(
         throw new HttpError(400, 'invalid_json', 'Malformed JSON body');
       }
       try {
-        await prisma.webhookDelivery.create({ data: { deliveryId, event } });
+        await prisma.webhookDelivery.create({
+          data: { deliveryId, event, bodyHash: createHash('sha256').update(raw).digest('hex') },
+        });
       } catch (err) {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
           return { ok: true, duplicate: true };

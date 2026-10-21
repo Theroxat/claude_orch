@@ -60,6 +60,8 @@ export interface GithubClient {
   exchangeCode(code: string, redirectUri: string): Promise<GithubTokens>;
   refreshUserToken(refreshToken: string): Promise<GithubTokens>;
   getUser(accessToken: string): Promise<GithubUserInfo>;
+  /** Is the token's user an active member of the org? Needs the App's "Members: read" permission. */
+  isOrgMember(accessToken: string, org: string): Promise<boolean>;
   /** Repos where the App is installed and the user has access (user-to-server token). */
   listUserRepos(accessToken: string): Promise<GithubRepoAccess[]>;
   /** The user's role on a repo, read with an installation token. */

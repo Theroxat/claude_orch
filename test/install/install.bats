@@ -45,6 +45,15 @@ F
   [ "$status" -eq 1 ]
 }
 
+@test "token from ORCH_TOKEN enrolls without any --token argument" {
+  run env ORCH_TOKEN=envtok123 sh "$S" --server https://orch.example.com
+  [ "$status" -eq 0 ]
+  grep -q '^ORCH_AGENT_CREDENTIAL=' "$HOME/orch/.env"
+  grep -q '/agent/enroll' "$CALLS"
+  run grep -q envtok123 "$CALLS"
+  [ "$status" -eq 1 ]
+}
+
 @test "rerun does not re-enroll" {
   sh "$S" --token tok123 --server https://orch.example.com
   : >"$CALLS"
@@ -66,7 +75,7 @@ F
 @test "missing token on first install fails" {
   run sh "$S" --server https://orch.example.com
   [ "$status" -ne 0 ]
-  case "$output" in *"--token"*) true ;; *) false ;; esac
+  case "$output" in *"ORCH_TOKEN"*) true ;; *) false ;; esac
 }
 
 @test "missing server fails with a clear message" {

@@ -38,6 +38,7 @@ function setup(
   const state = { paused: opts.paused ?? false };
   let n = 0;
   const cfg: ExecutorConfig = {
+    agentId: 'agt_test',
     workDir: join(tmp.dir, 'work'),
     dataDir: join(tmp.dir, 'data'),
     maxConcurrent: opts.max ?? 1,
@@ -107,7 +108,10 @@ describe('ManualExecutor take -> done', () => {
       'https://github.com/acme/widgets.git',
       join(t.cfg.workDir, 'asg_1', 'src'),
       GH_TOKEN,
+      // The git dir is private to the agent: outside the work dir, never mounted.
+      join(t.cfg.dataDir, 'git', 'asg_1.git'),
     ]);
+    expect(t.git.calls.map((c) => c[0])).toContain('seedTaskGit');
     expect(t.git.calls.find((c) => c[0] === 'createBranch')?.slice(2)).toEqual([
       'orch/issue-42-add-a-dark-mode-toggle',
       'main',
@@ -116,6 +120,7 @@ describe('ManualExecutor take -> done', () => {
     // Dockerfile build, sidecars on the task network, container, claude copied in.
     expect(t.docker.names()).toEqual([
       'createNetwork',
+      'composeConfig',
       'composeUp',
       'build',
       'create',
@@ -123,7 +128,9 @@ describe('ManualExecutor take -> done', () => {
       'start',
     ]);
     const up = t.docker.calls.find((c) => c[0] === 'composeUp')!;
-    const override = (up[2] as string[])[1]!;
+    const [checked, override] = up[2] as [string, string];
+    // Sidecars start from the validated model, never from the repo's raw file.
+    expect(checked).toBe(join(t.cfg.workDir, 'asg_1', 'compose.orch.checked.json'));
     expect(readFileSync(override, 'utf8')).toContain(`name: ${rec.network}`);
     expect(override.startsWith(join(t.cfg.workDir, 'asg_1', 'src'))).toBe(false);
     const createArgs = t.docker.calls.find((c) => c[0] === 'create')![1] as string[];
@@ -167,6 +174,11 @@ describe('ManualExecutor take -> done', () => {
     ].join('\n');
     const done = await t.ex.done(42);
     expect(done.state).toBe('finished');
+    // The task is frozen while the agent stages and commits its files.
+    const names = t.docker.names();
+    expect(names.indexOf('pause')).toBeGreaterThan(-1);
+    expect(names.indexOf('unpause')).toBeGreaterThan(names.indexOf('pause'));
+    expect(t.docker.paused.size).toBe(0);
     expect(t.git.calls.find((c) => c[0] === 'push')).toEqual([
       'push',
       rec.cloneDir,
@@ -322,7 +334,7 @@ describe('ManualExecutor cleanup and restart', () => {
     t.ex.handle(serverMessage('cleanup', { assignmentId: 'asg_1' }));
     await t.ex.idle();
     expect(existsSync(rec.taskDir)).toBe(false);
-    expect(t.fs.removed).toEqual([rec.taskDir]);
+    expect(t.fs.removed).toEqual([rec.taskDir, join(t.cfg.dataDir, 'git', 'asg_1.git')]);
     expect(t.docker.calls).toContainEqual(['removeImage', rec.builtImage]);
     expect(t.ex.store.get('asg_1')).toBeUndefined();
     expect(() => t.ex.handle(serverMessage('cleanup', { assignmentId: '../../etc' }))).toThrow();
@@ -350,7 +362,7 @@ describe('ManualExecutor cleanup and restart', () => {
       { kind: 'container', name: 'orch-task-1-old', value: 'asg_old' },
       { kind: 'network', name: 'orch-net-old', value: 'asg_old' },
     ];
-    t.docker.projects = ['orch-task-old'];
+    t.docker.projects = [{ name: 'orch-task-old' }];
     const ex2 = t.make();
     await ex2.reconcile();
     expect(ex2.store.get('asg_1')?.state).toBe('running');
@@ -359,6 +371,89 @@ describe('ManualExecutor cleanup and restart', () => {
     expect(t.docker.calls).not.toContainEqual(['remove', rec.container]);
     expect(t.docker.calls).toContainEqual(['removeNetwork', 'orch-net-old']);
     expect(t.docker.calls).toContainEqual(['composeDown', 'orch-task-old']);
+  });
+
+  it('reconcile never touches containers, networks or sidecars of another agent', async () => {
+    const t = setup();
+    t.docker.labeled = [
+      { kind: 'container', name: 'orch-task-7-other', value: 'asg_other', agent: 'agt_other' },
+      { kind: 'network', name: 'orch-net-other', value: 'asg_other', agent: 'agt_other' },
+      { kind: 'container', name: 'orch-task-8-mine', value: 'asg_gone' },
+    ];
+    t.docker.projects = [
+      { name: 'orch-task-other', agent: 'agt_other' },
+      { name: 'orch-task-gone' },
+    ];
+    await t.make().reconcile();
+    expect(t.docker.calls).not.toContainEqual(['remove', 'orch-task-7-other']);
+    expect(t.docker.calls).not.toContainEqual(['removeNetwork', 'orch-net-other']);
+    expect(t.docker.calls).not.toContainEqual(['composeDown', 'orch-task-other']);
+    expect(t.docker.calls).toContainEqual(['remove', 'orch-task-8-mine']);
+    expect(t.docker.calls).toContainEqual(['composeDown', 'orch-task-gone']);
+  });
+
+  it('labels every network, image and container with this agent id', async () => {
+    const t = setup();
+    t.git.files = { 'README.md': '#\n', Dockerfile: 'FROM debian\n' };
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const net = t.docker.calls.find((c) => c[0] === 'createNetwork');
+    expect(net).toBeDefined();
+    const build = t.docker.calls.find((c) => c[0] === 'build')?.[1] as { labels: object };
+    expect(build.labels).toMatchObject({ 'orch.agent': 'agt_test', 'orch.task': 'asg_1' });
+    const create = t.docker.calls.find((c) => c[0] === 'create')?.[1] as string[];
+    expect(create.join(' ')).toContain('--label orch.agent=agt_test');
+  });
+
+  it('refuses a dangerous compose file: the task fails with the reason, nothing starts', async () => {
+    const t = setup({ files: { 'compose.yaml': 'services: {}\n' } });
+    t.docker.composeModel = {
+      name: 'p',
+      services: {
+        evil: {
+          image: 'alpine',
+          privileged: true,
+          volumes: [{ type: 'bind', source: '/var/run/docker.sock', target: '/s' }],
+        },
+      },
+    };
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state).toBe('failed');
+    expect(rec.error).toContain('Refusing the repository compose file');
+    expect(rec.error).toContain('privileged');
+    expect(rec.error).toContain('/var/run/docker.sock');
+    expect(t.docker.names()).not.toContain('composeUp');
+    expect(t.docker.names()).not.toContain('create');
+    expect(t.of('task.finished')[0]?.payload).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('strips published ports and labels the sidecars', async () => {
+    const t = setup({ files: { 'compose.yaml': 'services: {}\n' } });
+    t.docker.composeModel = {
+      name: 'p',
+      services: {
+        db: {
+          image: 'postgres',
+          ports: [{ mode: 'ingress', target: 5432, published: '5432', protocol: 'tcp' }],
+        },
+      },
+    };
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state).toBe('running');
+    const up = t.docker.calls.find((c) => c[0] === 'composeUp')!;
+    const model = JSON.parse(readFileSync((up[2] as string[])[0]!, 'utf8')) as {
+      services: { db: { ports?: unknown; labels: Record<string, string> } };
+    };
+    expect(model.services.db.ports).toBeUndefined();
+    expect(model.services.db.labels).toMatchObject({
+      'orch.agent': 'agt_test',
+      'orch.task': 'asg_1',
+    });
+    expect(rec.warnings.join(' ')).toContain('published ports');
   });
 
   it('after a restart: fails tasks whose container vanished or whose preparation was cut', async () => {

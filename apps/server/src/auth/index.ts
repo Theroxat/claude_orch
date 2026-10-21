@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { User } from '@prisma/client';
 import type { ApiUser } from '@orch/shared';
 import { audit } from '../audit';
-import type { Config } from '../config';
+import { signInIsRestricted, type Config } from '../config';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { HttpError } from '../http/errors';
@@ -81,8 +81,64 @@ export function requireUser(req: FastifyRequest): User {
   return req.user;
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+function refusedPage(login: string, config: Config): string {
+  const how = [
+    config.ORCH_ALLOWED_GITHUB_LOGINS.length > 0 ? 'be listed in ORCH_ALLOWED_GITHUB_LOGINS' : '',
+    config.ORCH_ALLOWED_GITHUB_ORGS.length > 0
+      ? `be an active member of one of these GitHub organizations: ${config.ORCH_ALLOWED_GITHUB_ORGS.join(', ')}`
+      : '',
+  ].filter(Boolean);
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access denied - orch</title>
+<style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style>
+</head><body>
+<h1>Access denied</h1>
+<p>The GitHub account <strong>${escapeHtml(login)}</strong> is not allowed on this orch server.</p>
+<p>To sign in, the account must ${escapeHtml(how.join(' or '))}. Ask the server administrator to add you.</p>
+<p><a href="/">Back to the start page</a></p>
+</body></html>`;
+}
+
 export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
   const { config, prisma } = deps;
+  const restricted = signInIsRestricted(config);
+  if (!restricted) {
+    app.log.warn(
+      'No sign-in allowlist: any GitHub account can sign in. Set ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS.',
+    );
+  }
+  // Org-membership results of signed-in users, so removing someone takes effect within the TTL.
+  const orgCache = new Map<string, { ok: boolean; at: number }>();
+
+  /** Allowlist decision for a user token. Login list first (free), then org membership. */
+  async function isAllowed(
+    login: string,
+    accessToken: () => Promise<string>,
+    cacheKey?: string,
+  ): Promise<boolean> {
+    if (!restricted) return true;
+    if (config.ORCH_ALLOWED_GITHUB_LOGINS.includes(login.toLowerCase())) return true;
+    if (config.ORCH_ALLOWED_GITHUB_ORGS.length === 0) return false;
+    const ttl = config.ORCH_ALLOWLIST_CACHE_SEC * 1000;
+    const hit = cacheKey ? orgCache.get(cacheKey) : undefined;
+    if (hit && Date.now() - hit.at < ttl) return hit.ok;
+    if (!deps.github) return false;
+    const token = await accessToken();
+    let ok = false;
+    for (const org of config.ORCH_ALLOWED_GITHUB_ORGS) {
+      if (await deps.github.isOrgMember(token, org)) {
+        ok = true;
+        break;
+      }
+    }
+    if (cacheKey) orgCache.set(cacheKey, { ok, at: Date.now() });
+    return ok;
+  }
   const base = new URL(config.ORCH_BASE_URL);
   const secure = base.protocol === 'https:';
   const redirectUri = `${base.origin}/api/auth/github/callback`;
@@ -109,7 +165,26 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
       where: { id: sha256Hex(raw) },
       include: { user: true },
     });
-    if (session && session.expiresAt.getTime() > Date.now()) req.user = session.user;
+    if (!session || session.expiresAt.getTime() <= Date.now()) return;
+    // Existing sessions are re-checked against the allowlist (org checks are cached).
+    let allowed = true;
+    try {
+      allowed = await isAllowed(
+        session.user.login,
+        () => getUserAccessToken(deps, session.user),
+        session.userId,
+      );
+    } catch (err) {
+      // Token expired or revoked: treated as signed out, the user signs in again (and is checked).
+      if (err instanceof HttpError) return;
+      req.log.warn({ err }, 'Allowlist re-check failed; keeping the session');
+    }
+    if (!allowed) {
+      await prisma.session.deleteMany({ where: { userId: session.userId } });
+      await audit(prisma, { actorUserId: session.userId, action: 'auth.revoked', ip: req.ip });
+      return;
+    }
+    req.user = session.user;
   });
 
   app.get('/api/auth/github/login', async (_req, reply) => {
@@ -142,6 +217,24 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     } catch (err) {
       req.log.warn({ err }, 'GitHub OAuth exchange failed');
       throw new HttpError(502, 'github_error', 'GitHub sign-in failed');
+    }
+    let allowed: boolean;
+    try {
+      allowed = await isAllowed(gh.login, async () => tokens.accessToken);
+    } catch (err) {
+      req.log.warn({ err }, 'GitHub allowlist check failed');
+      throw new HttpError(502, 'github_error', 'GitHub sign-in failed');
+    }
+    if (!allowed) {
+      req.log.warn({ login: gh.login }, 'Sign-in refused: not on the allowlist');
+      await audit(prisma, {
+        actorType: 'SYSTEM',
+        action: 'auth.refused',
+        data: { login: gh.login },
+        ip: req.ip,
+      });
+      reply.header('Set-Cookie', cookie(STATE_COOKIE, '', secure, 0));
+      return reply.status(403).type('text/html; charset=utf-8').send(refusedPage(gh.login, config));
     }
     const fields = {
       login: gh.login,

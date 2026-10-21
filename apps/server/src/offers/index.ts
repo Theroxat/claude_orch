@@ -7,6 +7,7 @@ import type { OfferView, PoolMember, PoolResponse } from '@orch/shared';
 import type { AgentGateway } from '../agents/gateway';
 import { requireUser, type AuthDeps } from '../auth';
 import type { Config } from '../config';
+import { issueUrlFor } from '../tasks/service';
 import type { PrismaClient } from '../db';
 import { usageState } from '../dispatch/budget';
 import type { Dispatcher } from '../dispatch/dispatcher';
@@ -18,7 +19,7 @@ const offerInclude = {
 } satisfies Prisma.AssignmentInclude;
 type OfferRow = Prisma.AssignmentGetPayload<{ include: typeof offerInclude }>;
 
-function toOfferView(a: OfferRow): OfferView {
+function toOfferView(a: OfferRow, webUrl: string): OfferView {
   const t = a.task;
   return {
     id: a.id,
@@ -31,7 +32,7 @@ function toOfferView(a: OfferRow): OfferView {
       projectId: t.projectId,
       projectFullName: t.project.fullName,
       issueNumber: t.githubIssueNumber,
-      issueUrl: `https://github.com/${t.project.fullName}/issues/${t.githubIssueNumber}`,
+      issueUrl: issueUrlFor(webUrl, t.project.fullName, t.githubIssueNumber),
       title: t.title,
       body: t.bodySnapshot,
       acceptanceCriteria: t.acceptanceCriteria,
@@ -54,7 +55,7 @@ export function registerOffers(
   app: FastifyInstance,
   deps: AuthDeps & { dispatcher: Dispatcher; gateway: AgentGateway },
 ): void {
-  const { prisma, dispatcher } = deps;
+  const { prisma, dispatcher, config } = deps;
 
   app.get('/api/offers/mine', async (req): Promise<OfferView[]> => {
     const user = requireUser(req);
@@ -68,7 +69,7 @@ export function registerOffers(
       include: offerInclude,
       orderBy: { offeredAt: 'asc' },
     });
-    return rows.map(toOfferView);
+    return rows.map((r) => toOfferView(r, config.GITHUB_WEB_URL));
   });
 
   for (const action of ['accept', 'reject'] as const) {
@@ -90,7 +91,7 @@ export function registerOffers(
         where: { id },
         include: offerInclude,
       });
-      return toOfferView(row);
+      return toOfferView(row, config.GITHUB_WEB_URL);
     });
   }
 
@@ -118,14 +119,23 @@ export async function buildPool(
   projectId?: string,
 ): Promise<PoolResponse> {
   const { prisma, dispatcher, gateway, config } = deps;
-  const projects = await prisma.project.findMany({
+  const candidates = await prisma.project.findMany({
     where: {
       archivedAt: null,
       ...(projectId ? { id: projectId } : {}),
       OR: [{ addedById: user.id }, { participations: { some: { userId: user.id } } }],
     },
+    include: { participations: { where: { userId: user.id } } },
     orderBy: { fullName: 'asc' },
   });
+  // Owners and ACTIVE participants only: a pending, rejected or inactive row sees nothing.
+  const projects = candidates.filter(
+    (p) =>
+      p.addedById === user.id ||
+      p.participations.some(
+        (r) => participationStatus(r, p.requireParticipantApproval) === 'active',
+      ),
+  );
   if (projectId && projects.length === 0) {
     throw new HttpError(404, 'not_found', 'Project not found');
   }
@@ -187,7 +197,11 @@ export async function buildPool(
         title: a.task.title,
         status: a.status,
         projectFullName: a.task.project.fullName,
-        issueUrl: `https://github.com/${a.task.project.fullName}/issues/${a.task.githubIssueNumber}`,
+        issueUrl: issueUrlFor(
+          config.GITHUB_WEB_URL,
+          a.task.project.fullName,
+          a.task.githubIssueNumber,
+        ),
       })),
     });
   }

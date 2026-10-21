@@ -40,6 +40,8 @@ export const TaskRecordSchema = z.object({
   seq: z.number().int().nonnegative(),
   taskDir: z.string(),
   cloneDir: z.string(),
+  /** Agent-private git dir of the clone (never mounted). Null for records of older agents. */
+  gitDir: z.string().nullable().default(null),
   container: z.string(),
   network: z.string(),
   image: z.string().nullable(),

@@ -839,7 +839,10 @@ describe('github webhooks', () => {
     expect((await hook('issues', labeled(502, owner))).json()).toMatchObject({
       result: 'imported',
     });
-    expect((await hook('issues', labeled(502, owner))).json()).toMatchObject({
+    // A distinct body: byte-identical bodies are dropped as replays, whatever the delivery id.
+    expect(
+      (await hook('issues', { ...labeled(502, owner), redelivered: true })).json(),
+    ).toMatchObject({
       result: 'already_imported',
     });
     const t = await prisma.task.findUniqueOrThrow({

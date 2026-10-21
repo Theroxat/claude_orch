@@ -1,8 +1,9 @@
 #!/bin/sh
 # orch member installer.
-#   curl -fsSL https://<ORCH_DOMAIN>/install.sh | sh -s -- --token <token>
+#   curl -fsSL https://<ORCH_DOMAIN>/install.sh | ORCH_TOKEN=<token> sh
+# The token is read from $ORCH_TOKEN so it never appears in a process argument list.
 # Options:
-#   --token <t>    one-time enrollment token (15 min)
+#   --token <t>    one-time enrollment token (15 min). Deprecated: visible in `ps`; prefer ORCH_TOKEN
 #   --server <u>   server URL (default: URL this script was served from, or $ORCH_SERVER_URL)
 #   --dir <path>   install directory (default: ~/orch)
 #   --force        re-enroll even if already enrolled
@@ -16,7 +17,7 @@ set -eu
 # The server replaces this placeholder with its own public URL when it serves the script.
 SERVED_FROM_URL="__ORCH_SERVER_URL__"
 
-TOKEN=""
+TOKEN="${ORCH_TOKEN:-}"
 SERVER=""
 DIR=""
 FORCE=0
@@ -29,7 +30,7 @@ info() { printf '%s\n' "$*"; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh --token <token> [--server <url>] [--dir <path>] [--force]
+Usage: ORCH_TOKEN=<token> install.sh [--server <url>] [--dir <path>] [--force]
        install.sh --uninstall [--purge] [--yes] [--dir <path>]
 USAGE
 }
@@ -104,13 +105,14 @@ json_field() { # json_field NAME <json on stdin>
 
 enroll() {
   [ -n "$SERVER" ] || die "server URL unknown; pass --server <url> or set ORCH_SERVER_URL"
-  [ -n "$TOKEN" ] || die "missing --token <token> (generate one on the My server page)"
+  [ -n "$TOKEN" ] || die "missing token: set ORCH_TOKEN=<token> (generate one on the My server page)"
   host="$(hostname 2>/dev/null | tr -c 'A-Za-z0-9._-' '_' || true)"
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   arch="$(uname -m)"
   case "$arch" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; esac
   dver="$(docker version --format '{{.Server.Version}}' 2>/dev/null | tr -c 'A-Za-z0-9._-' '_' || true)"
-  # Token goes through stdin, not argv, so it does not show up in the process list.
+  # The token travels to curl through stdin, not argv. It is also kept out of this script's own
+  # argv when passed as $ORCH_TOKEN; the deprecated --token flag does expose it to `ps`.
   resp="$(printf '{"token":"%s","machine":{"hostname":"%s","os":"%s","arch":"%s","agentVersion":"installer","dockerVersion":"%s"}}' \
     "$TOKEN" "${host:-unknown}" "$os" "$arch" "${dver:-unknown}" |
     curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SERVER/agent/enroll")" ||

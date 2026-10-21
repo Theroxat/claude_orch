@@ -193,7 +193,7 @@ describe('enrollment tokens', () => {
     const u = await loginAs(app, gh);
     const t = await createToken(u);
     expect(t.installCommand).toBe(
-      `curl -fsSL http://localhost:8470/install.sh | sh -s -- --token ${t.token}`,
+      `curl -fsSL http://localhost:8470/install.sh | ORCH_TOKEN=${t.token} sh`,
     );
     const expires = new Date(t.expiresAt).getTime() - Date.now();
     expect(expires).toBeGreaterThan(14 * 60_000);

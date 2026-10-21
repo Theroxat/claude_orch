@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -142,5 +142,55 @@ describe('dev environment selection', () => {
       a: '//not a comment',
       b: [1, 2],
     });
+  });
+});
+
+describe('symlinks cannot lead outside the clone', () => {
+  function outside(): string {
+    const dir = join(tmp.dir, 'outside');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'Dockerfile'), 'FROM scratch\n');
+    writeFileSync(join(dir, 'compose.yaml'), 'services: {}\n');
+    writeFileSync(join(dir, 'devcontainer.json'), '{"image":"x"}');
+    return dir;
+  }
+
+  it('refuses a build.dockerfile or build.context reached through a symlink', () => {
+    const out = outside();
+    const root = repo({ 'README.md': '' });
+    symlinkSync(out, join(root, 'escape'));
+    mkdirSync(join(root, '.devcontainer'));
+    writeFileSync(
+      join(root, '.devcontainer', 'devcontainer.json'),
+      '{"build":{"dockerfile":"../escape/Dockerfile"}}',
+    );
+    expect(() => selectDevEnv(root, DEFAULT)).toThrow(/build.dockerfile .* outside/);
+    writeFileSync(join(root, 'Dockerfile.in'), 'FROM scratch\n');
+    writeFileSync(
+      join(root, '.devcontainer', 'devcontainer.json'),
+      '{"build":{"dockerfile":"../Dockerfile.in","context":"../escape"}}',
+    );
+    expect(() => selectDevEnv(root, DEFAULT)).toThrow(/build.context .* outside/);
+  });
+
+  it('refuses a devcontainer.json, root Dockerfile or compose file that is a symlink out', () => {
+    const out = outside();
+    const a = repo({ 'README.md': '' });
+    mkdirSync(join(a, '.devcontainer'));
+    symlinkSync(join(out, 'devcontainer.json'), join(a, '.devcontainer', 'devcontainer.json'));
+    expect(() => selectDevEnv(a, DEFAULT)).toThrow(DevEnvError);
+    const b = join(tmp.dir, 'b');
+    mkdirSync(b);
+    symlinkSync(join(out, 'Dockerfile'), join(b, 'Dockerfile'));
+    expect(() => selectDevEnv(b, DEFAULT)).toThrow(/symlink out of the repository/);
+    symlinkSync(join(out, 'compose.yaml'), join(b, 'compose.yaml'));
+    expect(() => findComposeFile(b)).toThrow(/symlink out of the repository/);
+  });
+
+  it('accepts symlinks that stay inside and returns real paths', () => {
+    const root = repo({ 'docker/Dockerfile.dev': 'FROM scratch\n' });
+    symlinkSync('docker/Dockerfile.dev', join(root, 'Dockerfile'));
+    const env = selectDevEnv(root, DEFAULT);
+    expect(env.kind === 'build' && env.dockerfile).toBe(join(root, 'docker', 'Dockerfile.dev'));
   });
 });
