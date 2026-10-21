@@ -1,23 +1,20 @@
 import { buildBlocks, currentBlock } from './blocks';
-import { scanUsage } from './scanner';
-import type { EstimateOptions, PlanName, TokenTotals, UsageEntry, UsageEstimate } from './types';
+import { modelFamily } from './models';
+import { createUsageCache, scanUsage } from './scanner';
+import type { EstimateOptions, TokenTotals, UsageCache, UsageEntry, UsageEstimate } from './types';
 
-const WEEK_MS = 7 * 24 * 3_600_000;
+const DAY_MS = 24 * 3_600_000;
+const WEEK_MS = 7 * DAY_MS;
+export const DEFAULT_HISTORY_DAYS = 30;
+export const DEFAULT_MIN_BLOCKS = 3;
 
-/**
- * Placeholder per-plan limits in WEIGHTED tokens per 5h window. Anthropic does not publish exact
- * numbers, so these are rough starting points; override with `limitWeighted`.
- */
-export const PLAN_LIMITS: Record<PlanName, number> = {
-  pro: 44_000,
-  max5: 88_000,
-  max20: 220_000,
-};
+/** Process-wide cache so the 5-minute loop only re-reads files that changed. */
+const defaultCache: UsageCache = createUsageCache();
 
 const zero = (): TokenTotals => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0 });
 
 export const modelFactor = (model: string, opusFactor: number): number =>
-  model.toLowerCase().includes('opus') ? opusFactor : 1;
+  modelFamily(model) === 'opus' ? opusFactor : 1;
 
 /** PLAN 5.7: (input + output + cacheWrite + 0.1 * cacheRead) * modelFactor. */
 export function weigh(t: TokenTotals, factor: number): number {
@@ -46,6 +43,28 @@ function summarize(entries: UsageEntry[], opusFactor: number) {
   return { tokens, byModel, weighted };
 }
 
+const weighEntry = (e: UsageEntry, opusFactor: number): number =>
+  weigh(e, modelFactor(e.model, opusFactor));
+
+/**
+ * ccusage `--token-limit max`: the largest weighted total of any COMPLETED block. Same weighting as
+ * the current block, so the opus factor cancels out of the ratio.
+ */
+function calibrate(
+  completed: { entries: UsageEntry[] }[],
+  opusFactor: number,
+  minBlocks: number,
+): number | null {
+  if (completed.length < minBlocks) return null;
+  let max = 0;
+  for (const b of completed) {
+    let w = 0;
+    for (const e of b.entries) w += weighEntry(e, opusFactor);
+    if (w > max) max = w;
+  }
+  return max > 0 ? max : null;
+}
+
 /** Compute the (estimated) current 5h window usage and remaining margin from local Claude logs. */
 export async function estimateUsage(opts: EstimateOptions = {}): Promise<UsageEstimate> {
   const root = opts.root ?? '/host-claude';
@@ -53,17 +72,36 @@ export async function estimateUsage(opts: EstimateOptions = {}): Promise<UsageEs
   const opusFactor = opts.opusFactor ?? 5;
   const safetyMargin = opts.safetyMargin ?? 0.2;
   const plan = opts.plan ?? 'pro';
-  const limit = opts.limitWeighted ?? PLAN_LIMITS[plan];
+  const minBlocks = opts.minBlocks ?? DEFAULT_MIN_BLOCKS;
+  const historySince = now - (opts.historyDays ?? DEFAULT_HISTORY_DAYS) * DAY_MS;
 
-  const since = now - WEEK_MS;
-  const scan = await scanUsage(root, since);
+  const scan = await scanUsage(root, historySince, opts.cache ?? defaultCache);
   const entries = scan.entries.filter((e) => e.timestamp <= now);
 
-  const block = currentBlock(buildBlocks(entries), now);
+  const blocks = buildBlocks(entries);
+  const block = currentBlock(blocks, now);
+  const completed = blocks.filter((b) => b !== block);
   const cur = summarize(block?.entries ?? [], opusFactor);
-  const week = summarize(entries, opusFactor);
+  const weekSince = now - WEEK_MS;
+  const week = summarize(
+    entries.filter((e) => e.timestamp >= weekSince),
+    opusFactor,
+  );
 
-  const usable = limit * (1 - safetyMargin);
+  const override = opts.limitWeighted !== undefined && opts.limitWeighted > 0;
+  const limit = override ? opts.limitWeighted! : calibrate(completed, opusFactor, minBlocks);
+  const usable = limit === null ? null : limit * (1 - safetyMargin);
+
+  // Latest still-future reset time announced by a rate-limit error.
+  let rateLimitedUntil: number | null = null;
+  for (const r of scan.rateLimits)
+    if (
+      r.resetAt !== null &&
+      r.resetAt > now &&
+      (rateLimitedUntil === null || r.resetAt > rateLimitedUntil)
+    )
+      rateLimitedUntil = r.resetAt;
+
   return {
     estimate: true,
     source: 'claude-code-jsonl',
@@ -72,15 +110,29 @@ export async function estimateUsage(opts: EstimateOptions = {}): Promise<UsageEs
     tokens: cur.tokens,
     byModel: cur.byModel,
     weighted: cur.weighted,
-    weekly: { since, tokens: week.tokens, weighted: week.weighted, informationalOnly: true },
+    weekly: {
+      since: weekSince,
+      tokens: week.tokens,
+      weighted: week.weighted,
+      informationalOnly: true,
+    },
     budget: {
-      plan: opts.limitWeighted !== undefined ? 'custom' : plan,
+      plan: override ? 'custom' : plan,
+      limitSource: override ? 'override' : limit === null ? 'unknown' : 'calibrated',
       limitWeighted: limit,
       safetyMargin,
       usableWeighted: usable,
-      remainingWeighted: Math.max(0, usable - cur.weighted),
-      usedFraction: usable > 0 ? cur.weighted / usable : 1,
+      remainingWeighted: usable === null ? null : Math.max(0, usable - cur.weighted),
+      usedFraction: usable === null ? null : usable > 0 ? cur.weighted / usable : 1,
+      marginFraction:
+        usable === null
+          ? null
+          : usable > 0
+            ? Math.min(1, Math.max(0, 1 - cur.weighted / usable))
+            : 0,
+      completedBlocks: completed.length,
     },
+    rateLimitedUntil,
     filesScanned: scan.filesScanned,
     linesSkipped: scan.linesSkipped,
   };

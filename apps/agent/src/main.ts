@@ -88,7 +88,11 @@ async function main(): Promise<void> {
     socketPath: cfg.socketPath,
     usageIntervalSec: cfg.usageIntervalSec,
     usageIntervalExplicit: cfg.usageIntervalExplicit,
-    usageSource: jsonlUsageSource({ root: cfg.claudeUsageRoot, plan: cfg.plan }),
+    usageSource: jsonlUsageSource({
+      root: cfg.claudeUsageRoot,
+      plan: cfg.plan,
+      ...(cfg.usageLimit !== undefined ? { limitWeighted: cfg.usageLimit } : {}),
+    }),
     logger: log,
     exec: execOptions(cfg, log, cred.agentId),
   });

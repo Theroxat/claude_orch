@@ -33,6 +33,11 @@ const EnvSchema = z.object({
   ORCH_MACHINE_NAME: z.string().trim().min(1).max(100).optional(),
   ORCH_USAGE_INTERVAL_SEC: z.coerce.number().int().min(5).max(86_400).optional(),
   ORCH_CLAUDE_USAGE_ROOT: z.string().min(1).default('/host-claude'),
+  /** Explicit 5h limit in weighted tokens; replaces the limit calibrated from history. */
+  ORCH_USAGE_LIMIT: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().positive().optional(),
+  ),
   ORCH_PLAN: z.enum(['pro', 'max5', 'max20']).default('pro'),
   ORCH_CLAUDE_BIN: z.string().min(1).default('claude'),
   ORCH_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(1),
@@ -63,6 +68,8 @@ export interface AgentConfig {
   usageIntervalExplicit: boolean;
   claudeUsageRoot: string;
   plan: PlanName;
+  /** ORCH_USAGE_LIMIT: absolute weighted-token limit per 5h window, or undefined to calibrate. */
+  usageLimit?: number;
   claudeBin: string;
   logLevel: LogLevel;
   maxConcurrent: number;
@@ -124,6 +131,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
     usageIntervalExplicit: e.ORCH_USAGE_INTERVAL_SEC !== undefined,
     claudeUsageRoot: e.ORCH_CLAUDE_USAGE_ROOT,
     plan: e.ORCH_PLAN,
+    usageLimit: e.ORCH_USAGE_LIMIT,
     claudeBin: e.ORCH_CLAUDE_BIN,
     logLevel: toLogLevel(e.LOG_LEVEL),
     maxConcurrent: e.ORCH_MAX_CONCURRENT,

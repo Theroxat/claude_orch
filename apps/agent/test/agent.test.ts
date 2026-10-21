@@ -32,12 +32,16 @@ const estimate: UsageEstimate = {
   },
   budget: {
     plan: 'pro',
+    limitSource: 'calibrated',
     limitWeighted: 1000,
     safetyMargin: 0.2,
     usableWeighted: 800,
     remainingWeighted: 300,
     usedFraction: 0.625,
+    marginFraction: 0.375,
+    completedBlocks: 9,
   },
+  rateLimitedUntil: null,
   filesScanned: 2,
   linesSkipped: 0,
 };

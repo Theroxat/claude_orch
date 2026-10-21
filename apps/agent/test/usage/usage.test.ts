@@ -66,7 +66,9 @@ describe('estimateUsage', () => {
       const r = await estimateUsage({ root, now: NOW });
       expect(r.window).toBeNull();
       expect(r.weighted).toBe(0);
-      expect(r.budget.remainingWeighted).toBe(r.budget.usableWeighted);
+      expect(r.budget.limitSource).toBe('unknown');
+      expect(r.budget.usableWeighted).toBeNull();
+      expect(r.budget.marginFraction).toBeNull();
     }
   });
 
