@@ -1031,6 +1031,50 @@ describe('github webhooks', () => {
     );
   });
 
+  it('a run that finishes after its PR was merged by hand leaves the task DONE', async () => {
+    const { owner, repo, project: p } = await project();
+    const a = await member(p.id);
+    const t = await createTask(owner, p.id, { title: 'Merged early' });
+    const offer = await a.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    const id = offer.payload.assignmentId;
+    await a.client.call(agentMessage('offer.accept', { assignmentId: id, execMode: 'AUTO' }));
+    await a.client.call(
+      agentMessage('task.status', { assignmentId: id, seq: 1, state: 'running' }),
+    );
+    // the member opened and merged a PR on the task branch by hand while the run was going
+    const pr = (merged: boolean) => ({
+      number: 950,
+      html_url: `https://github.com/${repo.fullName}/pull/950`,
+      merged,
+      head: { ref: offer.payload.task.branchName, sha: 'sha950' },
+      base: { ref: 'main' },
+    });
+    await hook('pull_request', {
+      action: 'opened',
+      pull_request: pr(false),
+      repository: repoPayload(repo),
+    });
+    const merged = await hook('pull_request', {
+      action: 'closed',
+      pull_request: pr(true),
+      repository: repoPayload(repo),
+    });
+    expect(merged.json()).toMatchObject({ result: 'done' });
+    const ack = await a.client.call(
+      agentMessage('task.finished', {
+        assignmentId: id,
+        seq: 2,
+        outcome: 'succeeded',
+        usage: { weighted: 10, input: 1, output: 1 },
+      }),
+    );
+    expect(ack.ok).toBe(true);
+    expect(await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).toMatchObject({
+      status: 'DONE',
+      prNumber: 950,
+    });
+  });
+
   it('installation events update installations and archive removed repositories', async () => {
     const { repo, project: p } = await project();
     const instId = 700_000 + Math.floor(Math.random() * 100_000);
