@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DispatchRequest, ProjectTaskAccess, TaskSize, TaskView } from '@orch/shared';
 import { useState } from 'react';
 import { createTask, fetchPool } from '../api/endpoints';
+import { poolErrorMessage } from '../poolErrors';
 import { Modal, closeModal } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
 
@@ -41,6 +42,7 @@ export function NewTaskDialog({
     queryKey: ['pool', projectId],
     queryFn: () => fetchPool(projectId),
     enabled: projectId !== '',
+    retry: false,
   });
   const isOwner =
     pool.data?.projects?.find((p) => p.projectId === projectId)?.isOwner ??
@@ -180,6 +182,14 @@ export function NewTaskDialog({
       {mode === 'members' && (
         <div className="checks" role="group" aria-label="Members">
           {pool.isLoading && <span className="hint">Loading members...</span>}
+          {pool.error && (
+            <p className="error" role="alert">
+              {poolErrorMessage(pool.error)}
+            </p>
+          )}
+          {pool.isSuccess && poolMembers.length === 0 && (
+            <span className="hint">No member is lending capacity to this project yet.</span>
+          )}
           {poolMembers.map((m) => (
             <label key={m.userId}>
               <input

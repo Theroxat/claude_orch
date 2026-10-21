@@ -386,4 +386,31 @@ describe('New task dispatch selector', () => {
     expect(within(dialog).queryByRole('option', { name: 'Everyone' })).toBeNull();
     expect(within(dialog).getByRole('option', { name: 'Specific members' })).toBeTruthy();
   });
+
+  it('explains a project whose pool is not visible instead of "Project not found"', async () => {
+    mockApi(
+      base({
+        'GET /projects/discover': () => ({
+          json: [
+            {
+              project: { ...project, id: 'p2', fullName: 'acme/lib' },
+              owner: { githubLogin: 'acme', avatarUrl: null },
+              myRole: 'submitter',
+              myParticipation: null,
+            },
+          ],
+        }),
+        'GET /pool': () => ({ json: { estimate: true, members: [] } }),
+        'GET /pool?projectId=p2': () => ({
+          status: 404,
+          json: { error: { code: 'not_found', message: 'Project not found' } },
+        }),
+      }),
+    );
+    renderApp('/pool');
+    await screen.findByText('No members in the pool yet.');
+    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'p2' } });
+    expect(await screen.findByText(/do not participate in this project/)).toBeTruthy();
+    expect(screen.queryByText('Project not found')).toBeNull();
+  });
 });

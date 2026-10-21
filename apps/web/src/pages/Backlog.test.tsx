@@ -296,4 +296,27 @@ describe('Backlog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New task' });
     expect(within(dialog).getByText(/will be created as Proposed/)).toBeTruthy();
   });
+
+  it('explains why members cannot be listed for a project the user does not participate in', async () => {
+    const notVisible = () => ({
+      status: 404,
+      json: { error: { code: 'not_found', message: 'Project not found' } },
+    });
+    mockApi(
+      base({
+        'GET /tasks': () => ({ json: board({ TODO: [task()] }) }),
+        'GET /pool?projectId=p2': notVisible,
+        'GET /pool?projectId=p1': () => ({ json: { estimate: true, members: [] } }),
+      }),
+    );
+    renderApp('/backlog');
+    await screen.findByText('First task');
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New task' });
+    fireEvent.change(within(dialog).getByLabelText('Project'), { target: { value: 'p2' } });
+    fireEvent.change(within(dialog).getByLabelText('Send to'), { target: { value: 'members' } });
+    const alert = await within(dialog).findByText(/do not participate in this project/);
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(within(dialog).queryByText('Project not found')).toBeNull();
+  });
 });
