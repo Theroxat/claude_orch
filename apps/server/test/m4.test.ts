@@ -510,6 +510,32 @@ describe('offers: accept, reject, timeout', () => {
       b.user.userId,
     );
   });
+
+  it('editing a task withdraws its pending offers: a new dependency cannot be skipped', async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id, { mode: 'APPROVAL' });
+    const dep = await createTask(owner, p.id, { title: 'dependency' });
+    const t = await createTask(owner, p.id, { title: 'dependent' });
+    const req = await m.client.next('offer.request', (o) => o.payload.task.taskId === t.id);
+    const patched = await api(app, owner)('PATCH', `/api/tasks/${t.id}`, {
+      size: 'M',
+      dependsOn: [dep.id],
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(TaskViewSchema.parse(patched.json()).status).toBe('BLOCKED');
+    await settle();
+    expect(
+      (await prisma.assignment.findUniqueOrThrow({ where: { id: req.payload.assignmentId } }))
+        .status,
+    ).toBe('CANCELLED');
+    await m.client.next(
+      'offer.withdrawn',
+      (x) => x.payload.assignmentId === req.payload.assignmentId,
+    );
+    const res = await api(app, m.user)('POST', `/api/offers/${req.payload.assignmentId}/accept`);
+    expect(res.statusCode).not.toBe(200);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe('TODO');
+  });
 });
 
 describe('consent is absolute', () => {
