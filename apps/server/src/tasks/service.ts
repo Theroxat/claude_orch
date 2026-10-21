@@ -962,7 +962,8 @@ export class TaskService {
           : await this.checkDependencies(tx, t.projectId, t.id, patch.dependsOn);
       const res = await tx.task.updateMany({
         where: { id: t.id, status: { in: EDITABLE } },
-        data: { size: patch.size, model: patch.model },
+        // updatedAt is always set: with no other field Prisma skips the UPDATE and returns count 0.
+        data: { size: patch.size, model: patch.model, updatedAt: new Date() },
       });
       if (res.count !== 1) throw new HttpError(409, 'task_locked', 'The task already started');
       if (ids) {
