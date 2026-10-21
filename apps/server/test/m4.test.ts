@@ -1272,6 +1272,32 @@ describe('pool endpoint', () => {
   });
 });
 
+describe('pool endpoint: submitters', () => {
+  it('a submitter who does not participate sees the pool of that project to pick members', async () => {
+    const { project: p, repo } = await project();
+    const m = await member(p.id, { mode: 'AUTO' });
+    const writer = await loginAs(app, gh);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${writer.login}`, 'WRITE');
+    const res = await api(app, writer)('GET', `/api/pool?projectId=${p.id}`);
+    expect(res.statusCode, res.body).toBe(200);
+    const pool = PoolResponseSchema.parse(res.json());
+    expect(pool.members.map((x) => x.userId)).toEqual([m.user.userId]);
+    expect(pool.projects).toEqual([{ projectId: p.id, fullName: p.fullName, isOwner: false }]);
+    // ... and can then target that member.
+    const t = await createTask(writer, p.id, {
+      dispatch: { mode: 'members', memberIds: [m.user.userId] },
+    });
+    expect(t.dispatch).toMatchObject({ mode: 'members', memberIds: [m.user.userId] });
+    // The unscoped pool is unchanged: only owned or participating projects.
+    const all = PoolResponseSchema.parse((await api(app, writer)('GET', '/api/pool')).json());
+    expect(all.projects).toEqual([]);
+    // A reader (not a submitter) still gets 404.
+    const reader = await loginAs(app, gh);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${reader.login}`, 'READ');
+    expect((await api(app, reader)('GET', `/api/pool?projectId=${p.id}`)).statusCode).toBe(404);
+  });
+});
+
 describe('participation sync (config.update) and not_participating backoff', () => {
   const hasAuto = (projectId: string) => (c: Extract<ServerMessage, { type: 'config.update' }>) =>
     c.payload.participations.some((x) => x.projectId === projectId && x.mode === 'AUTO');
