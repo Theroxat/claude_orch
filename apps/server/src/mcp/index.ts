@@ -17,6 +17,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   ListTasksInputSchema,
   SubmitTaskInputSchema,
+  RetryTaskInputSchema,
   TakeTaskInputSchema,
   TaskStatusInputSchema,
   ViewPoolInputSchema,
@@ -29,6 +30,7 @@ import type { AgentGateway } from '../agents/gateway';
 import { type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
+import { failureClassOf } from '../dispatch/failures';
 import { buildPool } from '../offers';
 import {
   TaskService,
@@ -86,6 +88,10 @@ function compactTask(v: TaskView) {
     dependsOn: v.dependsOn.map((d) => ({ issueNumber: d.issueNumber, status: d.status })),
     integrationBranch: v.integrationBranch,
     prUrl: v.prUrl,
+    failedAttempts: v.failedAttempts ?? 0,
+    lastError: v.lastError ?? null,
+    needsAttention: v.needsAttention ?? false,
+    needsAttentionReason: v.needsAttentionReason ?? null,
   };
 }
 
@@ -335,7 +341,10 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
             startedAt: iso(a.startedAt),
             finishedAt: iso(a.finishedAt),
             reason: a.reason,
+            ...(a.status === 'FAILED' ? { failureClass: failureClassOf(a) } : {}),
           })),
+          needsAttention: t.needsAttention,
+          needsAttentionReason: t.needsAttentionReason,
           lastProgress: progress
             ? {
                 at: iso(progress.at),
@@ -344,6 +353,39 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
               }
             : null,
         };
+      }),
+  );
+
+  server.registerTool(
+    'retry_task',
+    {
+      title: 'Retry a task',
+      description:
+        'Retries a task waiting in To do after failed runs (project owner or task creator only): earlier failures no longer keep members out (24 h shut-out, backoff, repeated repository-setup failures), the "needs attention" mark is cleared and the task is offered again. The history is kept. Fix the cause first (e.g. commit a missing .env.example).',
+      inputSchema: RetryTaskInputSchema.shape,
+    },
+    async (args) =>
+      run(async () => {
+        const [project, access] = await projectByName(args.projectFullName);
+        const row = await prisma.task.findUnique({
+          where: {
+            projectId_githubIssueNumber: {
+              projectId: project.id,
+              githubIssueNumber: args.issueNumber,
+            },
+          },
+          include: taskInclude,
+        });
+        if (!row) {
+          throw new HttpError(
+            404,
+            'not_found',
+            `#${args.issueNumber} is not a task of this project`,
+          );
+        }
+        const retried = await svc.retry(row, user, access, 'mcp', ip);
+        deps.dispatcher.kick();
+        return compactTask(svc.view(retried, access, user));
       }),
   );
 

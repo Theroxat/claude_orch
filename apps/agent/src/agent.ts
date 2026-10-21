@@ -19,6 +19,7 @@ import type { ControlResult, StatusInfo } from './cli/protocol';
 import { ManualExecutor, type ExecutorConfig, type ExecutorDeps } from './exec/executor';
 import { TokenBroker } from './exec/tokens';
 import { startControlServer, type ControlServer } from './control/server';
+import { ClaudeAuthState } from './claude-auth';
 import { InboundDedup } from './dedup';
 import { errorMessage, type Logger } from './log';
 import { Outbox } from './outbox';
@@ -28,6 +29,9 @@ import { Updater, type UpdaterOptions } from './update/updater';
 import { AGENT_VERSION } from './version';
 import type { BackoffOptions } from './ws/backoff';
 import { WsClient } from './ws/client';
+
+/** How long `stop()` waits for the executor's jobs (killed runs reporting) before going offline. */
+const STOP_DRAIN_MS = 3_000;
 
 export interface AgentOptions {
   serverUrl: string;
@@ -94,19 +98,23 @@ export class Agent {
   private agentId: string | null;
   private lastUsageReportAt: string | null = null;
   private readonly log: Logger;
+  private readonly claudeAuth: ClaudeAuthState;
 
-  private tokenFlag(): { claudeTokenPresent?: boolean } {
-    if (!this.opts.claudeTokenPresent) return {};
+  /** `claudeTokenPresent` (file exists) and `claudeAuthValid` (last task did not fail on auth). */
+  private tokenFlag(): { claudeTokenPresent?: boolean; claudeAuthValid: boolean } {
+    const claudeAuthValid = this.claudeAuth.isValid();
+    if (!this.opts.claudeTokenPresent) return { claudeAuthValid };
     try {
-      return { claudeTokenPresent: this.opts.claudeTokenPresent() };
+      return { claudeTokenPresent: this.opts.claudeTokenPresent(), claudeAuthValid };
     } catch {
-      return {};
+      return { claudeAuthValid };
     }
   }
 
   constructor(private readonly opts: AgentOptions) {
     this.log = opts.logger;
     this.agentId = opts.agentId;
+    this.claudeAuth = new ClaudeAuthState(opts.dataDir);
     this.pause = new PauseState(join(opts.dataDir, 'state.json'));
     this.outbox = new Outbox(join(opts.dataDir, 'outbox.json'), {
       retryMs: opts.outboxRetryMs,
@@ -327,7 +335,17 @@ export class Agent {
     }
     this.tokens.close();
     this.updater?.close();
-    this.executor?.close();
+    if (this.executor) {
+      this.executor.close();
+      // Let the killed runs report (task.finished) while the outbox is still online. Bounded:
+      // main.ts force-exits after 5 s, and what is enqueued by then is on disk anyway.
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.executor.idle(),
+        new Promise<void>((r) => (timer = setTimeout(r, STOP_DRAIN_MS))),
+      ]);
+      clearTimeout(timer);
+    }
     for (const w of this.listWaiters.values()) clearTimeout(w.timer);
     this.listWaiters.clear();
     this.usage.stop();
@@ -349,6 +367,7 @@ export class Agent {
       maxConcurrent: this.executor?.maxConcurrent ?? 1,
       latestAgentVersion: this.latestAgentVersion,
       update: this.updater?.current() ?? null,
+      claudeAuthValid: this.claudeAuth.isValid(),
     };
   }
 
@@ -384,7 +403,7 @@ export class Agent {
 
   private onMessage(m: ServerMessage): void {
     if (m.type === 'ack') {
-      if (!m.payload.ok && !m.payload.duplicate) {
+      if (!m.payload.ok) {
         this.log.warn('server refused a message', { replyTo: m.replyTo, error: m.payload.error });
       }
       this.executor?.onAck(m.replyTo, m.payload);

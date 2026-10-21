@@ -23,7 +23,7 @@ import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { participationStatus } from '../projects/service';
 import { TaskService } from '../tasks/service';
-import { purgeRetention, recordUsage } from '../usage';
+import { claudeAuthUpdate, purgeRetention, recordUsage } from '../usage';
 
 interface Conn {
   agentId: string;
@@ -39,6 +39,9 @@ interface Conn {
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
 }
+
+/** A duplicate seen this recently without a stored ack is still being processed (no answer). */
+const DUPLICATE_IN_FLIGHT_MS = 5 * 60_000;
 
 export type OfferRefusal = 'offline' | 'paused' | 'revoked' | 'no_consent' | 'access_suspended';
 
@@ -501,7 +504,7 @@ export class AgentGateway {
       await prisma.agentMessageSeen.create({ data: { agentId: c.agentId, messageId: m.id } });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        return this.ack(c, m.id, { ok: true, duplicate: true });
+        return this.ackDuplicate(c, m.id);
       }
       throw err;
     }
@@ -514,8 +517,30 @@ export class AgentGateway {
       await prisma.agentMessageSeen.deleteMany({ where: { agentId: c.agentId, messageId: m.id } });
       throw err;
     }
+    // Kept so a resend (reply lost on reconnect) gets the same answer, never a blind ok.
+    await prisma.agentMessageSeen.updateMany({
+      where: { agentId: c.agentId, messageId: m.id },
+      data: { ack: result as Prisma.InputJsonValue },
+    });
     this.ack(c, m.id, result);
     for (const f of after) f();
+  }
+
+  /**
+   * Replays the first answer. Still being processed: no ack, the agent outbox resends later.
+   * A row without a stored ack long after it was seen (written before acks were stored, or the
+   * process died mid-way) keeps the old plain duplicate answer.
+   */
+  private async ackDuplicate(c: Conn, messageId: string): Promise<void> {
+    const seen = await this.deps.prisma.agentMessageSeen.findUnique({
+      where: { agentId_messageId: { agentId: c.agentId, messageId } },
+    });
+    if (seen?.ack) {
+      this.ack(c, messageId, { ...(seen.ack as AckPayload), duplicate: true });
+      return;
+    }
+    if (seen && Date.now() - seen.seenAt.getTime() < DUPLICATE_IN_FLIGHT_MS) return;
+    this.ack(c, messageId, { ok: true, duplicate: true });
   }
 
   private loadAgent(c: Conn) {
@@ -571,6 +596,9 @@ export class AgentGateway {
         ...(m.payload.claudeTokenPresent !== undefined && {
           claudeTokenPresent: m.payload.claudeTokenPresent,
         }),
+        // Agents older than v0.5.1 do not report it: a reconnect (restart after `orch login`,
+        // update) gives them another chance; a new claude_auth failure flags them again.
+        ...claudeAuthUpdate(prev, m.payload.claudeAuthValid ?? true),
       },
     });
     if (updated) {
@@ -698,6 +726,16 @@ export class AgentGateway {
         const local = p.updateId.startsWith('local-');
         // Stale ids are acked and ignored. Only progress is stored: never the image or anything else.
         if (p.updateId !== agent.updateId && !local) return { ok: true };
+        // Already done for this update and version (set by `hello` when the agent reconnected on
+        // the target version): the queued `done` is a replay, not a second completion (#31).
+        if (
+          p.status === 'done' &&
+          agent.updateStatus === 'done' &&
+          p.updateId === agent.updateId &&
+          normalizeVersion(p.targetVersion) === normalizeVersion(agent.updateTargetVersion)
+        ) {
+          return { ok: true };
+        }
         const now = new Date();
         const fresh = p.updateId !== agent.updateId;
         await prisma.agent.update({

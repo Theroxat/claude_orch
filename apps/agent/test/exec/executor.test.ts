@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TaskFinishedPayloadSchema, serverMessage, type ServerMessage } from '@orch/shared';
 import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
 import { silentLogger } from '../../src/log';
-import { tempDir } from '../helpers/util';
+import { tempDir, waitFor } from '../helpers/util';
 import { CommandError } from '../../src/exec/runner';
 import { BOT_REPO_FILES, botRepoModel } from './compose-fixtures';
 import { FakeDocker, FakeGit, FakeScreen, offer, recordingFs } from './fakes';
@@ -341,6 +341,17 @@ describe('ManualExecutor guards', () => {
     await expect(p).rejects.toThrow(/Someone else already took/);
   });
 
+  it('surfaces a replayed claim refusal (duplicate ack)', async () => {
+    const t = setup();
+    const p = t.ex.take(42);
+    t.ex.onAck(t.of('task.claim')[0]!.id, {
+      ok: false,
+      duplicate: true,
+      error: { code: 'already_taken', message: 'raw' },
+    });
+    await expect(p).rejects.toThrow(/Someone else already took/);
+  });
+
   it('times out a claim the server does not answer', async () => {
     const t = setup();
     await expect(t.ex.take(42)).rejects.toMatchObject({ code: 'claim_pending' });
@@ -373,6 +384,78 @@ describe('ManualExecutor cleanup and restart', () => {
     expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
     expect(t.of('task.finished')[0]?.payload.outcome).toBe('cancelled');
     expect(t.docker.containers.size).toBe(0);
+  });
+
+  it('orch done racing a server cancel reports only the cancel', async () => {
+    const t = setup();
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const push = t.git.push.bind(t.git);
+    let pushing = false;
+    t.git.push = async (...a: Parameters<typeof push>) => {
+      pushing = true;
+      await gate;
+      return push(...a);
+    };
+    const done = t.ex.done(42);
+    await waitFor(() => pushing, { what: 'push started' });
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'reassigned' }));
+    await waitFor(() => t.of('task.finished').length === 1, { what: 'cancel reported' });
+    release();
+    await expect(done).rejects.toMatchObject({ code: 'cancelled' });
+    await t.ex.idle();
+    expect(t.of('task.finished').map((s) => s.payload.outcome)).toEqual(['cancelled']);
+    expect(t.of('task.pushed')).toEqual([]);
+    expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
+  });
+
+  it('a cancel while the sidecars start leaves no sidecars, container or session behind', async () => {
+    const t = setup({ files: { 'compose.yaml': 'services: {}\n' } });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const up = t.docker.composeUp.bind(t.docker);
+    let upCalled = false;
+    t.docker.composeUp = async (...a: Parameters<typeof up>) => {
+      upCalled = true;
+      await gate;
+      return up(...a);
+    };
+    t.ex.handle(offerMsg());
+    await waitFor(() => upCalled, { what: 'compose up' });
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'reassigned' }));
+    await waitFor(() => t.of('task.finished').length === 1, { what: 'cancel reported' });
+    release();
+    await t.ex.idle();
+    const names = t.docker.names();
+    expect(names.lastIndexOf('composeDown')).toBeGreaterThan(names.indexOf('composeUp'));
+    expect(t.docker.containers.size).toBe(0);
+    expect(t.docker.networks.size).toBe(0);
+    expect(t.screen.sessions.size).toBe(0);
+    expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
+  });
+
+  it('a cancel while the screen session starts kills it and keeps the task cancelled', async () => {
+    const t = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const start = t.screen.start.bind(t.screen);
+    let started = false;
+    t.screen.start = async (...a: Parameters<typeof start>) => {
+      started = true;
+      await gate;
+      return start(...a);
+    };
+    t.ex.handle(offerMsg());
+    await waitFor(() => started, { what: 'screen start' });
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'reassigned' }));
+    await waitFor(() => t.of('task.finished').length === 1, { what: 'cancel reported' });
+    release();
+    await t.ex.idle();
+    expect(t.screen.sessions.size).toBe(0);
+    expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
+    expect(t.of('task.status').map((s) => s.payload.state)).not.toContain('running');
   });
 
   it('after a restart: resumes running tasks, recreates the session and removes orphans', async () => {

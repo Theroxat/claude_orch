@@ -271,6 +271,8 @@ Because a `Contents: write` installation token can push to any branch, **enable 
    orch login
    ```
 
+   If a task fails because the Claude login expired or was revoked (`401 ... OAuth access token is invalid`), the agent remembers it in `claude-auth.json` in its data directory, tells the server (`claudeAuthValid: false`), refuses new AUTO offers and shows "Claude login expired" in `orch status`. The agent cannot check a token without calling Anthropic, so `orch login` simply marks the login valid again once the new token is stored; the running agent picks that up without a restart.
+
    The `orch` shortcut is `docker compose -f ~/orch/compose.yaml exec agent orch "$@"` (with a terminal attached when you have one), so every command below works as written.
 
 Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGENT_CREDENTIAL`, `ORCH_WORK_DIR`, `ORCH_CLAUDE_DIR`, `ORCH_PLAN` (`pro`, `max5` or `max20`), plus optional `ORCH_AGENT_IMAGE` and `ORCH_AGENT_TAG`. Further agent options such as `ORCH_MAX_CONCURRENT` (default 1) are defined in [`apps/agent/src/config.ts`](apps/agent/src/config.ts).

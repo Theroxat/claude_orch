@@ -111,4 +111,25 @@ describe('Getting started', () => {
     window.dispatchEvent(new Event('visibilitychange'));
     await waitFor(() => expect(count()).toBeGreaterThan(before));
   });
+
+  it('explains an expired Claude login', async () => {
+    const b = base(['done', 'done', 'done', 'done', 'todo', 'todo']);
+    mockApi({
+      ...b,
+      'GET /onboarding': () => ({
+        json: {
+          steps: IDS.map((id, i) => ({
+            id,
+            state: i < 4 ? 'done' : 'todo',
+            done: i < 4,
+            ...(id === 'claude_connected' ? { reason: 'claude_login_expired' } : {}),
+          })),
+        },
+      }),
+    });
+    renderApp('/projects');
+    const step = await screen.findByTestId('step-claude_connected');
+    expect(step.textContent).toContain('Claude login expired: run orch login');
+    expect(screen.getByTestId('step-mcp_connected').textContent).not.toContain('login expired');
+  });
 });

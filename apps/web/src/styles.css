@@ -481,3 +481,9 @@ button.big {
 .version-footer a:hover {
   text-decoration: underline;
 }
+
+.task-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

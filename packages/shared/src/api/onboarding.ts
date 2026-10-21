@@ -23,6 +23,8 @@ export const OnboardingStepSchema = z.object({
   id: OnboardingStepId,
   done: z.boolean(),
   state: z.enum(['done', 'todo', 'unknown']),
+  /** Why a step is `todo` again, e.g. `claude_login_expired` for `claude_connected`. */
+  reason: z.string().optional(),
 });
 export type OnboardingStep = z.infer<typeof OnboardingStepSchema>;
 

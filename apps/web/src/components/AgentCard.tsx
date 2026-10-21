@@ -64,7 +64,12 @@ export function AgentCard({
         Version {agent.version ?? 'unknown'} · Last seen {relativeTime(agent.lastSeenAt)}
       </p>
       <AgentUpdateState agent={agent} />
-      {agent.claudeTokenPresent != null && (
+      {agent.claudeAuthValid === false && (
+        <p className="warning" role="alert">
+          Claude login expired: run <code>orch login</code>
+        </p>
+      )}
+      {agent.claudeAuthValid !== false && agent.claudeTokenPresent != null && (
         <p className="hint">
           {agent.claudeTokenPresent ? (
             'Claude: connected'

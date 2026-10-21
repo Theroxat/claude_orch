@@ -163,6 +163,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
 export interface CliConfig {
   socketPath: string;
   secretsDir: string;
+  /** Agent data dir (holds the persisted Claude login state reset by `orch login`). */
+  dataDir: string;
   claudeBin: string;
 }
 
@@ -171,6 +173,7 @@ export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
   return {
     socketPath: e.ORCH_SOCKET_PATH ?? '/run/orch.sock',
     secretsDir: e.ORCH_SECRETS_DIR ?? '/secrets',
+    dataDir: e.ORCH_DATA_DIR ?? '/data',
     claudeBin: e.ORCH_CLAUDE_BIN ?? 'claude',
   };
 }

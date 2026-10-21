@@ -20,6 +20,7 @@
  */
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { classifyFailure } from '@orch/shared';
 import type {
   AckPayload,
   AgentMessage,
@@ -67,6 +68,8 @@ import {
   screenName,
   taskLabels,
 } from './naming';
+import { ClaudeAuthState, CLAUDE_AUTH_REJECT_PREFIX } from '../claude-auth';
+import { parseResetTime } from '../usage/ratelimit';
 import { buildAutoPrompt, buildManualPrompt } from './prompt';
 import { CLAUDE_TOKEN_ENV, TASK_CLAUDE_CONFIG_DIR, buildCreateArgs } from './sandbox';
 import type { ScreenOps } from './screen';
@@ -185,6 +188,8 @@ export class ManualExecutor {
   private readonly proc: ProcessOps;
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly log: Logger;
+  /** Persisted Claude login state; re-read on each check (`orch login` is another process). */
+  readonly claudeAuth: ClaudeAuthState;
 
   constructor(
     private readonly cfg: ExecutorConfig,
@@ -192,6 +197,7 @@ export class ManualExecutor {
   ) {
     this.store = new TaskStore(join(cfg.dataDir, 'tasks.json'));
     this.log = deps.logger;
+    this.claudeAuth = new ClaudeAuthState(cfg.dataDir);
     this.proc = deps.proc ?? spawnProcessOps;
   }
 
@@ -290,6 +296,9 @@ export class ManualExecutor {
     if (!this.deps.readClaudeToken()) {
       throw new ExecError('no_claude_token', 'No Claude token. Run "orch login" first.');
     }
+    if (!this.claudeAuth.isValid()) {
+      throw new ExecError('claude_auth', 'Claude login expired: run "orch login".');
+    }
     const fullName = this.resolveProject(project);
     const existing = this.store.byIssue(issueNumber, fullName);
     if (existing && ACTIVE_STATES.includes(existing.state)) {
@@ -317,7 +326,8 @@ export class ManualExecutor {
 
   /** Called for every `ack` the agent receives. */
   onAck(replyTo: string, ack: AckPayload): void {
-    const okAck = ack.ok || ack.duplicate === true;
+    // A duplicate ack replays the server's first answer: trust `ok`, not `duplicate`.
+    const okAck = ack.ok;
     const waiting = this.store.all().find((r) => r.pendingAcceptId === replyTo);
     if (waiting) {
       const id = waiting.assignmentId;
@@ -340,7 +350,7 @@ export class ManualExecutor {
     }
     for (const [key, w] of this.claims) {
       if (w.entryId !== replyTo) continue;
-      if (!ack.ok && !ack.duplicate) {
+      if (!ack.ok) {
         clearTimeout(w.timer);
         this.claims.delete(key);
         const code = ack.error?.code ?? 'claim_refused';
@@ -480,6 +490,10 @@ export class ManualExecutor {
     }
     if (!this.deps.readClaudeToken()) {
       return { reason: 'error', detail: 'No Claude token on this machine (run "orch login")' };
+    }
+    if (!this.claudeAuth.isValid()) {
+      // The server recognizes the `claude_auth:` prefix and does not count it as a shut-out.
+      return { reason: 'error', detail: CLAUDE_AUTH_REJECT_PREFIX };
     }
     return null;
   }
@@ -638,7 +652,7 @@ export class ManualExecutor {
         resolve(a);
       });
     });
-    if (ack && !ack.ok && !ack.duplicate) {
+    if (ack && !ack.ok) {
       this.requests.delete(id);
       throw new ExecError(
         ack.error?.code ?? 'refused',
@@ -740,6 +754,16 @@ export class ManualExecutor {
 
   private async prepare(id: string): Promise<void> {
     const rec = () => this.store.get(id) as TaskRecord;
+    const first = rec();
+    let sidecars: string | null = null;
+    // cancel()/cleanup() tore down what existed at that moment: a step still in flight may have
+    // created more since (network, sidecars, container, screen session). Tear down again.
+    const abandoned = async (): Promise<boolean> => {
+      if (!this.cancelled(id)) return false;
+      const last = this.store.get(id) ?? first;
+      await this.teardown({ ...last, composeProject: last.composeProject ?? sidecars });
+      return true;
+    };
     try {
       const claudeToken = this.deps.readClaudeToken();
       if (!claudeToken) throw new Error('No Claude token. Run "orch login".');
@@ -761,7 +785,7 @@ export class ManualExecutor {
       await this.deps.git.seedTaskGit(repo);
       // The task dir only (the private git dir lives in the agent's data dir and stays its own).
       this.deps.fs.chownR(r0.taskDir, this.cfg.uid, this.cfg.gid);
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       this.status(id, 'building');
       const env = selectDevEnv(r0.cloneDir, this.cfg.defaultImage);
@@ -771,7 +795,10 @@ export class ManualExecutor {
       await this.deps.docker.createNetwork(r0.network, labels);
 
       const compose = findComposeFile(r0.cloneDir);
-      if (compose) await this.startSidecars(id, compose, labels);
+      if (compose) {
+        sidecars = composeProject(id);
+        await this.startSidecars(id, compose, labels);
+      }
 
       let image: string;
       if (env.kind === 'build') {
@@ -794,7 +821,7 @@ export class ManualExecutor {
         });
       }
       this.store.update(id, { image });
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       const args = buildCreateArgs({
         name: r0.container,
@@ -819,7 +846,7 @@ export class ManualExecutor {
           this.store.update(id, { warnings: [...rec().warnings, redact(w)] });
         }
       }
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
 
       const prompt = rec().prompt ?? '';
       if (r0.execMode === 'AUTO') {
@@ -827,11 +854,12 @@ export class ManualExecutor {
         return;
       }
       await this.deps.screen.start(r0.screen, this.claudeArgv(rec(), prompt));
+      if (await abandoned()) return;
       this.store.update(id, { prompt: null });
       this.status(id, 'running', `attach: ${attachCommand(r0.issueNumber)}`);
       this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.issueNumber) });
     } catch (err) {
-      if (this.cancelled(id)) return;
+      if (await abandoned()) return;
       await this.fail(id, err);
     }
   }
@@ -926,14 +954,25 @@ export class ManualExecutor {
     this.log.error('task failed', { assignmentId: id, error: message });
     this.runs.get(id)?.kill();
     const rec = this.store.update(id, { state: 'failed', error: message, prompt: null });
-    await this.teardown(rec);
+    const failureClass = classifyFailure(message);
+    if (failureClass === 'claude_auth') this.claudeAuth.markInvalid(message.slice(0, 200));
+    let rateLimitedUntil: string | undefined;
+    if (failureClass === 'rate_limited') {
+      const reset = parseResetTime(message, this.now());
+      if (reset !== null) rateLimitedUntil = new Date(reset).toISOString();
+    }
+    // Report first: the outbox persists at once, so a stop during the teardown cannot lose it
+    // (the record is no longer active, a restart would not report it again).
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'failed',
       usage,
       error: message,
+      failureClass,
+      ...(rateLimitedUntil ? { rateLimitedUntil } : {}),
     });
+    await this.teardown(rec);
   }
 
   // ---------- auto mode: headless run ----------
@@ -1027,9 +1066,11 @@ export class ManualExecutor {
     try {
       await this.pushAndReport(id, usage, final.text);
     } catch (err) {
+      if (this.cancelled(id)) return;
       await this.fail(id, new Error(`Push failed: ${errorMessage(err)}`), usage);
       return;
     }
+    if (this.cancelled(id)) return; // cancelled during the push: cancel() reported it
     const after = this.store.update(id, { state: 'finished', error: null });
     await this.teardown(after);
     this.log.info('auto run finished', { issue: r.issueNumber });
@@ -1066,6 +1107,8 @@ export class ManualExecutor {
       for (const c of paused) await this.deps.docker.unpause(c).catch(() => undefined);
     }
     const ahead = await git.commitsAhead(repo, rec.baseBranch);
+    // A cancel may land at any await below: then report nothing more (cancel() sent finished).
+    if (this.cancelled(id)) return;
     if (ahead === 0) {
       this.deps.enqueue('task.finished', {
         assignmentId: id,
@@ -1076,12 +1119,14 @@ export class ManualExecutor {
       return;
     }
     const token = await this.deps.requestToken(id, 'push');
+    if (this.cancelled(id)) return;
     await git.push(repo, rec.branch, token);
     const [headSha, changedFiles, subjects] = await Promise.all([
       git.headSha(repo),
       git.changedFiles(repo, rec.baseBranch),
       git.subjects(repo, rec.baseBranch),
     ]);
+    if (this.cancelled(id)) return;
     let summary = (taskSubjects.length > 0 ? taskSubjects : subjects)
       .map((s) => `- ${s}`)
       .join('\n');
@@ -1214,6 +1259,7 @@ export class ManualExecutor {
       const usage = await this.collectUsage(rec);
       await this.pushAndReport(id, usage);
     } catch (err) {
+      if (this.cancelled(id)) throw cancelledDuringDone(issueNumber);
       const message = redact(errorMessage(err));
       // commitAll removed the task's .git: give the still-running session a working copy back.
       // The task is frozen meanwhile: it cannot swap `.git` (or a sub-path) for a symlink between
@@ -1234,6 +1280,7 @@ export class ManualExecutor {
       this.status(id, 'running', `done failed: ${message}`);
       throw new ExecError('done_failed', `Push failed, the task is still running: ${message}`);
     }
+    if (this.cancelled(id)) throw cancelledDuringDone(issueNumber);
     const after = this.store.update(id, { state: 'finished', error: null });
     await this.teardown(after);
     return this.view(after);
@@ -1339,13 +1386,13 @@ export class ManualExecutor {
       prompt: null,
     });
     this.runs.get(id)?.kill();
-    await this.teardown(after);
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'cancelled',
       usage: { weighted: 0, input: 0, output: 0 },
     });
+    await this.teardown(after);
   }
 
   /** Stops the session, the task container, the sidecars and the network. Keeps the clone. */
@@ -1468,6 +1515,7 @@ export class ManualExecutor {
     }
   }
 
+  /** Kills the runs; their jobs then report and tear down (await `idle()` for that). */
   close(): void {
     for (const p of this.runs.values()) p.kill();
     for (const resolve of this.userAccepts.values()) {
@@ -1489,6 +1537,10 @@ export class ManualExecutor {
     void job.finally(() => this.jobs.delete(job));
   }
 }
+
+/** `orch done` raced with a server cancel: cancel() already tore down and reported. */
+const cancelledDuringDone = (issueNumber: number) =>
+  new ExecError('cancelled', `Issue #${issueNumber} was cancelled by the server meanwhile.`);
 
 const CLAIM_REFUSALS: Record<string, string> = {
   paused: 'You are paused on the server. Run "orch resume" first.',

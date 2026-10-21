@@ -55,6 +55,8 @@ export const StatusInfoSchema = z.object({
   latestAgentVersion: z.string().nullable().optional(),
   /** Last self-update of this agent process, if any. */
   update: UpdateStateSchema.nullable().optional(),
+  /** False after a task failed on an expired Claude login, until `orch login`. */
+  claudeAuthValid: z.boolean().optional(),
 });
 export type StatusInfo = z.infer<typeof StatusInfoSchema>;
 

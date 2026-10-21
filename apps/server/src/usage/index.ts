@@ -7,6 +7,20 @@ export const MESSAGE_SEEN_RETENTION_MS = 24 * 3600_000;
 
 const big = (n: number) => BigInt(Math.round(n));
 
+/**
+ * Agent fields for a reported `claudeAuthValid` (v0.5.1 agents; absent = unchanged). A report of
+ * true after `orch login` clears the flag the server set on a `claude_auth` failure.
+ */
+export function claudeAuthUpdate(
+  current: { claudeAuthValid: boolean } | null,
+  reported: boolean | undefined,
+): { claudeAuthValid?: boolean; claudeAuthInvalidAt?: Date | null } {
+  if (reported === undefined || current?.claudeAuthValid === reported) return {};
+  return reported
+    ? { claudeAuthValid: true, claudeAuthInvalidAt: null }
+    : { claudeAuthValid: false, claudeAuthInvalidAt: new Date() };
+}
+
 /** Stores one usage report and bumps Agent.lastUsageAt. */
 export async function recordUsage(
   prisma: PrismaClient,
@@ -14,6 +28,23 @@ export async function recordUsage(
   p: UsageReportPayload,
   now: Date = new Date(),
 ): Promise<void> {
+  // A rate limit known from a failed run (or an earlier report) holds until it lapses, even if
+  // this report did not see it.
+  const prev = await prisma.usageReport.findFirst({
+    where: { agentId: agent.id },
+    orderBy: { reportedAt: 'desc' },
+    select: { rateLimitedUntil: true },
+  });
+  const reported = p.rateLimitedUntil ? new Date(p.rateLimitedUntil) : null;
+  const carried =
+    prev?.rateLimitedUntil && prev.rateLimitedUntil.getTime() > now.getTime()
+      ? prev.rateLimitedUntil
+      : null;
+  const rateLimitedUntil = carried && (!reported || carried > reported) ? carried : reported;
+  const current = await prisma.agent.findUnique({
+    where: { id: agent.id },
+    select: { claudeAuthValid: true },
+  });
   await prisma.$transaction([
     prisma.usageReport.create({
       data: {
@@ -30,7 +61,7 @@ export async function recordUsage(
         byModel: p.byModel,
         byProject: p.byProject,
         capacityEstimate: p.capacityEstimate === null ? null : big(p.capacityEstimate),
-        rateLimitedUntil: p.rateLimitedUntil ? new Date(p.rateLimitedUntil) : null,
+        rateLimitedUntil,
         source: p.source,
       },
     }),
@@ -39,6 +70,7 @@ export async function recordUsage(
       data: {
         lastUsageAt: now,
         ...(p.claudeTokenPresent !== undefined && { claudeTokenPresent: p.claudeTokenPresent }),
+        ...claudeAuthUpdate(current, p.claudeAuthValid),
       },
     }),
   ]);

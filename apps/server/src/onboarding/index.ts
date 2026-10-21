@@ -44,7 +44,7 @@ export async function computeOnboarding(
     prisma.projectPermission.count({ where: { userId } }),
     prisma.agent.findMany({
       where: { userId, revokedAt: null },
-      select: { id: true, lastSeenAt: true, claudeTokenPresent: true },
+      select: { id: true, lastSeenAt: true, claudeTokenPresent: true, claudeAuthValid: true },
     }),
     prisma.personalToken.count({
       where: { userId, revokedAt: null, lastUsedAt: { not: null } },
@@ -70,9 +70,12 @@ export async function computeOnboarding(
       (a.lastSeenAt !== null && now.getTime() - a.lastSeenAt.getTime() <= AGENT_SEEN_WINDOW_MS),
   );
   const agentOk = live.length > 0;
-  const claudeState: OnboardingStep['state'] = live.some((a) => a.claudeTokenPresent === true)
+  const loginOk = (a: (typeof live)[number]) => a.claudeTokenPresent === true && a.claudeAuthValid;
+  // An expired login (a run failed with 401) is todo again, with the reason.
+  const loginExpired = !live.some(loginOk) && live.some((a) => !a.claudeAuthValid);
+  const claudeState: OnboardingStep['state'] = live.some(loginOk)
     ? 'done'
-    : live.some((a) => a.claudeTokenPresent === false)
+    : loginExpired || live.some((a) => a.claudeTokenPresent === false)
       ? 'todo'
       : 'unknown';
   const mcpOk = usedPat > 0 || (await hasOauthGrant(prisma, userId));
@@ -83,7 +86,10 @@ export async function computeOnboarding(
       flag('project_added', ownedCount > 0 || activeParticipation > 0),
       flag('participation_set', activeParticipation > 0 || ownedCount > 0),
       flag('agent_connected', agentOk),
-      step('claude_connected', claudeState),
+      {
+        ...step('claude_connected', claudeState),
+        ...(loginExpired && { reason: 'claude_login_expired' }),
+      },
       flag('mcp_connected', mcpOk),
     ],
   };

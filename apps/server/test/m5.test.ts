@@ -327,7 +327,7 @@ describe('MCP endpoint', () => {
     expect((await app.inject({ method: 'GET', url: '/mcp' })).statusCode).toBe(401);
   });
 
-  it('tools/list returns the five tools with input schemas', async () => {
+  it('tools/list returns every tool with its input schema', async () => {
     const c = await mcpAs(await loginAs(app, gh));
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
@@ -725,5 +725,61 @@ describe('take_task, task_status, view_pool, list_tasks', () => {
       (await call(stranger, 'list_tasks', { projectFullName: p.fullName })).data.error?.code,
     ).toBe('not_found');
     void owner;
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('retry_task', () => {
+  it('only the project owner or the task creator may retry; it resets the failures', async () => {
+    const { owner, project: p } = await project();
+    const ok = await call(await mcpAs(owner), 'submit_task', {
+      projectFullName: p.fullName,
+      tasks: [three()[0]],
+    });
+    expect(ok.isError, JSON.stringify(ok.data)).toBe(false);
+    const { issueNumber } = (ok.data.tasks as Array<{ issueNumber: number }>)[0]!;
+    const task = await prisma.task.findFirstOrThrow({
+      where: { projectId: p.id, githubIssueNumber: issueNumber },
+    });
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { needsAttention: true, needsAttentionReason: 'Repo setup failed: x' },
+    });
+    await prisma.assignment.create({
+      data: {
+        taskId: task.id,
+        userId: owner.userId,
+        kind: 'AUTO_OFFER',
+        status: 'FAILED',
+        reason: 'docker compose failed: env file /home/m/work/.env not found',
+        failureClass: 'env',
+        finishedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const member = await loginAs(app, gh);
+    await participate(member, p.id, 'AUTO');
+    const denied = await call(await mcpAs(member), 'retry_task', {
+      projectFullName: p.fullName,
+      issueNumber,
+    });
+    expect(denied.data.error?.code).toBe('forbidden');
+
+    const r = await call(await mcpAs(owner), 'retry_task', {
+      projectFullName: p.fullName,
+      issueNumber,
+    });
+    expect(r.isError, JSON.stringify(r.data)).toBe(false);
+    expect(r.data).toMatchObject({ failedAttempts: 0, needsAttention: false, lastError: null });
+    const row = await prisma.task.findUniqueOrThrow({ where: { id: task.id } });
+    expect(row.retryResetAt).not.toBeNull();
+    expect(row.needsAttention).toBe(false);
+    // history is kept
+    expect(await prisma.assignment.count({ where: { taskId: task.id } })).toBe(1);
+    const audits = await prisma.auditLog.findMany({
+      where: { taskId: task.id, action: 'task.retried' },
+    });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.data).toMatchObject({ via: 'mcp' });
   });
 });

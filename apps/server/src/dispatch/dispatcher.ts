@@ -17,7 +17,14 @@
  */
 import { Prisma, type Assignment, type TaskSize, type Model } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
-import { serverMessage, type OfferRequestPayload, type TaskOfferPayload } from '@orch/shared';
+import {
+  SHUT_OUT_FAILURE_CLASSES,
+  serverMessage,
+  type BlockReason,
+  type OfferRequestPayload,
+  type TaskOfferPayload,
+  type WhyNotRunningResponse,
+} from '@orch/shared';
 import type { AgentGateway } from '../agents/gateway';
 import { OfferRefusedError } from '../agents/gateway';
 import { audit } from '../audit';
@@ -38,6 +45,7 @@ import {
   type UsageSnapshot,
 } from './budget';
 import { ConsentError, assertAutoConsent, assertParticipates } from './consent';
+import { CLAUDE_AUTH_REJECT_PREFIX, beforeRetry, failureClassOf } from './failures';
 
 export interface DispatcherDeps {
   prisma: PrismaClient;
@@ -74,22 +82,53 @@ export function notParticipatingBackoffMs(rejections: number): number {
 /**
  * A FAILED run is often a repository configuration problem the owner fixes at once (missing env
  * file...), so the member is offered the task again after the same exponential backoff instead of
- * being shut out for 24 h; after this many failures within the window, the 24 h shut-out applies.
+ * being shut out for 24 h; after this many `task` / `timeout` failures within the window, the 24 h
+ * shut-out applies. Other classes never count (see ./failures).
  */
 export const FAILED_RETRIES_BEFORE_SHUT_OUT = 5;
 
+const CLAUDE_LOGIN_EXPIRED = 'Claude login expired: run `orch login`';
+
 const isNotParticipating = (a: { status: string; reason: string | null }) =>
   a.status === 'REJECTED' && (a.reason ?? '').startsWith('not_participating');
+
+/** The agent refused locally because its Claude login is invalid: the agent flag handles it. */
+const isClaudeAuthRefusal = (a: { status: string; reason: string | null }) =>
+  a.status === 'REJECTED' && (a.reason ?? '').startsWith(CLAUDE_AUTH_REJECT_PREFIX);
 
 const isRetryable = (a: { status: string; reason: string | null }) =>
   isNotParticipating(a) || a.status === 'FAILED';
 
 const dispatchTaskInclude = {
-  project: true,
+  project: { include: { installation: true } },
   createdBy: true,
   targets: true,
+  dependsOn: { include: { dependsOn: true } },
 } satisfies Prisma.TaskInclude;
-type DispatchTask = Prisma.TaskGetPayload<{ include: typeof dispatchTaskInclude }>;
+export type DispatchTask = Prisma.TaskGetPayload<{ include: typeof dispatchTaskInclude }>;
+
+/** One active participant of a task's project, as the dispatcher sees it right now. */
+export interface MemberEligibility {
+  userId: string;
+  login: string;
+  avatarUrl: string | null;
+  /** Set when the member can be offered the task now. */
+  candidate: Candidate | null;
+  /** The first check that keeps the member out (null when `candidate` is set). */
+  reason: BlockReason | null;
+}
+
+const block = (code: BlockReason['code'], message: string, until?: Date | null): BlockReason => ({
+  code,
+  message,
+  ...(until ? { until: until.toISOString() } : {}),
+});
+
+interface FreeAgentUser {
+  id: string;
+  maxConcurrent: number;
+  agents: Array<{ id: string; revokedAt: Date | null; paused: boolean; claudeAuthValid: boolean }>;
+}
 
 export interface Candidate {
   userId: string;
@@ -325,34 +364,90 @@ export class Dispatcher {
     return { total: rows.length, perAgent };
   }
 
-  /** The member's agent that can take one more task now, or null. */
-  private async freeAgent(
-    user: {
-      id: string;
-      maxConcurrent: number;
-      agents: Array<{ id: string; revokedAt: Date | null; paused: boolean }>;
-    },
+  /**
+   * The member's agent that can take one more task now, or why none can: offline, paused, busy,
+   * or its Claude login is invalid (no offer until `orch login`; every run is a Claude run).
+   */
+  private async freeAgentOrReason(
+    user: FreeAgentUser,
     now: Date,
-  ): Promise<{ agentId: string; running: number } | null> {
+  ): Promise<{ agentId: string; running: number } | { reason: BlockReason }> {
     const counts = await this.slotCounts(user.id, now);
-    if (counts.total >= user.maxConcurrent) return null;
+    if (counts.total >= user.maxConcurrent) {
+      return {
+        reason: block('concurrency', `Already running ${counts.total} task(s), the maximum`),
+      };
+    }
     let best: { agentId: string; running: number } | null = null;
+    let online = 0;
+    let authInvalid = 0;
+    let busy = 0;
     for (const a of user.agents) {
-      if (a.revokedAt || a.paused || !this.gateway.isConnected(a.id)) continue;
+      if (a.revokedAt || !this.gateway.isConnected(a.id)) continue;
+      online++;
+      if (a.paused) continue;
+      if (!a.claudeAuthValid) {
+        authInvalid++;
+        continue;
+      }
       const used = counts.perAgent.get(a.id) ?? 0;
-      if (used >= this.gateway.maxConcurrentOf(a.id)) continue;
+      if (used >= this.gateway.maxConcurrentOf(a.id)) {
+        busy++;
+        continue;
+      }
       if (!best || used < best.running) best = { agentId: a.id, running: used };
     }
-    return best ? { agentId: best.agentId, running: counts.total } : null;
+    if (best) return { agentId: best.agentId, running: counts.total };
+    if (online === 0) return { reason: block('no_agent_online', 'No machine online') };
+    if (busy > 0) return { reason: block('concurrency', 'Every machine is busy') };
+    if (authInvalid > 0) return { reason: block('claude_login_expired', CLAUDE_LOGIN_EXPIRED) };
+    return { reason: block('agents_paused', 'Every online machine is paused') };
+  }
+
+  /**
+   * Reasons that keep the whole task from being offered (empty when it can be). The tick's task
+   * query applies the same conditions in SQL; `dispatchTask` checks them again with this.
+   */
+  taskBlockers(task: DispatchTask): BlockReason[] {
+    const out: BlockReason[] = [];
+    if (task.status !== 'TODO') out.push(block('not_todo', `The task is ${task.status}`));
+    if (task.project.archivedAt || task.project.installation.suspendedAt) {
+      out.push(block('project_unavailable', 'The project is archived or its GitHub App suspended'));
+    }
+    const open = task.dependsOn.filter((d) => d.dependsOn.status !== 'DONE');
+    if (open.length > 0) {
+      const list = open.map((d) => `#${d.dependsOn.githubIssueNumber}`).join(', ');
+      out.push(block('dependencies', `Waiting for dependencies: ${list}`));
+    }
+    if (task.needsAttention) {
+      out.push(
+        block(
+          'needs_attention',
+          task.needsAttentionReason ?? 'Needs attention: retry it once fixed',
+        ),
+      );
+    }
+    return out;
   }
 
   /** Eligible members for a task, best first (PLAN section 6). */
   async candidatesFor(task: DispatchTask, now: Date): Promise<Candidate[]> {
+    const members = await this.evaluateMembers(task, now);
+    return members.flatMap((m) => (m.candidate ? [m.candidate] : [])).sort(compareCandidates);
+  }
+
+  /**
+   * Every active participant with either a candidate (eligible now) or the first reason that
+   * keeps them out. This is THE eligibility check: the dispatcher offers from it and
+   * `GET /api/tasks/:id/why-not-running` explains from it.
+   */
+  async evaluateMembers(task: DispatchTask, now: Date): Promise<MemberEligibility[]> {
     const { prisma } = this;
     const staleMs = this.deps.config.USAGE_STALE_SEC * 1000;
     const parts = await prisma.participation.findMany({
       where: { projectId: task.projectId, active: true },
       include: { user: { include: { agents: true } } },
+      orderBy: { createdAt: 'asc' },
     });
     const targets = new Set(task.targets.map((t) => t.userId));
     const previous = await prisma.assignment.findMany({
@@ -370,82 +465,199 @@ export class Dispatcher {
         userId: true,
         status: true,
         reason: true,
+        failureClass: true,
         respondedAt: true,
         finishedAt: true,
         updatedAt: true,
       },
     });
-    const excluded = new Set<string>();
-    // not_participating rejections per user: count and the latest one (backoff, not shut-out).
-    const npRejections = new Map<string, { n: number; failed: number; last: Date }>();
+    // Declined, let expire or lost (24 h): the latest one, for the "until".
+    const excluded = new Map<string, Date>();
+    const pendingFor = new Set<string>();
+    // Retryable failures per user: backoff count, shut-out count (task/timeout), latest one.
+    const retries = new Map<string, { n: number; failed: Date[]; last: Date }>();
     for (const a of previous) {
-      if (!isRetryable(a)) {
-        excluded.add(a.userId);
+      // A retry by the owner or the creator wipes the earlier failures (history is kept).
+      if ((a.status === 'FAILED' || a.status === 'LOST') && beforeRetry(a, task.retryResetAt)) {
         continue;
       }
+      if (isClaudeAuthRefusal(a)) continue; // the agent's claudeAuthValid flag covers it
+      if (a.status === 'PENDING') {
+        pendingFor.add(a.userId);
+        continue;
+      }
+      if (!isRetryable(a)) {
+        const cur = excluded.get(a.userId);
+        if (!cur || cur < a.updatedAt) excluded.set(a.userId, a.updatedAt);
+        continue;
+      }
+      const cls = a.status === 'FAILED' ? failureClassOf(a) : null;
+      // Claude login and rate limits are handled per agent / per member, not per task.
+      if (cls === 'claude_auth' || cls === 'rate_limited') continue;
       const at = (a.status === 'FAILED' ? a.finishedAt : a.respondedAt) ?? a.updatedAt;
-      const cur = npRejections.get(a.userId);
-      npRejections.set(a.userId, {
-        n: (cur?.n ?? 0) + 1,
-        failed: (cur?.failed ?? 0) + (a.status === 'FAILED' ? 1 : 0),
-        last: cur && cur.last > at ? cur.last : at,
-      });
+      const cur = retries.get(a.userId) ?? { n: 0, failed: [], last: at };
+      cur.n += 1;
+      if (cls && SHUT_OUT_FAILURE_CLASSES.includes(cls)) cur.failed.push(at);
+      if (cur.last < at) cur.last = at;
+      retries.set(a.userId, cur);
     }
     const estimate = await this.estimateFor(task, task.project.sizeBudgets);
-    const out: Candidate[] = [];
+    const out: MemberEligibility[] = [];
     for (const p of parts) {
       if (participationStatus(p, task.project.requireParticipantApproval) !== 'active') continue;
-      if (task.dispatchMode === 'MEMBERS' && !targets.has(p.userId)) continue;
-      if (p.user.paused) continue;
-      if (!p.allowedModels.includes(task.model)) continue;
-      if (excluded.has(p.userId)) continue;
-      const np = npRejections.get(p.userId);
-      if (np && np.failed >= FAILED_RETRIES_BEFORE_SHUT_OUT) continue;
-      if (
-        np &&
-        p.updatedAt.getTime() <= np.last.getTime() &&
-        now.getTime() < np.last.getTime() + notParticipatingBackoffMs(np.n)
-      ) {
-        continue;
-      }
-      const agent = await this.freeAgent(p.user, now);
-      if (!agent) continue;
-      // Consent invariant: a member whose access was removed (or cannot be verified past the
-      // GitHub outage grace period) gets no offer. Checked late: the decision is cached.
-      if (!(await this.gateway.ownerAllowed(p.user))) continue;
-      const usage = await this.latestUsage(p.userId);
-      const state = usageState(usage, now, staleMs);
-      let margin: Margin | null = null;
-      if (usage && state === 'fresh') {
-        if (usage.rateLimitedUntil && usage.rateLimitedUntil.getTime() > now.getTime()) continue;
-        margin = await this.marginOf(p.userId, task.projectId, p.percent, usage, now, task.id);
-        if (margin && (margin.margin < estimate || margin.globalMargin < estimate)) continue;
-      }
-      // Auto mode needs a fresh report with a known capacity: no blind starts.
-      if (p.mode === 'AUTO' && margin === null) continue;
-      const last = await prisma.assignment.findFirst({
-        where: {
-          userId: p.userId,
-          respondedAt: { not: null },
-          status: { notIn: ['PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED'] },
-        },
-        orderBy: { respondedAt: 'desc' },
-        select: { respondedAt: true },
-      });
-      out.push({
+      const row: MemberEligibility = {
         userId: p.userId,
         login: p.user.login,
-        agentId: agent.agentId,
-        mode: p.mode,
+        avatarUrl: p.user.avatarUrl,
+        candidate: null,
+        reason: null,
+      };
+      out.push(row);
+      row.reason = await this.memberBlocker(task, p, now, {
         estimate,
-        margin,
-        marginFraction: margin && margin.budget > 0 ? margin.margin / margin.budget : null,
-        running: agent.running,
-        resetAt: usage?.windowResetAt ?? null,
-        lastAssignedAt: last?.respondedAt ?? null,
+        staleMs,
+        targets,
+        excludedAt: excluded.get(p.userId),
+        pending: pendingFor.has(p.userId),
+        retry: retries.get(p.userId),
+        found: (c) => (row.candidate = c),
       });
     }
-    return out.sort(compareCandidates);
+    return out;
+  }
+
+  /** The first check that keeps one member out, or null after reporting the candidate. */
+  private async memberBlocker(
+    task: DispatchTask,
+    p: Prisma.ParticipationGetPayload<{ include: { user: { include: { agents: true } } } }>,
+    now: Date,
+    ctx: {
+      estimate: number;
+      staleMs: number;
+      targets: Set<string>;
+      excludedAt: Date | undefined;
+      pending: boolean;
+      retry: { n: number; failed: Date[]; last: Date } | undefined;
+      found: (c: Candidate) => void;
+    },
+  ): Promise<BlockReason | null> {
+    const { estimate } = ctx;
+    if (task.dispatchMode === 'MEMBERS' && !ctx.targets.has(p.userId)) {
+      return block('not_targeted', 'The task targets other members');
+    }
+    if (p.user.paused) return block('member_paused', 'Paused');
+    if (!p.allowedModels.includes(task.model)) {
+      return block('model_not_allowed', `Their participation does not allow ${task.model}`);
+    }
+    if (ctx.pending) return block('pending_offer', 'Offered: waiting for their answer');
+    if (ctx.excludedAt) {
+      return block(
+        'declined',
+        'Declined, let expire or lost this task: not asked again for 24 h',
+        new Date(ctx.excludedAt.getTime() + SHUT_OUT_MS),
+      );
+    }
+    const np = ctx.retry;
+    if (np && np.failed.length >= FAILED_RETRIES_BEFORE_SHUT_OUT) {
+      // Ends when enough of the counted failures leave the 24 h window.
+      const sorted = [...np.failed].sort((a, b) => b.getTime() - a.getTime());
+      const pivot = sorted[FAILED_RETRIES_BEFORE_SHUT_OUT - 1] as Date;
+      return block(
+        'shut_out',
+        `Failed ${np.failed.length} times on this task: not offered again for 24 h (or until a retry)`,
+        new Date(pivot.getTime() + SHUT_OUT_MS),
+      );
+    }
+    if (
+      np &&
+      p.updatedAt.getTime() <= np.last.getTime() &&
+      now.getTime() < np.last.getTime() + notParticipatingBackoffMs(np.n)
+    ) {
+      return block(
+        'backoff',
+        `Waiting after ${np.n} failed or refused attempt(s)`,
+        new Date(np.last.getTime() + notParticipatingBackoffMs(np.n)),
+      );
+    }
+    const agent = await this.freeAgentOrReason(p.user, now);
+    if (!('agentId' in agent)) return agent.reason;
+    // Consent invariant: a member whose access was removed (or cannot be verified past the
+    // GitHub outage grace period) gets no offer. Checked late: the decision is cached.
+    if (!(await this.gateway.ownerAllowed(p.user))) {
+      return block('access_denied', 'Their access to this server could not be confirmed');
+    }
+    const usage = await this.latestUsage(p.userId);
+    const state = usageState(usage, now, ctx.staleMs);
+    let margin: Margin | null = null;
+    if (usage && state === 'fresh') {
+      if (usage.rateLimitedUntil && usage.rateLimitedUntil.getTime() > now.getTime()) {
+        return block('rate_limited', 'Claude usage limit reached', usage.rateLimitedUntil);
+      }
+      margin = await this.marginOf(p.userId, task.projectId, p.percent, usage, now, task.id);
+      if (margin && (margin.margin < estimate || margin.globalMargin < estimate)) {
+        return block(
+          'budget_exhausted',
+          'Not enough budget left in the current 5-hour window (estimate)',
+          usage.windowResetAt,
+        );
+      }
+    }
+    // Auto mode needs a fresh report with a known capacity: no blind starts.
+    if (p.mode === 'AUTO' && margin === null) {
+      return block('no_usage_report', 'No recent usage report with a known capacity');
+    }
+    const last = await this.prisma.assignment.findFirst({
+      where: {
+        userId: p.userId,
+        respondedAt: { not: null },
+        status: { notIn: ['PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED'] },
+      },
+      orderBy: { respondedAt: 'desc' },
+      select: { respondedAt: true },
+    });
+    ctx.found({
+      userId: p.userId,
+      login: p.user.login,
+      agentId: agent.agentId,
+      mode: p.mode,
+      estimate,
+      margin,
+      marginFraction: margin && margin.budget > 0 ? margin.margin / margin.budget : null,
+      running: agent.running,
+      resetAt: usage?.windowResetAt ?? null,
+      lastAssignedAt: last?.respondedAt ?? null,
+    });
+    return null;
+  }
+
+  /**
+   * "Why isn't this running?": the task-level blockers and, per active participant, the first
+   * reason that keeps them out, from the same checks the dispatcher uses to make offers.
+   */
+  async whyNotRunning(taskId: string, now = new Date()): Promise<WhyNotRunningResponse> {
+    this.medianCache.clear();
+    const task = await this.loadTask(taskId);
+    const taskReasons = this.taskBlockers(task);
+    const pending = await this.prisma.assignment.count({
+      where: { taskId, status: 'PENDING' },
+    });
+    if (task.status === 'TODO' && pending > 0) {
+      taskReasons.push(block('pending_offer', 'Offered: waiting for an answer'));
+    }
+    const members = task.status === 'TODO' ? await this.evaluateMembers(task, now) : [];
+    if (task.status === 'TODO' && members.length === 0) {
+      taskReasons.push(block('no_member', 'Nobody participates in this project yet'));
+    }
+    return {
+      taskId,
+      status: task.status,
+      taskReasons,
+      members: members.map((m) => ({
+        user: { id: m.userId, githubLogin: m.login, avatarUrl: m.avatarUrl },
+        eligible: m.candidate !== null,
+        reasons: m.reason ? [m.reason] : [],
+      })),
+    };
   }
 
   // ---------- dispatch ----------
@@ -458,6 +670,7 @@ export class Dispatcher {
     const tasks = await this.prisma.task.findMany({
       where: {
         status: 'TODO',
+        needsAttention: false,
         project: {
           archivedAt: null,
           installation: { suspendedAt: null },
@@ -479,6 +692,7 @@ export class Dispatcher {
   }
 
   private async dispatchTask(task: DispatchTask, now: Date): Promise<void> {
+    if (this.taskBlockers(task).length > 0) return;
     const pending = await this.prisma.assignment.findMany({
       where: { taskId: task.id, status: 'PENDING' },
     });
@@ -846,8 +1060,11 @@ export class Dispatcher {
       const anyAgent = user.agents.some(
         (x) => !x.revokedAt && !x.paused && this.gateway.isConnected(x.id),
       );
-      const free = await this.freeAgent(user, now);
-      if (!free) {
+      const free = await this.freeAgentOrReason(user, now);
+      if (!('agentId' in free)) {
+        if (free.reason.code === 'claude_login_expired') {
+          return refusal('claude_auth', CLAUDE_LOGIN_EXPIRED);
+        }
         return anyAgent
           ? refusal('concurrency', 'Your machines are busy with other tasks')
           : refusal('no_agent_online', 'None of your machines is online and unpaused');
@@ -885,6 +1102,7 @@ export class Dispatcher {
         if (agent.userId !== a.userId || agent.revokedAt)
           throw new Refusal('not_found', 'No such agent');
         if (agent.paused || agent.user.paused) throw new Refusal('paused', 'The agent is paused');
+        if (!agent.claudeAuthValid) throw new Refusal('claude_auth', CLAUDE_LOGIN_EXPIRED);
         const slots = await tx.assignment.count({
           where: { userId: a.userId, status: { in: [...HOLDS_SLOT] } },
         });
@@ -928,7 +1146,11 @@ export class Dispatcher {
       });
     } catch (err) {
       if (err instanceof Refusal) {
-        if (err.code === 'not_participating' || err.code === 'offer_closed') {
+        if (
+          err.code === 'not_participating' ||
+          err.code === 'offer_closed' ||
+          err.code === 'claude_auth'
+        ) {
           await this.closePending([a], 'CANCELLED', err.code, now);
         }
         return refusal(err.code, err.message);
@@ -1051,6 +1273,13 @@ export class Dispatcher {
       taskId: a.taskId,
       data: { assignmentId: a.id, kind: a.kind, reason, via: by.via, afterAccept },
     });
+    if (by.agentId && isClaudeAuthRefusal(data)) {
+      // The agent knows its Claude login is invalid (it refuses locally): stop offering to it.
+      await prisma.agent.updateMany({
+        where: { id: by.agentId, claudeAuthValid: true },
+        data: { claudeAuthValid: false, claudeAuthInvalidAt: now },
+      });
+    }
     if (reason === 'not_participating' && by.agentId) {
       // The agent's list disagrees with ours: resync it so the re-offer (after backoff) works.
       await this.gateway.pushConfig(by.agentId).catch((err: unknown) => {
