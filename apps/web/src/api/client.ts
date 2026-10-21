@@ -1,4 +1,4 @@
-import type { ZodType, ZodTypeDef } from 'zod';
+import type { ZodType } from 'zod';
 
 export class ApiError extends Error {
   constructor(
@@ -17,7 +17,7 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export async function api<T>(
   method: Method,
   path: string,
-  opts: { body?: unknown; schema?: ZodType<T, ZodTypeDef, unknown> } = {},
+  opts: { body?: unknown; schema?: ZodType<T, unknown> } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';

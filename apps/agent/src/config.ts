@@ -21,7 +21,10 @@ const optionalString = z.string().min(1).optional();
 
 const EnvSchema = z.object({
   ORCH_SERVER_URL: z
-    .string({ required_error: 'is required (e.g. https://orch.example.com)' })
+    .string({
+      error: (iss) =>
+        iss.input === undefined ? 'is required (e.g. https://orch.example.com)' : undefined,
+    })
     .url('must be a URL')
     .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://'),
   ORCH_AGENT_CREDENTIAL: optionalString,

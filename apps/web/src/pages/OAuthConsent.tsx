@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { OAuthConsentInfoSchema, OAuthConsentResultSchema } from '@orch/shared';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import { ApiError, api } from '../api/client';
 
 const KEYS = [

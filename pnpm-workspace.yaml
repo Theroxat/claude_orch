@@ -1,3 +1,9 @@
 packages:
   - apps/*
   - packages/*
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true
+minimumReleaseAgeExclude:
+  - vite@8.3.5
