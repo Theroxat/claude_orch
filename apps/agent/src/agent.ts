@@ -29,6 +29,9 @@ import { AGENT_VERSION } from './version';
 import type { BackoffOptions } from './ws/backoff';
 import { WsClient } from './ws/client';
 
+/** How long `stop()` waits for the executor's jobs (killed runs reporting) before going offline. */
+const STOP_DRAIN_MS = 3_000;
+
 export interface AgentOptions {
   serverUrl: string;
   wsUrl: string;
@@ -327,7 +330,17 @@ export class Agent {
     }
     this.tokens.close();
     this.updater?.close();
-    this.executor?.close();
+    if (this.executor) {
+      this.executor.close();
+      // Let the killed runs report (task.finished) while the outbox is still online. Bounded:
+      // main.ts force-exits after 5 s, and what is enqueued by then is on disk anyway.
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.executor.idle(),
+        new Promise<void>((r) => (timer = setTimeout(r, STOP_DRAIN_MS))),
+      ]);
+      clearTimeout(timer);
+    }
     for (const w of this.listWaiters.values()) clearTimeout(w.timer);
     this.listWaiters.clear();
     this.usage.stop();
