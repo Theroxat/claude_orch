@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { PoolMember } from '@orch/shared';
 import { useState } from 'react';
 import { fetchDiscover, fetchMyAgents, fetchMyProjects, fetchPool } from '../api/endpoints';
+import { poolErrorMessage } from '../poolErrors';
 import { POLL_MS, relative } from '../time';
 import { presenceProps, useChangeCount, usePresence, type Phase } from '../ui/presence';
 
@@ -104,6 +105,7 @@ export function Pool() {
     queryKey: ['pool', filter || 'all'],
     queryFn: () => fetchPool(filter || undefined),
     refetchInterval: POLL_MS,
+    retry: false,
   });
   const agents = useQuery({
     queryKey: ['agents', 'mine'],
@@ -146,7 +148,7 @@ export function Pool() {
         </p>
       ))}
       {pool.isLoading && <p className="hint">Loading...</p>}
-      {pool.error && <p className="error">{pool.error.message}</p>}
+      {pool.error && <p className="error">{poolErrorMessage(pool.error)}</p>}
       {pool.data && pool.data.members.length === 0 && (
         <p className="empty">No members in the pool yet.</p>
       )}
