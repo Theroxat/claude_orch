@@ -261,6 +261,10 @@ model Agent {
   // the agent reports a fresh login (claudeAuthValid true) or a run succeeds.
   claudeAuthValid     Boolean   @default(true)
   claudeAuthInvalidAt DateTime?
+  // Last real `claude -p` check reported by the agent (`claude.auth`, v0.5.2) and its error class
+  // (unauthorized, no_token, rate_limited, timeout, network, error; null when the check passed).
+  claudeAuthCheckedAt DateTime?
+  claudeAuthError     String?
   paused       Boolean   @default(false)
   pausedAt     DateTime?
   pauseSource  String? // "web" | "agent"

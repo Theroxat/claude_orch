@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { PoolMember } from '@orch/shared';
 import { useState } from 'react';
 import { fetchDiscover, fetchMyAgents, fetchMyProjects, fetchPool } from '../api/endpoints';
+import { claudeCheckLine, claudeRejectedText } from '../components/AgentCard';
 import { POLL_MS, relative } from '../time';
 
 function MemberCard({ m }: { m: PoolMember }) {
@@ -119,10 +120,17 @@ export function Pool() {
       </div>
       {expired.map((a) => (
         <p key={a.id} className="warning" role="alert">
-          Claude login expired on {a.machineName}: run <code>orch login</code>. No task is offered
-          to that machine until then.
+          {claudeRejectedText(a, <> on {a.machineName}</>)}. No task is offered to that machine
+          until then.
         </p>
       ))}
+      {(agents.data ?? [])
+        .filter((a) => !a.revokedAt && a.claudeAuthValid !== false && a.claudeAuthCheckedAt)
+        .map((a) => (
+          <p key={a.id} className="hint">
+            {a.machineName}: {claudeCheckLine(a)}
+          </p>
+        ))}
       <p className="hint">All usage figures are estimates.</p>
       {pool.isLoading && <p>Loading...</p>}
       {pool.error && <p className="error">{pool.error.message}</p>}

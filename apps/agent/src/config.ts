@@ -169,7 +169,19 @@ export interface CliConfig {
   /** Agent data dir (holds the persisted Claude login state reset by `orch login`). */
   dataDir: string;
   claudeBin: string;
+  /** For the in-process Claude check of `orch doctor` when the daemon is unreachable. */
+  defaultImage: string;
+  workDir?: string;
+  taskUid?: number;
+  taskGid?: number;
+  agentId?: string;
 }
+
+const intOrUndef = (v: string | undefined, min: number): number | undefined => {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= min ? n : undefined;
+};
 
 export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
   const e = dropEmpty(env);
@@ -178,5 +190,10 @@ export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
     secretsDir: e.ORCH_SECRETS_DIR ?? '/secrets',
     dataDir: e.ORCH_DATA_DIR ?? '/data',
     claudeBin: e.ORCH_CLAUDE_BIN ?? 'claude',
+    defaultImage: e.ORCH_DEFAULT_IMAGE ?? 'node:22-bookworm',
+    workDir: e.ORCH_WORK_DIR,
+    taskUid: intOrUndef(e.ORCH_TASK_UID, 1),
+    taskGid: intOrUndef(e.ORCH_TASK_GID, 0),
+    agentId: e.ORCH_AGENT_ID,
   };
 }

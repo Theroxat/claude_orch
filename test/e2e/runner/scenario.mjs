@@ -12,7 +12,15 @@ const REPO = process.env.ORCH_E2E_REPO;
 const WORK = { alice: process.env.ORCH_E2E_WORK_ALICE, bob: process.env.ORCH_E2E_WORK_BOB };
 const IDS_FILE = process.env.ORCH_E2E_IDS_FILE;
 const WEBHOOK_SECRET = process.env.ORCH_E2E_WEBHOOK_SECRET;
-const FAKE_CLAUDE_TOKEN = 'fake-e2e-claude-token-not-a-real-credential';
+// Fake Claude tokens, shaped like real ones (`orch login` enforces the shape). The fake claude
+// (test/e2e/fake-claude/claude) accepts a token only when it contains `VALID`.
+const fakeToken = (tag) =>
+  `sk-ant-oat01-${`FAKE-e2e-${tag}-not-a-real-credential-`.padEnd(90, 'x')}`;
+const FAKE_CLAUDE_TOKEN = fakeToken('VALID');
+/** Rejected by the login check (401). */
+const REJECTED_CLAUDE_TOKEN = fakeToken('expired');
+/** Passes the login check, then gets a 401 on a task run (revoked after the check). */
+const REVOKED_CLAUDE_TOKEN = fakeToken('VALID-at-check-expired-at-run');
 const PROJECT = 'acme/widgets';
 
 // ---------- reporting ----------
@@ -476,6 +484,11 @@ async function main() {
           allowFail: true,
         });
         assert(login.status === 0, `orch login on ${who}`, login.stderr);
+        assert(
+          login.stdout.includes('✓ Claude login verified'),
+          `orch login on ${who} verified the token`,
+          login.stdout,
+        );
         const a = await waitFor(
           `${who} usage report`,
           async () => {
@@ -1080,17 +1093,104 @@ async function main() {
     },
   );
 
+  /** `orch login --token-stdin --no-setup` on alice (the CLI then runs the real check). */
+  const aliceLogin = (token) => {
+    const r = compose(['exec', '-T', 'alice', 'orch', 'login', '--token-stdin', '--no-setup'], {
+      input: `${token}\n`,
+      allowFail: true,
+    });
+    log(`  alice$ orch login --token-stdin --no-setup -> ${r.status}\n${r.stdout.trimEnd()}`);
+    return r;
+  };
+  const aliceAutoOffers = (taskId) =>
+    assignmentsOf(taskId).filter((a) => a.login === 'alice' && a.kind === 'AUTO_OFFER');
+
   await step(
-    'h. Claude login expired: 401 run -> agent flagged, no auto offer -> orch login -> the task runs',
+    'h. rejected Claude token: orch login 401 -> agent flagged, no auto offer -> valid login + doctor -> the task runs',
     async () => {
-      const relogin = (token) => {
-        const r = compose(['exec', '-T', 'alice', 'orch', 'login', '--token-stdin', '--no-setup'], {
-          input: `${token}\n`,
-          allowFail: true,
-        });
-        assert(r.status === 0, 'orch login on alice', r.stderr);
-      };
-      relogin('fake-e2e-claude-token-expired-not-a-real-credential');
+      const before = await agentView('alice', 'alice-laptop');
+      const bad = aliceLogin(REJECTED_CLAUDE_TOKEN);
+      assert(bad.status !== 0, 'orch login with a rejected token exits non-zero', bad.status);
+      assert(
+        bad.stdout.includes('✗ Claude rejected this token (401)'),
+        'orch login says Claude rejected the token',
+        bad.stdout,
+      );
+      const flagged = await waitFor(
+        'alice flagged by the check',
+        async () => {
+          const v = await agentView('alice', 'alice-laptop');
+          return v?.claudeAuthValid === false ? v : null;
+        },
+        60_000,
+      );
+      assert(
+        flagged.claudeAuthCheckedAt && flagged.claudeAuthCheckedAt !== before?.claudeAuthCheckedAt,
+        'claudeAuthCheckedAt set by the check',
+        flagged,
+      );
+      const t = await createTask('Runs after a verified Claude login');
+      const n = t.issueNumber;
+      // Several dispatch cycles (DISPATCHER_INTERVAL_MS=1000): alice must get no offer.
+      for (let i = 0; i < 12; i++) {
+        await bobDeclinesRequests(t.id);
+        assert(aliceAutoOffers(t.id).length === 0, 'no auto offer to a flagged agent', i);
+        await sleep(1000);
+      }
+      const why = await users.olivia.get(`/api/tasks/${t.id}/why-not-running`);
+      const alice = why.members.find((m) => m.user.githubLogin === 'alice');
+      assert(
+        alice?.reasons[0]?.code === 'claude_login_expired',
+        'why-not-running: Claude login expired for alice',
+        why,
+      );
+      const status = orch('alice', ['status'], { allowFail: true });
+      assert(/login expired/i.test(status.stdout), 'orch status shows the expired login', status);
+      assert((await taskByIssue(n))?.status !== 'IN_PROGRESS', 'the task is not running');
+
+      const good = aliceLogin(FAKE_CLAUDE_TOKEN);
+      assert(good.status === 0, 'orch login with a valid token', good.stderr);
+      assert(good.stdout.includes('✓ Claude login verified'), 'orch login verified', good.stdout);
+      const doc = orch('alice', ['doctor'], { allowFail: true });
+      assert(doc.status === 0, 'orch doctor exits 0', doc);
+      assert(doc.stdout.includes('✓ Claude login verified'), 'orch doctor verified', doc.stdout);
+      const cleared = await waitFor(
+        'alice login valid again on the server',
+        async () => {
+          const v = await agentView('alice', 'alice-laptop');
+          return v?.claudeAuthValid === true ? v : null;
+        },
+        60_000,
+      );
+      assert(
+        cleared.claudeAuthCheckedAt &&
+          Date.parse(cleared.claudeAuthCheckedAt) > Date.parse(flagged.claudeAuthCheckedAt),
+        'claudeAuthCheckedAt updated by the valid check',
+        cleared,
+      );
+      await waitStatus(n, ['IN_REVIEW'], 300_000, () => bobDeclinesRequests(t.id));
+      const runs = assignmentsOf(t.id);
+      assert(
+        runs.some(
+          (a) => a.login === 'alice' && a.kind === 'AUTO_OFFER' && a.status === 'SUCCEEDED',
+        ),
+        'ran on alice after the verified login',
+        runs,
+      );
+      for (const a of runs) recordAssignment(a.id);
+    },
+  );
+
+  await step(
+    'i. Claude login revoked after the check: 401 run -> agent flagged, no auto offer -> orch login -> the task runs',
+    async () => {
+      const revoked = aliceLogin(REVOKED_CLAUDE_TOKEN);
+      assert(revoked.status === 0, 'orch login (token still accepted by the check)', revoked);
+      await waitFor(
+        'alice valid after the check',
+        async () => (await agentView('alice', 'alice-laptop'))?.claudeAuthValid === true,
+        60_000,
+      );
       const t = await createTask('Runs after a fresh Claude login');
       const n = t.issueNumber;
       await waitFor(
@@ -1123,7 +1223,8 @@ async function main() {
       const card = await taskByIssue(n);
       assert(card.failedAttempts >= 1 && /401/.test(card.lastError ?? ''), 'card shows it', card);
 
-      relogin(FAKE_CLAUDE_TOKEN);
+      const good = aliceLogin(FAKE_CLAUDE_TOKEN);
+      assert(good.status === 0, 'orch login on alice', good.stderr);
       await waitFor(
         'alice login valid again on the server',
         async () => (await agentView('alice', 'alice-laptop'))?.claudeAuthValid === true,

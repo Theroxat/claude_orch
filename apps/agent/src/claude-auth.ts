@@ -1,12 +1,15 @@
 /**
- * Persisted Claude login state (`${dataDir}/claude-auth.json`, no secrets). It is set invalid when
- * a task fails with a `claude_auth` error (expired / revoked OAuth token) and reset by `orch login`.
- * `orch login` runs as a separate process in the same container, so the file is re-read on every
- * check instead of being cached: the running daemon notices a fresh login on its next hello,
- * usage report, offer or `orch take`.
+ * Persisted Claude login state (`${dataDir}/claude-auth.json`, no secrets: `tokenHash` is the
+ * sha256 of the token, never the token). Only a REAL check (`claude-check.ts`) that succeeded sets
+ * `valid: true`; a check answering `unauthorized` / `no_token`, or a task failing with a
+ * `claude_auth` error, sets it false. Inconclusive checks (timeout, network...) only record
+ * `checkedAt` / `errorClass`. `orch login` does not touch it: the daemon checks the new token.
+ * The file is re-read on every use (the CLI may run the check in another process).
  */
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { ClaudeAuthErrorClass, type ClaudeAuthPayload } from '@orch/shared';
 import { readJsonFile, writeJsonAtomic } from './fsutil';
 
 export const CLAUDE_AUTH_FILE = 'claude-auth.json';
@@ -18,6 +21,12 @@ const StateSchema = z.object({
   valid: z.boolean(),
   since: z.string().optional(),
   detail: z.string().max(500).optional(),
+  /** Last real check (ISO). */
+  checkedAt: z.string().optional(),
+  /** Error class of the last check; absent when it succeeded cleanly. */
+  errorClass: ClaudeAuthErrorClass.optional(),
+  /** sha256 hex of the trimmed token the last check ran with. */
+  tokenHash: z.string().optional(),
 });
 export type ClaudeAuthSnapshot = z.infer<typeof StateSchema>;
 
@@ -41,20 +50,50 @@ export class ClaudeAuthState {
     return this.read().valid;
   }
 
-  /** Keeps the original `since` while the state stays invalid. */
+  /** A task failed on Claude authentication. Keeps the original `since` while invalid. */
   markInvalid(detail?: string): void {
     const cur = this.read();
     if (!cur.valid) return;
     this.write({
+      ...cur,
       valid: false,
       since: new Date().toISOString(),
       ...(detail ? { detail: detail.slice(0, 500) } : {}),
     });
   }
 
-  markValid(): void {
-    if (this.read().valid) return;
-    this.write({ valid: true });
+  /**
+   * Records a real check. `tokenHash` is the hash of the token it ran with (null: no token).
+   * Returns the new snapshot.
+   */
+  recordCheck(p: ClaudeAuthPayload, tokenHash: string | null): ClaudeAuthSnapshot {
+    const cur = this.read();
+    const common = {
+      checkedAt: p.checkedAt,
+      ...(p.errorClass ? { errorClass: p.errorClass } : {}),
+      ...(tokenHash ? { tokenHash } : {}),
+    };
+    let next: ClaudeAuthSnapshot;
+    if (p.valid) {
+      next = { valid: true, ...common };
+    } else if (p.errorClass === 'unauthorized' || p.errorClass === 'no_token') {
+      next = {
+        valid: false,
+        since: !cur.valid && cur.since ? cur.since : p.checkedAt,
+        ...(p.detail ? { detail: p.detail.slice(0, 500) } : {}),
+        ...common,
+      };
+    } else {
+      // Inconclusive: the validity is unchanged.
+      next = {
+        valid: cur.valid,
+        ...(cur.since ? { since: cur.since } : {}),
+        ...(p.detail ? { detail: p.detail.slice(0, 500) } : {}),
+        ...common,
+      };
+    }
+    this.write(next);
+    return next;
   }
 
   private write(s: ClaudeAuthSnapshot): void {
@@ -64,4 +103,9 @@ export class ClaudeAuthState {
       // best effort: a read-only data dir must not break task handling
     }
   }
+}
+
+/** sha256 hex of the trimmed token (identifies a token without storing it). */
+export function hashClaudeToken(token: string): string {
+  return createHash('sha256').update(token.trim()).digest('hex');
 }
