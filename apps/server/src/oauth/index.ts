@@ -378,18 +378,38 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
       return { redirectTo: withParams(r.redirectUri, { error: 'access_denied', state: r.state }) };
     }
     const code = `${OAUTH_CODE_PREFIX}${randomToken()}`;
-    await prisma.oAuthCode.create({
-      data: {
-        codeHash: sha256Hex(code),
-        clientId: r.client.id,
-        userId: user.id,
-        redirectUri: r.redirectUri,
-        codeChallenge: r.codeChallenge,
-        resource: r.resource,
-        scope: SCOPE,
-        expiresAt: new Date(Date.now() + CODE_TTL_MS),
-      },
+    // One code per authorization request (user + client + PKCE challenge): a double submit, a
+    // replayed POST or two tabs must not mint a second code. The advisory lock makes the
+    // check-then-create atomic across concurrent requests.
+    const lockKey = `oauth-consent:${user.id}:${r.client.id}:${r.codeChallenge}`;
+    const issued = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+      const existing = await tx.oAuthCode.findFirst({
+        where: { userId: user.id, clientId: r.client.id, codeChallenge: r.codeChallenge },
+        select: { codeHash: true },
+      });
+      if (existing) return false;
+      await tx.oAuthCode.create({
+        data: {
+          codeHash: sha256Hex(code),
+          clientId: r.client.id,
+          userId: user.id,
+          redirectUri: r.redirectUri,
+          codeChallenge: r.codeChallenge,
+          resource: r.resource,
+          scope: SCOPE,
+          expiresAt: new Date(Date.now() + CODE_TTL_MS),
+        },
+      });
+      return true;
     });
+    if (!issued) {
+      throw new HttpError(
+        409,
+        'already_approved',
+        'This request was already approved. Go back to Claude Code, or start again from /mcp.',
+      );
+    }
     await audit(prisma, {
       actorUserId: user.id,
       action: 'oauth.granted',

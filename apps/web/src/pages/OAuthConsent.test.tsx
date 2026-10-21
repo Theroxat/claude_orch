@@ -31,6 +31,15 @@ describe('OAuth consent page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith('http://localhost:1/cb?code=x'));
     expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ ...params, approve: true });
+    // While the browser navigates away, a second click must not mint another code.
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    expect((screen.getByRole('button', { name: 'Deny' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
   it('denies', async () => {

@@ -411,6 +411,29 @@ describe('authorization code flow with PKCE', () => {
     expect(implicit.searchParams.get('state')).toBe('st-123');
   });
 
+  it('approving the same authorization request twice issues a single code', async () => {
+    const user = await loginAs(app, gh);
+    const clientId = await newClient();
+    const p = pkce();
+    const body = { ...Object.fromEntries(authorizeQuery(clientId, p.challenge)), approve: true };
+    const post = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/oauth/consent',
+        headers: { cookie: user.cookie, origin: BASE },
+        payload: body,
+      });
+    // Concurrent double submit, then a late replay.
+    const results = await Promise.all([post(), post()]);
+    const late = await post();
+    const statuses = [...results, late].map((r) => r.statusCode).sort();
+    expect(statuses).toEqual([200, 409, 409]);
+    expect(await prisma.oAuthCode.count({ where: { userId: user.userId } })).toBe(1);
+    // A new authorization request (new challenge) is unaffected.
+    await consent(user, clientId, pkce().challenge);
+    expect(await prisma.oAuthCode.count({ where: { userId: user.userId } })).toBe(2);
+  });
+
   it('a denial goes back with access_denied and the state', async () => {
     const user = await loginAs(app, gh);
     const to = await consent(user, await newClient(), pkce().challenge, false);
