@@ -1096,3 +1096,139 @@ describe('pool endpoint', () => {
     expect(again.members.find((x) => x.userId === appr.user.userId)!.paused).toBe(true);
   });
 });
+
+describe('participation sync (config.update) and not_participating backoff', () => {
+  const hasAuto = (projectId: string) => (c: Extract<ServerMessage, { type: 'config.update' }>) =>
+    c.payload.participations.some((x) => x.projectId === projectId && x.mode === 'AUTO');
+
+  it('joined (and approved) after the agent connected: config.update, then the AUTO offer is accepted', async () => {
+    const { owner, project: p, repo } = await project();
+    const u = await loginAs(app, gh);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${u.login}`, 'READ');
+    const m = await onlineAgent(u);
+    await report(m, { projectId: p.id });
+    expect(m.client.find('welcome')[0]?.payload.participations).toEqual([]);
+
+    const put = await api(app, u)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    expect(put.json()).toMatchObject({ status: 'pending' });
+    // pending: pushed, but not in the list yet
+    await m.client.next('config.update', (c) => c.payload.participations.length === 0);
+    const ok = await api(app, owner)(
+      'POST',
+      `/api/projects/${p.id}/participants/${u.userId}/approve`,
+    );
+    expect(ok.statusCode, ok.body).toBe(200);
+    const upd = await m.client.next('config.update', hasAuto(p.id));
+    expect(upd.payload.participations[0]).toMatchObject({ fullName: p.fullName, mode: 'AUTO' });
+
+    const t = await createTask(owner, p.id);
+    const o = await m.client.next('task.offer', (x) => x.payload.task.taskId === t.id);
+    expect(m.client.msgs.indexOf(upd)).toBeLessThan(m.client.msgs.indexOf(o));
+    const ack = await m.client.call(
+      agentMessage('offer.accept', { assignmentId: o.payload.assignmentId, execMode: 'AUTO' }),
+    );
+    expect(ack.ok).toBe(true);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe(
+      'IN_PROGRESS',
+    );
+  });
+
+  it('participation removed or no longer approved: config.update drops it; config.request answers', async () => {
+    const { owner, project: p, repo } = await project();
+    await prisma.project.update({
+      where: { id: p.id },
+      data: { requireParticipantApproval: false },
+    });
+    const m = await member(p.id, { approvedAt: null });
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    expect(m.client.find('welcome')[0]?.payload.participations.map((x) => x.projectId)).toEqual([
+      p.id,
+    ]);
+
+    // the owner turns approval on: the unapproved member drops out
+    const patch = await api(app, owner)('PATCH', `/api/projects/${p.id}`, {
+      requireParticipantApproval: true,
+    });
+    expect(patch.statusCode, patch.body).toBe(200);
+    await m.client.next('config.update', (c) => c.payload.participations.length === 0);
+
+    // config.request -> config.update with replyTo
+    const req = agentMessage('config.request', {});
+    m.client.send(req);
+    const answer = await m.client.next('config.update', (c) => c.replyTo === req.id);
+    expect(answer.payload.participations).toEqual([]);
+
+    // back on, then the member leaves: dropped again
+    await api(app, owner)('PATCH', `/api/projects/${p.id}`, { requireParticipantApproval: false });
+    const back = await m.client.next('config.update', hasAuto(p.id));
+    const leave = await api(app, m.user)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: false,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(leave.statusCode, leave.body).toBe(200);
+    await until(() =>
+      m.client.msgs
+        .slice(m.client.msgs.indexOf(back) + 1)
+        .some((x) => x.type === 'config.update' && x.payload.participations.length === 0),
+    );
+  });
+
+  it('a not_participating rejection is re-offered after an exponential backoff, never at once', async () => {
+    const { owner, project: p, repo } = await project();
+    const m = await member(p.id);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    const t = await createTask(owner, p.id);
+    const rejectLast = async (n: number) => {
+      await until(() => autoOffers(m, t.id).length === n);
+      const o = autoOffers(m, t.id)[n - 1]!;
+      const before = m.client.find('config.update').length;
+      const r = await m.client.call(
+        agentMessage('offer.reject', {
+          assignmentId: o.payload.assignmentId,
+          reason: 'not_participating',
+          detail: `No participation in ${p.fullName}`,
+        }),
+      );
+      expect(r.ok).toBe(true);
+      // the server resyncs the agent that disagreed
+      await until(() => m.client.find('config.update').length > before);
+      await settle();
+    };
+    await rejectLast(1);
+    await tickAt();
+    await tickAt(30_000);
+    expect(autoOffers(m, t.id)).toHaveLength(1); // no immediate re-offer
+    await tickAt(61_000);
+    await rejectLast(2); // re-offered after 1 min
+    await tickAt(61_000);
+    expect(autoOffers(m, t.id)).toHaveLength(2); // second backoff is 2 min
+    await tickAt(121_000);
+    await until(() => autoOffers(m, t.id).length === 3);
+    await rejectLast(3);
+
+    // a participation change after the rejection lifts the backoff at once
+    const put = await api(app, m.user)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 40,
+      mode: 'auto',
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    await settle();
+    await until(() => autoOffers(m, t.id).length === 4);
+
+    // other rejections still shut the member out for the day
+    const last = autoOffers(m, t.id)[3]!;
+    await m.client.call(
+      agentMessage('offer.reject', { assignmentId: last.payload.assignmentId, reason: 'budget' }),
+    );
+    await settle();
+    await tickAt(10 * 60_000); // past every backoff, usage still fresh
+    expect(autoOffers(m, t.id)).toHaveLength(4);
+  });
+});

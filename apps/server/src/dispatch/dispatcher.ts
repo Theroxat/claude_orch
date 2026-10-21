@@ -48,9 +48,31 @@ export interface DispatcherDeps {
 
 const HOLDS_SLOT = ['ACCEPTED', 'RUNNING'] as const;
 const LIVE = ['ACCEPTED', 'RUNNING', 'PUSHED'] as const;
-/** A member who rejected, let expire, failed or lost a task is not asked again for 24 h. */
+/**
+ * A member who rejected, let expire, failed or lost a task is not asked again for 24 h (except a
+ * `not_participating` rejection by the agent's guard: see the backoff below).
+ */
 const SHUT_OUT = ['REJECTED', 'EXPIRED', 'FAILED', 'LOST'] as const;
 const SHUT_OUT_MS = 24 * 3600_000;
+/**
+ * A `not_participating` rejection is the agent's local guard disagreeing with the server (stale
+ * participation list), not a decision of the member: the member may be asked again for that task
+ * after an exponential backoff (1, 2, 4... min, capped at 1 h), or at once when the participation
+ * changed since the rejection.
+ */
+export const NOT_PARTICIPATING_BACKOFF_BASE_MS = 60_000;
+export const NOT_PARTICIPATING_BACKOFF_CAP_MS = 3600_000;
+
+export function notParticipatingBackoffMs(rejections: number): number {
+  const n = Math.max(1, rejections);
+  return Math.min(
+    NOT_PARTICIPATING_BACKOFF_BASE_MS * 2 ** Math.min(n - 1, 30),
+    NOT_PARTICIPATING_BACKOFF_CAP_MS,
+  );
+}
+
+const isNotParticipating = (a: { status: string; reason: string | null }) =>
+  a.status === 'REJECTED' && (a.reason ?? '').startsWith('not_participating');
 
 const dispatchTaskInclude = {
   project: true,
@@ -334,9 +356,23 @@ export class Dispatcher {
           },
         ],
       },
-      select: { userId: true },
+      select: { userId: true, status: true, reason: true, respondedAt: true, updatedAt: true },
     });
-    const excluded = new Set(previous.map((p) => p.userId));
+    const excluded = new Set<string>();
+    // not_participating rejections per user: count and the latest one (backoff, not shut-out).
+    const npRejections = new Map<string, { n: number; last: Date }>();
+    for (const a of previous) {
+      if (!isNotParticipating(a)) {
+        excluded.add(a.userId);
+        continue;
+      }
+      const at = a.respondedAt ?? a.updatedAt;
+      const cur = npRejections.get(a.userId);
+      npRejections.set(a.userId, {
+        n: (cur?.n ?? 0) + 1,
+        last: cur && cur.last > at ? cur.last : at,
+      });
+    }
     const estimate = await this.estimateFor(task, task.project.sizeBudgets);
     const out: Candidate[] = [];
     for (const p of parts) {
@@ -345,6 +381,14 @@ export class Dispatcher {
       if (p.user.paused) continue;
       if (!p.allowedModels.includes(task.model)) continue;
       if (excluded.has(p.userId)) continue;
+      const np = npRejections.get(p.userId);
+      if (
+        np &&
+        p.updatedAt.getTime() <= np.last.getTime() &&
+        now.getTime() < np.last.getTime() + notParticipatingBackoffMs(np.n)
+      ) {
+        continue;
+      }
       const agent = await this.freeAgent(p.user, now);
       if (!agent) continue;
       const usage = await this.latestUsage(p.userId);
@@ -681,6 +725,8 @@ export class Dispatcher {
    */
   async onParticipationChanged(userId: string, projectId: string): Promise<void> {
     const now = new Date();
+    // The agents' local guard checks their synced list: push it before any new offer goes out.
+    await this.gateway.pushConfigToUser(userId);
     const p = await this.prisma.participation.findUnique({
       where: { userId_projectId: { userId, projectId } },
       include: { project: true },
@@ -983,6 +1029,12 @@ export class Dispatcher {
       taskId: a.taskId,
       data: { assignmentId: a.id, kind: a.kind, reason, via: by.via, afterAccept },
     });
+    if (reason === 'not_participating' && by.agentId) {
+      // The agent's list disagrees with ours: resync it so the re-offer (after backoff) works.
+      await this.gateway.pushConfig(by.agentId).catch((err: unknown) => {
+        this.deps.log.warn({ err, agentId: by.agentId }, 'config push failed');
+      });
+    }
     this.kick();
     return { ok: true, assignment: { ...a, ...data } };
   }

@@ -208,6 +208,29 @@ export class AgentGateway {
   }
 
   /**
+   * Pushes `config.update` (fresh participation list) to every connected agent of a user. Called
+   * whenever one of the user's participations, or a project setting that affects it, changes.
+   * Never throws: a failed push is logged; the agent re-syncs on its next hello or request.
+   */
+  async pushConfigToUser(userId: string): Promise<number> {
+    let n = 0;
+    for (const c of [...this.conns.values()]) {
+      if (c.userId !== userId || !c.helloed) continue;
+      try {
+        if (await this.pushConfig(c.agentId)) n++;
+      } catch (err) {
+        this.deps.log.warn({ err, agentId: c.agentId }, 'config push failed');
+      }
+    }
+    return n;
+  }
+
+  /** Same for several users (project-wide changes). */
+  async pushConfigToUsers(userIds: Iterable<string>): Promise<void> {
+    for (const id of new Set(userIds)) await this.pushConfigToUser(id);
+  }
+
+  /**
    * Sends `task.offer`. Throws OfferRefusedError when the agent is offline, paused or revoked:
    * the server never offers work to a paused agent. Second consent check (the dispatcher did the
    * first): an AUTO_OFFER needs an active, approved AUTO-mode participation; an accepted
@@ -386,6 +409,11 @@ export class AgentGateway {
       return;
     }
     if (m.type === 'token.request') return this.onTokenRequest(c, m);
+    if (m.type === 'config.request') {
+      const cfg = await this.configFor(c.agentId);
+      this.send(c, serverMessage('config.update', cfg, { replyTo: m.id }));
+      return;
+    }
     if (m.type === 'tasks.list.request') {
       const agent = await this.loadAgent(c);
       const list = await this.tasks.takeable(agent, m.payload.projectFullName);

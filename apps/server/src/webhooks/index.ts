@@ -231,6 +231,12 @@ export function registerWebhooks(
         projectId: project.id,
         data: { reason },
       });
+      // The members' agents drop the archived project from their participation list.
+      const members = await prisma.participation.findMany({
+        where: { projectId: project.id },
+        select: { userId: true },
+      });
+      await gateway.pushConfigToUsers(members.map((m) => m.userId));
     }
   }
 

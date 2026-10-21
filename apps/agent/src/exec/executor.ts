@@ -116,6 +116,12 @@ export interface ExecutorDeps {
   /** The member's Claude token (`/secrets/claude-token`), or null when `orch login` was not run. */
   readClaudeToken: () => string | null;
   participations: () => readonly Participation[];
+  /**
+   * Asks the server for a fresh config (`config.request`) and resolves once it was applied, or
+   * false on timeout / older server. Used once per AUTO offer whose project is missing from the
+   * synced participation list, before rejecting it as `not_participating`.
+   */
+  refreshConfig?: () => Promise<boolean>;
   logger: Logger;
 }
 
@@ -169,6 +175,8 @@ export class ManualExecutor {
   private readonly claims = new Map<string, ClaimWaiter>();
   /** Pending approval requests (`offer.request`), for `orch requests`. In memory only. */
   private readonly requests = new Map<string, OfferRequestPayload>();
+  /** AUTO offers waiting for a config refresh before the guard re-checks them. */
+  private readonly refreshing = new Set<string>();
   /** `orch accept` waiting for the ack of its `offer.accept` (message id -> resolver). */
   private readonly userAccepts = new Map<string, (ack: AckPayload) => void>();
   /** Live `claude -p` processes by assignment. */
@@ -348,6 +356,8 @@ export class ManualExecutor {
         this.onOffer(m.payload, m.replyTo);
         return true;
       case 'task.cancel':
+        // An offer waiting for its config refresh is simply dropped (never accepted later).
+        if (this.refreshing.delete(m.payload.assignmentId)) return true;
         this.track(this.cancel(m.payload.assignmentId, m.payload.reason));
         return true;
       case 'pr.opened': {
@@ -482,6 +492,7 @@ export class ManualExecutor {
       return;
     }
     if (this.store.get(id)) return; // re-sent offer: already accepted (or waiting for the ack)
+    if (this.refreshing.has(id)) return; // re-sent while its config refresh is in flight
     if (p.expiresAt !== null && Date.parse(p.expiresAt) <= this.now()) {
       this.log.info('ignoring an expired offer', { assignmentId: id, expiresAt: p.expiresAt });
       return;
@@ -507,6 +518,37 @@ export class ManualExecutor {
       return;
     }
     const refusal = this.autoGuard(p);
+    const refresh = this.deps.refreshConfig;
+    if (refusal?.reason === 'not_participating' && refresh) {
+      // The participation list may be stale (joined after connecting): resync once, re-check.
+      this.refreshing.add(id);
+      this.log.info('auto offer for an unknown participation: refreshing the config', {
+        assignmentId: id,
+        project: p.task.project.fullName,
+      });
+      this.track(
+        refresh()
+          .catch(() => false)
+          .then(() => {
+            if (!this.refreshing.delete(id)) return; // cancelled meanwhile
+            if (this.store.get(id)) return;
+            if (p.expiresAt !== null && Date.parse(p.expiresAt) <= this.now()) {
+              this.log.info('ignoring an expired offer', { assignmentId: id });
+              return;
+            }
+            this.decideAuto(p, this.autoGuard(p));
+          }),
+      );
+      return;
+    }
+    this.decideAuto(p, refusal);
+  }
+
+  private decideAuto(
+    p: TaskOfferPayload,
+    refusal: { reason: RejectReason; detail: string } | null,
+  ): void {
+    const id = p.assignmentId;
     if (refusal) {
       this.log.info('auto offer rejected by the local guard', { assignmentId: id, ...refusal });
       this.deps.enqueue('offer.reject', { assignmentId: id, ...refusal });
