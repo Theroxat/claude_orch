@@ -1215,6 +1215,22 @@ export class ManualExecutor {
       await this.pushAndReport(id, usage);
     } catch (err) {
       const message = redact(errorMessage(err));
+      // commitAll removed the task's .git: give the still-running session a working copy back.
+      // The task is frozen meanwhile: it cannot swap `.git` (or a sub-path) for a symlink between
+      // the removal and the copy, which would make the agent write through it.
+      const r = this.store.get(id) as TaskRecord;
+      const frozen = await this.deps.docker.pause(r.container).then(
+        () => true,
+        () => false,
+      );
+      try {
+        await this.deps.git.seedTaskGit(repoOf(r));
+        this.deps.fs.chownR(join(r.cloneDir, '.git'), this.cfg.uid, this.cfg.gid);
+      } catch (seedErr) {
+        this.log.warn('could not restore the task git dir', { error: errorMessage(seedErr) });
+      } finally {
+        if (frozen) await this.deps.docker.unpause(r.container).catch(() => undefined);
+      }
       this.status(id, 'running', `done failed: ${message}`);
       throw new ExecError('done_failed', `Push failed, the task is still running: ${message}`);
     }
