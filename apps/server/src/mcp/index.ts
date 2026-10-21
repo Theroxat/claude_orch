@@ -26,7 +26,7 @@ import {
   type TaskView,
 } from '@orch/shared';
 import type { AgentGateway } from '../agents/gateway';
-import { revokeUserAccess, type AuthDeps } from '../auth';
+import { type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
 import { buildPool } from '../offers';
@@ -45,13 +45,12 @@ export interface McpDeps extends AuthDeps {
   gateway: AgentGateway;
 }
 
-const SERVER_VERSION = '0.5.0';
+const SERVER_VERSION = (process.env.ORCH_VERSION ?? '').trim().replace(/^v/, '') || 'dev';
 
 const INSTRUCTIONS = `orch shares the Claude Code capacity of a team: tasks are GitHub issues that members' machines run (automatically or by hand) and turn into pull requests.
 Before submitting work: read the repository, then split the work into SMALL, INDEPENDENT subtasks (one PR each, ideally S or M), each with a self-contained description and checkable acceptance criteria. Use dependsOn only where a subtask truly needs another one merged first. Use view_pool to see who has capacity, list_tasks to avoid duplicates, task_status to follow progress.`;
 
-const attachCommand = (issueNumber: number) =>
-  `docker compose -f ~/orch/compose.yaml exec agent screen -r issue-${issueNumber}`;
+const attachCommand = (issueNumber: number) => `orch attach ${issueNumber}`;
 
 const json = (value: unknown): CallToolResult => ({
   content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -361,11 +360,7 @@ function rpcError(reply: FastifyReply, status: number, message: string) {
 
 export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
   const urls = oauthUrls(deps.config);
-  const authenticate = async (
-    authorization: string | undefined,
-    reply: FastifyReply,
-    ip: string,
-  ) => {
+  const authenticate = async (authorization: string | undefined, reply: FastifyReply) => {
     const raw = bearerOf(authorization);
     const unauthorized = (message: string) => {
       // RFC 9728: points Claude Code at the protected resource metadata (OAuth discovery).
@@ -386,7 +381,6 @@ export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
     // The sign-in allowlist applies to tokens too.
     const decision = await app.allowlist.check(user);
     if (decision === 'refused') {
-      await revokeUserAccess(deps.prisma, user.id, ip);
       throw unauthorized('This account is no longer allowed on this server');
     }
     // GitHub token gone: OAuth clients re-authenticate (and are re-checked); PATs keep working.
@@ -395,7 +389,7 @@ export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
   };
 
   app.post('/mcp', async (req, reply) => {
-    const user = await authenticate(req.headers.authorization, reply, req.ip);
+    const user = await authenticate(req.headers.authorization, reply);
     const server = buildMcpServer(deps, user, req.ip);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -430,7 +424,7 @@ export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
       method,
       url: '/mcp',
       handler: async (req, reply) => {
-        await authenticate(req.headers.authorization, reply, req.ip);
+        await authenticate(req.headers.authorization, reply);
         reply.header('Allow', 'POST');
         return rpcError(reply, 405, 'Method not allowed: this MCP server is stateless (POST only)');
       },

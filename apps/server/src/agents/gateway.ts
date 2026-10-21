@@ -450,7 +450,13 @@ export class AgentGateway {
     c.lastBeat = Date.now();
     await this.deps.prisma.agent.update({
       where: { id: c.agentId },
-      data: { agentVersion: m.payload.agentVersion, lastSeenAt: new Date() },
+      data: {
+        agentVersion: m.payload.agentVersion,
+        lastSeenAt: new Date(),
+        ...(m.payload.claudeTokenPresent !== undefined && {
+          claudeTokenPresent: m.payload.claudeTokenPresent,
+        }),
+      },
     });
     const cfg = await this.configFor(c.agentId);
     c.helloed = true;

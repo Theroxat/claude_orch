@@ -88,6 +88,8 @@ export const AgentViewSchema = z.object({
   lastUsage: AgentUsageSummarySchema.nullable(),
   paused: z.boolean(),
   revokedAt: z.string().nullable(),
+  /** Reported by the agent: has the member run `orch login`? Null/absent = unknown. */
+  claudeTokenPresent: z.boolean().nullish(),
 });
 export type AgentView = z.infer<typeof AgentViewSchema>;
 

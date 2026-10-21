@@ -439,7 +439,7 @@ Every task container is created with:
 
 ### 5.4 Claude credentials
 
-- **Storage:** the member runs `docker compose exec agent orch login` once. It wraps `claude setup-token`, which
+- **Storage:** the member runs `orch login` once. It wraps `claude setup-token`, which
   produces a long-lived OAuth token for the member's own subscription. The agent stores it in the `orch-secrets`
   named volume (`/secrets/claude-token`, 0600), mounted only in the `agent` container. No protocol message has a
   field for it, and a test scans every outbound frame for the token's pattern. It never leaves the machine.
@@ -475,15 +475,15 @@ Every task container is created with:
 - **Manual (`orch take <n>`):** the same prepare/build steps, then the agent starts a **`screen` session inside the
   agent container** called `issue-<n>`. Its command is `docker exec -it orch-task-<n> /opt/orch/bin/claude --model <m>
 "<prompt>"` (interactive, prompt pre-filled). The member attaches with:
-  `docker compose -f ~/orch/compose.yaml exec agent screen -r issue-<n>` (or `… exec agent orch attach <n>`).
+  `orch attach <n>`.
   Detach with `Ctrl-a d`. `orch done <n>` then pushes and opens a ready-for-review PR. Screen lives in the agent
   container, which has the docker CLI, so nothing runs on the host. If the agent container restarts, the screen
   session is lost but the task container survives, and `orch attach <n>` recreates the session. If the member
   wants a shell in the sandbox: `orch shell <n>` (`docker exec -it … bash`).
 - **The CLI** runs inside the agent container and talks to the daemon over `/run/orch.sock`. Usage:
-  `docker compose -f ~/orch/compose.yaml exec agent orch list|take|status|done|pause|resume|attach`.
-  `install.sh` _prints_ an optional shell alias
-  (`alias orch='docker compose -f ~/orch/compose.yaml exec agent orch'`) but doesn't install anything on the host.
+  `orch list|take|status|done|pause|resume|attach|login`.
+  `install.sh` installs a tiny `orch` shortcut in `~/.local/bin` that forwards to the agent container; nothing else
+  is installed on the host.
 - **Cleanup:** after the merge webhook, the server sends `cleanup`. The agent then deletes the clone, the task images and the volumes.
   If the agent is offline, cleanup runs at the next `hello`.
 
@@ -567,7 +567,7 @@ limit, `submit_task` and the web form return an error.
 | `view_pool`   | `{ project?: "owner/repo" }`                                                                                                                                                                                                                                   | members: login, online, paused, mode, ≈margin %, resetAt, running tasks (flagged as estimates)      |
 | `list_tasks`  | `{ project?, status?: [...], mine?: bool, limit? }`                                                                                                                                                                                                            | tasks with number, title, status, size, model, assignee, deps, PR                                   |
 | `submit_task` | `{ project, dispatch: "pool"\|"targeted"\|"broadcast", targets?: [login], integrationBranch?, dryRun?: bool, tasks: [{ ref: "a", title, description, acceptanceCriteria: [..], size: "S"\|"M"\|"L", model: "sonnet"\|"opus", dependsOn?: [ref \| "#123"] }] }` | created tasks with issue URLs, or validation errors (cycle, unknown dep, permission, pending limit) |
-| `take_task`   | `{ project, issueNumber }`                                                                                                                                                                                                                                     | assignment id and how to attach (`… exec agent screen -r issue-<n>`)                                |
+| `take_task`   | `{ project, issueNumber }`                                                                                                                                                                                                                                     | assignment id and how to attach (`orch attach <n>`)                                                 |
 | `task_status` | `{ project, issueNumber }`                                                                                                                                                                                                                                     | status, assignee, attempts, PR, last progress line                                                  |
 
 - `submit_task` is **atomic**: it validates the whole DAG (Kahn's algorithm), then creates a `TaskBatch`, the issues
@@ -704,8 +704,7 @@ The repo's own `compose.yaml` is used as-is.
 
 **R7** Moot: there is no egress control in v1, so build-time network is not a separate concern.
 
-**R8 Screen inside the agent container.** Attaching takes a longer command (`docker compose … exec agent screen -r
-issue-<n>`), and sessions die when the agent restarts or upgrades (the task container survives and `orch attach` re-opens
+**R8 Screen inside the agent container.** Sessions die when the agent restarts or upgrades (the task container survives and `orch attach` re-opens
 a session).
 
 **R9 Docker-only dev.** DinD in dev/CI needs `privileged: true`. That's acceptable for test environments only and never

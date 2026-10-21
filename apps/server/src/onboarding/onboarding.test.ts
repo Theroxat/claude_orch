@@ -89,6 +89,33 @@ describe('GET /api/onboarding', () => {
     expect(s.participation_set.done).toBe(true);
   });
 
+  it('claude_connected follows the Claude login state reported by live agents', async () => {
+    const u = await loginAs(app, gh);
+    const mk = (claudeTokenPresent: boolean | null, lastSeenAt: Date | null = new Date()) =>
+      prisma.agent.create({
+        data: {
+          id: `agt_${uid()}`,
+          userId: u.userId,
+          name: 'laptop',
+          secretHash: uid(),
+          secretPrefix: 'abcdef',
+          lastSeenAt,
+          claudeTokenPresent,
+        },
+      });
+    expect((await steps(u)).claude_connected.state).toBe('unknown');
+    await mk(true, new Date(Date.now() - 60 * 60_000)); // stale: ignored
+    expect((await steps(u)).claude_connected.state).toBe('unknown');
+    await mk(null);
+    expect((await steps(u)).claude_connected.state).toBe('unknown');
+    await mk(false);
+    let s = await steps(u);
+    expect(s.claude_connected).toMatchObject({ state: 'todo', done: false });
+    await mk(true);
+    s = await steps(u);
+    expect(s.claude_connected).toMatchObject({ state: 'done', done: true });
+  });
+
   it('agent_connected needs a recent, non-revoked agent', async () => {
     const u = await loginAs(app, gh);
     const mk = (lastSeenAt: Date | null, revokedAt: Date | null = null) =>

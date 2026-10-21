@@ -276,9 +276,10 @@ describe('sign-in allowlist', () => {
       expect((await me(a2, u.cookie!)).statusCode).toBe(200);
       g.orgs.get(`tok-${u.code}`)!.clear();
       expect((await me(a2, u.cookie!)).statusCode).toBe(401);
+      // Denied, not destroyed: the session row stays so re-adding the user restores it.
       expect(
         await prisma.session.count({ where: { user: { login: { startsWith: 'm2-' } } } }),
-      ).toBe(0);
+      ).toBe(1);
     } finally {
       await a2.close();
     }

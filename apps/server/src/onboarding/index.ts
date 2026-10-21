@@ -44,7 +44,7 @@ export async function computeOnboarding(
     prisma.projectPermission.count({ where: { userId } }),
     prisma.agent.findMany({
       where: { userId, revokedAt: null },
-      select: { id: true, lastSeenAt: true },
+      select: { id: true, lastSeenAt: true, claudeTokenPresent: true },
     }),
     prisma.personalToken.count({
       where: { userId, revokedAt: null, lastUsedAt: { not: null } },
@@ -62,11 +62,19 @@ export async function computeOnboarding(
     }
   }
 
-  const agentOk = agents.some(
+  // Done when any live agent reports a Claude token; todo when an agent is connected and reports
+  // none; unknown without data.
+  const live = agents.filter(
     (a) =>
       gateway.isConnected(a.id) ||
       (a.lastSeenAt !== null && now.getTime() - a.lastSeenAt.getTime() <= AGENT_SEEN_WINDOW_MS),
   );
+  const agentOk = live.length > 0;
+  const claudeState: OnboardingStep['state'] = live.some((a) => a.claudeTokenPresent === true)
+    ? 'done'
+    : live.some((a) => a.claudeTokenPresent === false)
+      ? 'todo'
+      : 'unknown';
   const mcpOk = usedPat > 0 || (await hasOauthGrant(prisma, userId));
 
   return {
@@ -75,8 +83,7 @@ export async function computeOnboarding(
       flag('project_added', ownedCount > 0 || activeParticipation > 0),
       flag('participation_set', activeParticipation > 0 || ownedCount > 0),
       flag('agent_connected', agentOk),
-      // The agent does not report the Claude token yet (field `claudeTokenPresent`).
-      step('claude_connected', 'unknown'),
+      step('claude_connected', claudeState),
       flag('mcp_connected', mcpOk),
     ],
   };

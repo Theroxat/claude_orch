@@ -138,6 +138,9 @@ services:
       ORCH_MACHINE_NAME: alice-laptop
       ORCH_PLAN: max20
       ORCH_USAGE_INTERVAL_SEC: '5'
+      # The agent calibrates its 5h limit from the local Claude history, and these throwaway agents
+      # have none (capacityEstimate would be null and the budget unknown), so give an explicit limit.
+      ORCH_USAGE_LIMIT: '20000000'
       ORCH_WORK_DIR: ${ORCH_E2E_WORK_ALICE:?}
       ORCH_CLAUDE_BIN: /opt/e2e/claude
       ORCH_GIT_BASE_URL: http://fake-github:8080
@@ -158,6 +161,9 @@ services:
       ORCH_MACHINE_NAME: bob-desktop
       ORCH_PLAN: max20
       ORCH_USAGE_INTERVAL_SEC: '5'
+      # The agent calibrates its 5h limit from the local Claude history, and these throwaway agents
+      # have none (capacityEstimate would be null and the budget unknown), so give an explicit limit.
+      ORCH_USAGE_LIMIT: '20000000'
       ORCH_WORK_DIR: ${ORCH_E2E_WORK_BOB:?}
       ORCH_CLAUDE_BIN: /opt/e2e/claude
       ORCH_GIT_BASE_URL: http://fake-github:8080

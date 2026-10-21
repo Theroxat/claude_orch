@@ -77,6 +77,23 @@ describe('My server', () => {
     });
   });
 
+  it('shows the Claude login state reported by the agent', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /agents/mine': () => ({
+        json: [
+          agent({ id: 'a1', machineName: 'laptop', claudeTokenPresent: true }),
+          agent({ id: 'a2', machineName: 'desktop', claudeTokenPresent: false }),
+        ],
+      }),
+    });
+    renderApp('/my-server');
+    const ok = await screen.findByRole('article', { name: 'laptop' });
+    expect(within(ok).getByText('Claude: connected')).toBeTruthy();
+    const todo = await screen.findByRole('article', { name: 'desktop' });
+    expect(todo.textContent).toContain('Claude: not connected: run orch login');
+  });
+
   it('lists machines with the usage estimate label', async () => {
     mockApi({
       'GET /me': () => ({ json: me }),

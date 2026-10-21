@@ -625,7 +625,7 @@ describe('take_task, task_status, view_pool, list_tasks', () => {
     expect(r.data).toMatchObject({
       issueNumber: a,
       machine: 'laptop',
-      attachCommand: `docker compose -f ~/orch/compose.yaml exec agent screen -r issue-${a}`,
+      attachCommand: `orch attach ${a}`,
     });
     const offer = await m.client.next('task.offer');
     expect(offer.replyTo).toBeUndefined();

@@ -255,6 +255,7 @@ model Agent {
   secretPrefix String // first 6 chars of the secret, for display
   lastSeenAt   DateTime?
   lastUsageAt  DateTime?
+  claudeTokenPresent Boolean? // null = never reported
   paused       Boolean   @default(false)
   pausedAt     DateTime?
   pauseSource  String? // "web" | "agent"

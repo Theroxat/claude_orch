@@ -607,7 +607,7 @@ describe('PATs, allowlist, grants page', () => {
     expect((await mcpCall(body.token)).statusCode).toBe(200);
   });
 
-  it('a user removed from the allowlist is refused and loses every token', async () => {
+  it('a user removed from the allowlist is denied everywhere, but nothing is destroyed', async () => {
     const user = await loginAs(app, gh);
     const { clientId, tokens } = await fullFlow(user);
     const pat = (await api(app, user)('POST', '/api/tokens', { name: 'p' })).json<{
@@ -617,17 +617,29 @@ describe('PATs, allowlist, grants page', () => {
     const restricted = makeApp(gh, { env: { ORCH_ALLOWED_GITHUB_LOGINS: 'somebody-else' } });
     expect((await mcpCall(tokens.access_token, restricted)).statusCode).toBe(401);
     expect((await mcpCall(pat.token, restricted)).statusCode).toBe(401);
-    // Revoked for good, also on the unrestricted server.
-    expect((await mcpCall(tokens.access_token)).statusCode).toBe(401);
-    expect((await mcpCall(pat.token)).statusCode).toBe(401);
+    expect((await api(restricted, user)('GET', '/api/tokens')).statusCode).toBe(401);
     const ref = await token(
       { grant_type: 'refresh_token', client_id: clientId, refresh_token: tokens.refresh_token },
       restricted,
     );
     expect(ref.json()).toMatchObject({ error: 'invalid_grant' });
+    // Nothing was revoked: the rows are intact and access returns with the user.
     expect(
-      await prisma.auditLog.count({ where: { actorUserId: user.userId, action: 'auth.revoked' } }),
-    ).toBeGreaterThan(0);
+      await prisma.personalToken.count({ where: { userId: user.userId, revokedAt: null } }),
+    ).toBe(1);
+    expect(await prisma.oAuthGrant.count({ where: { userId: user.userId, revokedAt: null } })).toBe(
+      1,
+    );
+    expect(await prisma.session.count({ where: { userId: user.userId } })).toBeGreaterThan(0);
+    expect((await mcpCall(tokens.access_token)).statusCode).toBe(200);
+    expect((await mcpCall(pat.token)).statusCode).toBe(200);
+    expect((await api(app, user)('GET', '/api/tokens')).statusCode).toBe(200);
+    const again = await token({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: tokens.refresh_token,
+    });
+    expect(again.statusCode).toBe(200);
     await restricted.close();
   });
 

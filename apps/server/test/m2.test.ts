@@ -130,8 +130,9 @@ class Client {
     return this.next('ack', (m) => m.replyTo === id);
   }
 
-  async hello() {
+  async hello(extra: { claudeTokenPresent?: boolean } = {}) {
     const m = agentMessage('hello', {
+      ...extra,
       agentVersion: '0.2.0',
       capabilities: ['manual'],
       localPaused: false,
@@ -403,6 +404,23 @@ describe('agent websocket protocol', () => {
     expect(after.getTime()).toBeGreaterThan(before.getTime());
     expect(await client.closed).toBe(CloseCode.HEARTBEAT_TIMEOUT);
     expect((await viewOf(user, agentId)).connected).toBe(false);
+  });
+
+  it('hello and usage.report store claudeTokenPresent (absent keeps the last value)', async () => {
+    const { user, agentId, client } = await onlineAgent();
+    const claude = async () =>
+      (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).claudeTokenPresent;
+    expect(await claude()).toBeNull();
+    await client.hello({ claudeTokenPresent: false });
+    expect(await claude()).toBe(false);
+    expect((await viewOf(user, agentId)).claudeTokenPresent).toBe(false);
+    const m = agentMessage('usage.report', { ...usage(), claudeTokenPresent: true });
+    client.send(m);
+    await client.ackFor(m.id);
+    expect(await claude()).toBe(true);
+    await client.hello();
+    expect(await claude()).toBe(true);
+    client.close();
   });
 
   it('usage.report is stored and acked; a replay is a duplicate', async () => {

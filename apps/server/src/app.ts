@@ -59,7 +59,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
   });
   installErrorHandling(app);
 
-  const health = async () => ({ status: 'ok' as const });
+  const version = (process.env.ORCH_VERSION ?? '').trim().replace(/^v/, '') || 'dev';
+  const health = async () => ({ status: 'ok' as const, version });
   app.get('/healthz', health);
   app.get('/api/healthz', health);
 

@@ -27,32 +27,10 @@ declare module 'fastify' {
 export interface Allowlist {
   /**
    * Whether the user may still use orch. `reauth` when the decision needs the user's GitHub
-   * token and it can no longer be refreshed (treated as signed out, nothing is revoked).
+   * token and it can no longer be refreshed (treated as signed out).
    */
   check(user: User): Promise<'allowed' | 'refused' | 'reauth'>;
   isAllowed(login: string, accessToken: () => Promise<string>, cacheKey?: string): Promise<boolean>;
-}
-
-/**
- * Called when a user is no longer on the allowlist: every credential goes (sessions, OAuth
- * grants and their tokens, personal access tokens).
- */
-export async function revokeUserAccess(
-  prisma: PrismaClient,
-  userId: string,
-  ip?: string,
-): Promise<void> {
-  const now = new Date();
-  await prisma.session.deleteMany({ where: { userId } });
-  await prisma.oAuthGrant.updateMany({
-    where: { userId, revokedAt: null },
-    data: { revokedAt: now },
-  });
-  await prisma.personalToken.updateMany({
-    where: { userId, revokedAt: null },
-    data: { revokedAt: now },
-  });
-  await audit(prisma, { actorUserId: userId, action: 'auth.revoked', ip });
 }
 
 /** A relative in-app path that is safe to redirect to after sign-in, or null. */
@@ -246,10 +224,9 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     }
     // Token expired or revoked: treated as signed out, the user signs in again (and is checked).
     if (decision === 'reauth') return;
-    if (decision === 'refused') {
-      await revokeUserAccess(prisma, session.userId, req.ip);
-      return;
-    }
+    // Not allowlisted: access is denied while that lasts. Nothing is deleted or revoked, so
+    // re-adding the user restores their sessions, PATs and OAuth grants.
+    if (decision === 'refused') return;
     req.user = session.user;
   });
 

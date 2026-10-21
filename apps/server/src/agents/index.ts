@@ -74,6 +74,7 @@ export function registerAgents(
       lastUsage: last ? toUsageSummary(last) : null,
       paused: a.paused,
       revokedAt: a.revokedAt?.toISOString() ?? null,
+      claudeTokenPresent: a.claudeTokenPresent,
     };
   }
 
@@ -249,6 +250,11 @@ export function registerAgents(
           !sameHash(sha256Hex(parsed.secret), agent.secretHash)
         ) {
           throw new HttpError(401, 'unauthorized', 'Invalid agent credential');
+        }
+        // A user who left the allowlist is denied (agents are kept; re-adding restores them).
+        const owner = await prisma.user.findUnique({ where: { id: agent.userId } });
+        if (!owner || (await app.allowlist.check(owner)) === 'refused') {
+          throw new HttpError(401, 'unauthorized', 'This account is no longer allowed');
         }
         authed.set(req, agent);
       },

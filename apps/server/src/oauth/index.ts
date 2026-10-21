@@ -31,7 +31,7 @@ import {
   type OAuthGrantView,
 } from '@orch/shared';
 import { audit } from '../audit';
-import { requireUser, revokeUserAccess, type AuthDeps } from '../auth';
+import { requireUser, type AuthDeps } from '../auth';
 import { randomToken, sha256Hex } from '../auth/crypto';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
@@ -559,11 +559,10 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
       };
     }
 
-    /** The allowlist applies to tokens too: a removed user loses everything. */
-    async function ensureAllowed(user: User, ip: string) {
+    /** The allowlist applies to tokens too: a removed user is denied (nothing is revoked). */
+    async function ensureAllowed(user: User) {
       const decision = await app.allowlist.check(user);
       if (decision === 'refused') {
-        await revokeUserAccess(prisma, user.id, ip);
         throw new OAuthError('invalid_grant', 'This account is no longer allowed on this server');
       }
       if (decision === 'reauth') {
@@ -610,7 +609,7 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
       if (resource !== undefined && resource !== row.resource) {
         throw new OAuthError('invalid_target', 'resource does not match the authorization request');
       }
-      await ensureAllowed(row.user, req.ip);
+      await ensureAllowed(row.user);
       const grant = await prisma.oAuthGrant.create({
         data: { userId: row.userId, clientId: client.id, resource: row.resource, scope: row.scope },
       });
@@ -640,6 +639,8 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
       }
       const { user, ...grant } = row.grant;
       if (grant.revokedAt) throw new OAuthError('invalid_grant', 'Grant revoked');
+      // Denied before rotating, so a temporarily removed user keeps a usable refresh token.
+      await ensureAllowed(user);
       // Rotation: the first use wins; any later use is a replay and kills the family.
       const used = await prisma.oAuthToken.updateMany({
         where: { tokenHash, usedAt: null },
@@ -656,7 +657,6 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
       if (resource !== undefined && resource !== grant.resource) {
         throw new OAuthError('invalid_target', 'resource does not match the grant');
       }
-      await ensureAllowed(user, req.ip);
       const tokens = await issueTokens(grant);
       await audit(prisma, {
         actorUserId: grant.userId,

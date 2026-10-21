@@ -62,6 +62,17 @@ export function AgentCard({
       <p className="hint">
         Version {agent.version ?? 'unknown'} · Last seen {relativeTime(agent.lastSeenAt)}
       </p>
+      {agent.claudeTokenPresent != null && (
+        <p className="hint">
+          {agent.claudeTokenPresent ? (
+            'Claude: connected'
+          ) : (
+            <>
+              Claude: not connected: run <code>orch login</code>
+            </>
+          )}
+        </p>
+      )}
       <UsageEstimate usage={agent.lastUsage} />
       {agent.paused && (
         <div className="warning" role="status">

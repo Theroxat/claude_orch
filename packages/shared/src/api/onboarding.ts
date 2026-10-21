@@ -3,9 +3,9 @@
  * Computed from existing data (no table). Each step is `done` (true/false) with a `state`:
  * `unknown` means the server cannot tell yet (never counts as done).
  *
- * `claude_connected` is `unknown` until the agent reports the Claude token presence. Field the
- * agent should send: `claudeTokenPresent: boolean` (optional) in the `hello` payload and in the
- * `usage.report` payload.
+ * `claude_connected` comes from the agent-reported `claudeTokenPresent` (in `hello` and
+ * `usage.report`): done when any live agent reports true, todo when a live agent reports false,
+ * unknown without data.
  */
 import { z } from 'zod';
 

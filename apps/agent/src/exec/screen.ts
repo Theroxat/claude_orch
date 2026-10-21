@@ -1,8 +1,7 @@
 /**
  * Manual-mode sessions (PLAN 5.6): a detached `screen` session inside the agent container runs
  * `docker exec -it <task> claude ...`. The member attaches with
- * `orch attach <n>` (host shortcut for
- * `docker compose -f ~/orch/compose.yaml exec agent orch attach <n>`).
+ * `orch attach <n>` (host shortcut that forwards to the agent container).
  */
 import { runOk, type CommandRunner } from './runner';
 

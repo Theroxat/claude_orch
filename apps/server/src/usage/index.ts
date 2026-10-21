@@ -34,7 +34,13 @@ export async function recordUsage(
         source: p.source,
       },
     }),
-    prisma.agent.update({ where: { id: agent.id }, data: { lastUsageAt: now } }),
+    prisma.agent.update({
+      where: { id: agent.id },
+      data: {
+        lastUsageAt: now,
+        ...(p.claudeTokenPresent !== undefined && { claudeTokenPresent: p.claudeTokenPresent }),
+      },
+    }),
   ]);
 }
 
