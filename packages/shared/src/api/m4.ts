@@ -12,7 +12,8 @@
  *          409 `paused`, 409 `no_agent_online`, 409 `not_participating`, 404 for other users' offers.
  *   POST   /api/offers/:id/reject    -> OfferView     the next candidate gets the task.
  *   GET    /api/pool[?projectId=]    -> PoolResponse  members of the caller's projects (owned or
- *          participating). Every usage figure is an ESTIMATE.
+ *          participating). With `projectId`, also for a submitter of that project (to pick
+ *          `members` targets). Every usage figure is an ESTIMATE.
  *   POST   /api/github/webhook       GitHub App webhook. HMAC SHA-256 (`X-Hub-Signature-256`,
  *          secret from GITHUB_WEBHOOK_SECRET) checked in constant time: 401 `bad_signature`.
  *          `X-GitHub-Delivery` dedupe: a replay answers 200 `{ ok: true, duplicate: true }`.

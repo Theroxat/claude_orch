@@ -12,7 +12,9 @@ import type { PrismaClient } from '../db';
 import { usageState } from '../dispatch/budget';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
-import { participationStatus } from '../projects/service';
+import type { GithubClient } from '../github';
+import { canSubmit } from '../projects/roles';
+import { getRoleInfo, participationStatus } from '../projects/service';
 
 const offerInclude = {
   task: { include: { project: true, createdBy: true } },
@@ -107,10 +109,13 @@ export interface PoolDeps {
   config: Config;
   dispatcher: Dispatcher;
   gateway: AgentGateway;
+  github?: GithubClient;
 }
 
 /**
  * Members of the caller's projects (owned or participating), every usage figure an ESTIMATE.
+ * With `projectId`, a submitter of that project who does not participate sees it too: they may
+ * send a task to specific members and need to know who participates.
  * Shared by `GET /api/pool` and the MCP `view_pool` tool. 404 when `projectId` is not visible.
  */
 export async function buildPool(
@@ -137,7 +142,9 @@ export async function buildPool(
       ),
   );
   if (projectId && projects.length === 0) {
-    throw new HttpError(404, 'not_found', 'Project not found');
+    const asSubmitter = await submitterProject(deps, user, projectId);
+    if (!asSubmitter) throw new HttpError(404, 'not_found', 'Project not found');
+    projects.push(asSubmitter);
   }
   const owned = new Set(projects.filter((p) => p.addedById === user.id).map((p) => p.id));
   const parts = await prisma.participation.findMany({
@@ -219,4 +226,17 @@ export async function buildPool(
       isOwner: owned.has(p.id),
     })),
   };
+}
+
+/** The project when the user may submit tasks to it (same rule as task creation), else null. */
+async function submitterProject(deps: PoolDeps, user: User, projectId: string) {
+  const project = await deps.prisma.project.findFirst({
+    where: { id: projectId, archivedAt: null },
+    include: { installation: true },
+  });
+  if (!project) return null;
+  const info = await getRoleInfo(deps.prisma, deps.github, project, user);
+  const policy = project.submissionPolicy === 'ALLOWLIST' ? 'ALLOWLIST' : 'GITHUB';
+  if (!canSubmit(policy, info.role, info)) return null;
+  return { ...project, participations: [] };
 }
