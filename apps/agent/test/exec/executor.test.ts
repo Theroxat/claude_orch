@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { serverMessage, type ServerMessage } from '@orch/shared';
+import { TaskFinishedPayloadSchema, serverMessage, type ServerMessage } from '@orch/shared';
 import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
 import { silentLogger } from '../../src/log';
 import { tempDir } from '../helpers/util';
@@ -226,6 +226,21 @@ describe('ManualExecutor take -> done', () => {
     expect(t.git.calls.some((c) => c[0] === 'push')).toBe(false);
     expect(t.of('task.pushed')).toEqual([]);
     expect(t.of('task.finished')[0]?.payload.outcome).toBe('no_changes');
+  });
+
+  it('sends integer token counts even when the task wrote fractional ones', async () => {
+    const t = setup();
+    t.git.ahead = 0;
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    // The task can write its own Claude logs: a fractional count must not break the schema.
+    t.docker.usageJsonl = JSON.stringify({
+      timestamp: '2026-10-21T10:00:00Z',
+      message: { id: 'm1', usage: { input_tokens: 1.5, output_tokens: 2.4 } },
+    });
+    await t.ex.done(42);
+    const finished = t.of('task.finished')[0]!;
+    expect(TaskFinishedPayloadSchema.safeParse(finished.payload).success).toBe(true);
   });
 
   it('keeps the task running when the push fails', async () => {

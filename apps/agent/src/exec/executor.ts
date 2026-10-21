@@ -1144,7 +1144,10 @@ export class ManualExecutor {
     } catch (err) {
       this.log.warn('could not read task usage', { error: errorMessage(err) });
     }
+    // The task writes these logs itself: the protocol wants integer token counts.
     usage.weighted = Math.round(usage.weighted);
+    usage.input = Math.round(usage.input);
+    usage.output = Math.round(usage.output);
     return usage;
   }
 
