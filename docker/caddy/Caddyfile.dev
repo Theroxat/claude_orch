@@ -1,0 +1,19 @@
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	handle /caddy-health {
+		respond "ok" 200
+	}
+	handle /api/* {
+		reverse_proxy server:3000
+	}
+	handle /healthz {
+		reverse_proxy server:3000
+	}
+	handle {
+		reverse_proxy web:5173
+	}
+}

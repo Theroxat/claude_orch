@@ -1,0 +1,40 @@
+#!/bin/sh
+# Dev wrapper: every command runs through docker compose. No host node or pnpm.
+set -eu
+cd "$(dirname "$0")"
+
+[ -f .env ] || cp .env.example .env
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+export HOST_UID HOST_GID
+
+dc() { docker compose -f compose.dev.yaml "$@"; }
+tools() { dc --profile tools run --rm -T tools "$@"; }
+
+cmd="${1:-help}"
+[ "$#" -gt 0 ] && shift
+
+case "$cmd" in
+  build-tools) dc --profile tools build tools ;;
+  install) dc --profile tools build tools && tools pnpm install --no-frozen-lockfile "$@" ;;
+  lint) tools sh -c 'pnpm exec eslint . && pnpm exec prettier --check .' ;;
+  format) tools pnpm exec prettier --write . ;;
+  typecheck) tools pnpm -r typecheck ;;
+  test) tools pnpm -r test "$@" ;;
+  build) tools pnpm -r build ;;
+  prisma) tools pnpm --filter @orch/server exec prisma "$@" ;;
+  pnpm) tools pnpm "$@" ;;
+  sh) dc --profile tools run --rm tools sh ;;
+  up)
+    dc --profile tools build tools
+    tools pnpm install --no-frozen-lockfile
+    dc up -d --build --wait "$@"
+    echo "web: http://localhost:${ORCH_DEV_WEB_PORT:-8470}  api: http://localhost:${ORCH_DEV_API_PORT:-8471}"
+    ;;
+  down) dc --profile tools down "$@" ;;
+  logs) dc logs -f "$@" ;;
+  ps) dc ps ;;
+  help | *)
+    echo "usage: ./dev <install|lint|format|typecheck|test|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
+    ;;
+esac

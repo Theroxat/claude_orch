@@ -1,0 +1,107 @@
+name: orch-dev
+
+x-node: &node
+  image: orch-tools:dev
+  user: '${HOST_UID:-1000}:${HOST_GID:-1000}'
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+
+services:
+  tools:
+    <<: *node
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    profiles: ['tools']
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:-change-me-dev-only}@postgres:5432/${POSTGRES_DB:-orch}
+      DATABASE_URL_TEST: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:-change-me-dev-only}@postgres:5432/${POSTGRES_TEST_DB:-orch_test}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-dev-only}
+      POSTGRES_DB: ${POSTGRES_DB:-orch}
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-orch_test}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  server:
+    <<: *node
+    command: sh -c "pnpm --filter @orch/server exec prisma generate && pnpm --filter @orch/server exec prisma migrate deploy && pnpm --filter @orch/server dev"
+    ports:
+      - '${ORCH_DEV_API_PORT:-8471}:3000'
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: '3000'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ORCH_BASE_URL: ${ORCH_BASE_URL:-http://localhost:8470}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:-change-me-dev-only}@postgres:5432/${POSTGRES_DB:-orch}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      ORCH_ENCRYPTION_KEY: ${ORCH_ENCRYPTION_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+  web:
+    <<: *node
+    command: pnpm --filter @orch/web dev
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - '${ORCH_DEV_WEB_PORT:-8470}:80'
+    volumes:
+      - ./docker/caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+    depends_on:
+      server:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:80/caddy-health']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

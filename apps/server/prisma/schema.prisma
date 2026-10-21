@@ -1,0 +1,149 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Visibility {
+  ALL_MEMBERS
+  COLLABORATORS
+  ALLOWLIST
+}
+
+enum Policy {
+  GITHUB
+  ALLOWLIST
+  ALL_MEMBERS
+}
+
+enum GithubRole {
+  ADMIN
+  MAINTAIN
+  WRITE
+  TRIAGE
+  READ
+  NONE
+}
+
+enum ParticipationMode {
+  AUTO
+  APPROVAL
+}
+
+enum Model {
+  SONNET
+  OPUS
+}
+
+model User {
+  id                String    @id @default(cuid())
+  githubId          BigInt    @unique
+  login             String    @unique
+  name              String?
+  avatarUrl         String?
+  ghAccessTokenEnc  Bytes? // user-to-server token, AES-256-GCM encrypted
+  ghRefreshTokenEnc Bytes?
+  ghTokenExpiresAt  DateTime?
+  paused            Boolean   @default(false)
+  maxConcurrent     Int       @default(1)
+  maxPendingTasks   Int       @default(20)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  sessions       Session[]
+  participations Participation[]
+  permissions    ProjectPermission[]
+  addedProjects  Project[]           @relation("ProjectAddedBy")
+}
+
+model Session {
+  id        String   @id // sha256 of the cookie value
+  userId    String
+  expiresAt DateTime
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Installation {
+  id                   String    @id @default(cuid())
+  githubInstallationId BigInt    @unique
+  accountLogin         String
+  accountType          String
+  suspendedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  projects Project[]
+}
+
+model Project {
+  id                         String     @id @default(cuid())
+  githubRepoId               BigInt     @unique
+  fullName                   String     @unique // "owner/repo"
+  installationId             String
+  defaultBranch              String
+  isPrivate                  Boolean
+  visibility                 Visibility @default(COLLABORATORS)
+  participationPolicy        Policy     @default(GITHUB)
+  submissionPolicy           Policy     @default(GITHUB)
+  poolLabel                  String     @default("pool")
+  requireParticipantApproval Boolean    @default(true)
+  sizeBudgets                Json?
+  addedById                  String
+  archivedAt                 DateTime?
+  createdAt                  DateTime   @default(now())
+  updatedAt                  DateTime   @updatedAt
+
+  installation   Installation        @relation(fields: [installationId], references: [id])
+  addedBy        User                @relation("ProjectAddedBy", fields: [addedById], references: [id])
+  permissions    ProjectPermission[]
+  participations Participation[]
+
+  @@index([installationId])
+}
+
+model ProjectPermission {
+  id             String     @id @default(cuid())
+  projectId      String
+  userId         String
+  githubRole     GithubRole
+  canSubmit      Boolean? // null = derive from githubRole; set only by the project owner
+  canParticipate Boolean?
+  syncedAt       DateTime
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model Participation {
+  id            String            @id @default(cuid())
+  userId        String
+  projectId     String
+  active        Boolean           @default(false)
+  approvedAt    DateTime? // set by an owner when approval is required; null = pending
+  percent       Int // 0..100; the app enforces sum(active) <= 100 per user
+  mode          ParticipationMode
+  allowedModels Model[]           @default([SONNET, OPUS])
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([projectId, active])
+}

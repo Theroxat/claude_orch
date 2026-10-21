@@ -1,0 +1,32 @@
+# secrets
+.env
+.env.*
+!.env.example
+!*.env.example
+*.pem
+*.key
+secrets/
+*.secret
+
+# dependencies and build output
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# runtime volumes and data
+volumes/
+data/
+work/
+pgdata/
+*.log
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code local state
+.claude/
