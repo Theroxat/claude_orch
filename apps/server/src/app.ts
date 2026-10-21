@@ -5,9 +5,19 @@ import { registerAuth } from './auth';
 import type { Config } from './config';
 import type { PrismaClient } from './db';
 import type { GithubClient } from './github';
+import { Dispatcher } from './dispatch/dispatcher';
 import { installErrorHandling } from './http/errors';
+import { registerOffers } from './offers';
 import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
+import { registerTasks } from './tasks';
+import { registerWebhooks } from './webhooks';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    dispatcher: Dispatcher;
+  }
+}
 
 export interface AppDeps {
   config: Config;
@@ -30,12 +40,22 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
 
   if (prisma) {
     const deps = { config, prisma, github };
+    const gateway = createAgentGateway(app, deps);
+    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
+    gateway.setDispatcher(dispatcher);
+    app.decorate('dispatcher', dispatcher);
+    app.addHook('onReady', async () => dispatcher.start());
+    // Runs before the gateway's onClose (hooks run in order): no tick sends on closed sockets.
+    app.addHook('preClose', async () => dispatcher.stop());
+    const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
     registerProjects(app, deps);
-    registerParticipation(app, deps);
-    const gateway = createAgentGateway(app, deps);
+    registerParticipation(app, m4);
+    registerTasks(app, m4);
+    registerOffers(app, m4);
+    registerWebhooks(app, m4);
     app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
-    app.register(async (scope) => registerAgents(scope, deps, gateway));
+    app.register(async (scope) => registerAgents(scope, m4, gateway));
   }
 
   return app;

@@ -486,7 +486,7 @@ describe('agent websocket protocol', () => {
     expect(await a.client.closed).toBe(CloseCode.PROTOCOL_ERROR);
   });
 
-  it('token.request is denied until M4', async () => {
+  it('token.request for an unknown assignment is denied', async () => {
     const { client } = await onlineAgent();
     const m = agentMessage('token.request', {
       requestId: 'r1',
@@ -496,7 +496,7 @@ describe('agent websocket protocol', () => {
     client.send(m);
     expect((await client.next('token.deny')).payload).toEqual({
       requestId: 'r1',
-      reason: 'not_implemented',
+      reason: 'unknown_assignment',
     });
     client.close();
   });
@@ -592,8 +592,13 @@ describe('pause', () => {
     await client.ackFor(r.id);
     const accept2 = agentMessage('offer.accept', { assignmentId: 'x', execMode: 'AUTO' });
     client.send(accept2);
-    expect((await client.ackFor(accept2.id)).payload.error?.code).toBe('not_implemented');
-    await app.agentGateway.sendOffer(agentId, offer);
+    // M4: offers are real now; an unknown assignment is not found.
+    expect((await client.ackFor(accept2.id)).payload.error?.code).toBe('not_found');
+    // M4 consent guard: no AUTO_OFFER without an active AUTO-mode participation.
+    await expect(app.agentGateway.sendOffer(agentId, offer)).rejects.toMatchObject({
+      reason: 'no_consent',
+    });
+    await app.agentGateway.sendOffer(agentId, { ...offer, kind: 'CLAIM' });
     await client.next('task.offer');
     client.close();
     await client.closed;

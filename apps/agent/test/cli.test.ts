@@ -41,9 +41,9 @@ async function startServer(path = join(tmp.dir, 'orch.sock')) {
   server = await startControlServer(
     path,
     {
-      status,
-      pause: () => ((paused = true), status()),
-      resume: () => ((paused = false), status()),
+      status: () => ({ status: status() }),
+      pause: () => ((paused = true), { status: status() }),
+      resume: () => ((paused = false), { status: status() }),
     },
     silentLogger,
   );
@@ -81,7 +81,7 @@ describe('control socket', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(await sendControl(path, { cmd: 'status' })).toEqual({ ok: true, status: status() });
     const p = await sendControl(path, { cmd: 'pause' });
-    expect(p.ok && p.status.paused).toBe(true);
+    expect(p.ok && p.status?.paused).toBe(true);
 
     const reply = await new Promise<string>((res) => {
       const c = createConnection(path, () => c.write('{"cmd":"explode"}\n'));
@@ -124,7 +124,9 @@ describe('orch CLI', () => {
     expect(c.out.join('')).toMatch(/^Resumed\./);
     const d = io();
     expect(await runCli(['take', '12'], d.io, env)).toBe(1);
-    expect(d.err.join('')).toContain('not available yet (M3)');
+    expect(d.err.join('')).toContain('take is not available on this agent');
+    const e = io();
+    expect(await runCli(['take', 'abc'], e.io, env)).toBe(2);
     const h = io();
     expect(await runCli(['help'], h.io, env)).toBe(0);
     expect(h.out.join('')).toContain('Usage: orch');

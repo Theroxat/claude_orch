@@ -1,10 +1,70 @@
 /** Agent daemon entry: config -> credential -> Agent. Graceful shutdown on SIGTERM/SIGINT. */
-import { Agent } from './agent';
+import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import { Agent, type AgentOptions } from './agent';
+import type { AgentConfig } from './config';
+import { CliDocker } from './exec/docker';
+import { CliGit } from './exec/git';
+import { spawnRunner } from './exec/runner';
+import { CliScreen } from './exec/screen';
+import { nodeWorkspaceFs } from './exec/workspace';
+import type { Logger } from './log';
 import { ConfigError, loadConfig } from './config';
 import { CredentialError, resolveCredential } from './credential';
 import { createLogger, errorMessage, redact } from './log';
 import { jsonlUsageSource } from './usage-loop';
 import { AGENT_VERSION } from './version';
+
+/** Reads `/secrets/claude-token` at use time (never cached, never logged). */
+function readClaudeToken(secretsDir: string): string | null {
+  try {
+    const t = readFileSync(join(secretsDir, 'claude-token'), 'utf8').trim();
+    return t === '' ? null : t;
+  } catch {
+    return null;
+  }
+}
+
+function execOptions(cfg: AgentConfig, log: Logger): AgentOptions['exec'] {
+  if (!cfg.workDir) {
+    log.warn('ORCH_WORK_DIR is not set: task execution is disabled');
+    return undefined;
+  }
+  if (!isAbsolute(cfg.claudeBin)) {
+    log.warn('ORCH_CLAUDE_BIN must be an absolute path: task execution is disabled');
+    return undefined;
+  }
+  let uid = cfg.taskUid;
+  let gid = cfg.taskGid;
+  try {
+    const st = statSync(cfg.workDir);
+    uid ??= st.uid > 0 ? st.uid : 1000;
+    gid ??= st.uid > 0 ? st.gid : 1000;
+  } catch {
+    uid ??= 1000;
+    gid ??= 1000;
+  }
+  return {
+    config: {
+      workDir: cfg.workDir,
+      dataDir: cfg.dataDir,
+      maxConcurrent: cfg.maxConcurrent,
+      gitBaseUrl: cfg.gitBaseUrl,
+      defaultImage: cfg.defaultImage,
+      claudeBin: cfg.claudeBin,
+      uid,
+      gid,
+      identity: cfg.gitAuthor,
+    },
+    deps: {
+      git: new CliGit(spawnRunner, cfg.gitBaseUrl),
+      docker: new CliDocker(spawnRunner),
+      screen: new CliScreen(spawnRunner),
+      fs: nodeWorkspaceFs,
+      readClaudeToken: () => readClaudeToken(cfg.secretsDir),
+    },
+  };
+}
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -29,6 +89,7 @@ async function main(): Promise<void> {
     usageIntervalExplicit: cfg.usageIntervalExplicit,
     usageSource: jsonlUsageSource({ root: cfg.claudeUsageRoot, plan: cfg.plan }),
     logger: log,
+    exec: execOptions(cfg, log),
   });
   agent.client.on('fatal', () => {
     log.error('the agent stays up for `orch status` but will not reconnect');

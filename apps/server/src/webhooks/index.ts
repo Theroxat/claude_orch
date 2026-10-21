@@ -1,0 +1,474 @@
+/**
+ * GitHub App webhook (M4): POST /api/github/webhook.
+ *
+ * - Signature: `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`, compared in
+ *   constant time. The secret comes from GITHUB_WEBHOOK_SECRET (never from a file in the repo).
+ * - Dedupe: `X-GitHub-Delivery` is stored in WebhookDelivery; a replay is answered 200 without
+ *   doing anything. If processing fails the row is removed so GitHub's redelivery is processed.
+ *
+ * Events:
+ *   issues.labeled (project pool label, by a write+ user)  -> import as a task
+ *   issues.closed                                          -> CANCELLED if not started
+ *   issues.edited (body changed, task not started)         -> new snapshot, back to PROPOSED
+ *   pull_request.opened|reopened on `orch/issue-<n>-*`     -> IN_REVIEW
+ *   pull_request.closed merged                             -> DONE, dependents unblocked, cleanup
+ *   pull_request.closed not merged                         -> back to TODO, cleanup
+ *   installation, installation_repositories                -> installations / projects updated
+ */
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { Prisma } from '@prisma/client';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { serverMessage, type WebhookResponse } from '@orch/shared';
+import { audit } from '../audit';
+import type { AuthDeps } from '../auth';
+import type { Dispatcher } from '../dispatch/dispatcher';
+import type { AgentGateway } from '../agents/gateway';
+import { HttpError } from '../http/errors';
+import { TaskService } from '../tasks/service';
+import { bodyHash, parseIssueBody } from '../tasks/meta';
+
+const WRITE_ROLES = ['ADMIN', 'MAINTAIN', 'WRITE'];
+const BRANCH_RE = /^orch\/issue-(\d+)(?:-|$)/;
+
+/** Constant-time check of `sha256=<hex>` against the raw body. */
+export function verifySignature(secret: string, raw: Buffer, header: string | undefined): boolean {
+  if (!header || !header.startsWith('sha256=')) return false;
+  const got = Buffer.from(header.slice(7), 'hex');
+  const want = createHmac('sha256', secret).update(raw).digest();
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+
+export function signBody(secret: string, raw: string | Buffer): string {
+  return `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+}
+
+interface Payload {
+  action?: string;
+  sender?: { id: number; login: string };
+  repository?: { id: number; full_name: string };
+  installation?: { id: number; account?: { login?: string; type?: string } };
+  issue?: {
+    number: number;
+    node_id: string;
+    html_url: string;
+    title: string;
+    body?: string | null;
+    labels?: Array<{ name?: string } | string>;
+    pull_request?: unknown;
+  };
+  label?: { name?: string };
+  changes?: { body?: unknown; title?: unknown };
+  pull_request?: {
+    number: number;
+    html_url: string;
+    merged?: boolean;
+    head: { ref: string; sha: string };
+    base: { ref: string };
+  };
+  repositories_added?: Array<{ id: number; full_name: string }>;
+  repositories_removed?: Array<{ id: number; full_name: string }>;
+}
+
+export function registerWebhooks(
+  app: FastifyInstance,
+  deps: AuthDeps & { dispatcher: Dispatcher; gateway: AgentGateway },
+): void {
+  const { prisma, config, dispatcher, gateway } = deps;
+  const tasks = new TaskService(deps);
+
+  app.register(async (scope) => {
+    // Raw body for the HMAC: this scope parses JSON itself after the check.
+    scope.removeContentTypeParser('application/json');
+    scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) =>
+      done(null, body),
+    );
+
+    scope.post('/api/github/webhook', async (req, reply): Promise<WebhookResponse> => {
+      const secret = config.GITHUB_WEBHOOK_SECRET;
+      if (!secret) throw new HttpError(503, 'webhook_not_configured', 'Webhook secret is not set');
+      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const sig = req.headers['x-hub-signature-256'];
+      if (!verifySignature(secret, raw, typeof sig === 'string' ? sig : undefined)) {
+        throw new HttpError(401, 'bad_signature', 'Invalid webhook signature');
+      }
+      const event = header(req, 'x-github-event');
+      const deliveryId = header(req, 'x-github-delivery');
+      if (!event || !deliveryId) {
+        throw new HttpError(400, 'invalid_request', 'Missing X-GitHub-Event or X-GitHub-Delivery');
+      }
+      let payload: Payload;
+      try {
+        payload = JSON.parse(raw.toString('utf8')) as Payload;
+      } catch {
+        throw new HttpError(400, 'invalid_json', 'Malformed JSON body');
+      }
+      try {
+        await prisma.webhookDelivery.create({ data: { deliveryId, event } });
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          return { ok: true, duplicate: true };
+        }
+        throw err;
+      }
+      let result: string;
+      try {
+        result = await handle(event, payload);
+      } catch (err) {
+        await prisma.webhookDelivery.deleteMany({ where: { deliveryId } });
+        throw err;
+      }
+      await prisma.webhookDelivery.update({
+        where: { deliveryId },
+        data: { processedAt: new Date() },
+      });
+      reply.status(200);
+      return { ok: true, result };
+    });
+  });
+
+  function header(req: FastifyRequest, name: string): string | undefined {
+    const v = req.headers[name];
+    return typeof v === 'string' && v.length > 0 && v.length <= 200 ? v : undefined;
+  }
+
+  async function handle(event: string, p: Payload): Promise<string> {
+    switch (event) {
+      case 'ping':
+        return 'pong';
+      case 'installation':
+        return onInstallation(p);
+      case 'installation_repositories':
+        return onInstallationRepos(p);
+      case 'issues':
+        return onIssues(p);
+      case 'pull_request':
+        return onPullRequest(p);
+      default:
+        return 'ignored';
+    }
+  }
+
+  async function projectOf(p: Payload) {
+    if (!p.repository) return null;
+    return prisma.project.findUnique({
+      where: { githubRepoId: BigInt(p.repository.id) },
+      include: { installation: true },
+    });
+  }
+
+  // ---------- installations ----------
+
+  async function onInstallation(p: Payload): Promise<string> {
+    const inst = p.installation;
+    if (!inst) return 'ignored';
+    const id = BigInt(inst.id);
+    const now = new Date();
+    if (p.action === 'created' || p.action === 'new_permissions_accepted') {
+      await prisma.installation.upsert({
+        where: { githubInstallationId: id },
+        create: {
+          githubInstallationId: id,
+          accountLogin: inst.account?.login ?? 'unknown',
+          accountType: inst.account?.type ?? 'User',
+        },
+        update: { suspendedAt: null },
+      });
+      return 'installation.upserted';
+    }
+    const existing = await prisma.installation.findUnique({ where: { githubInstallationId: id } });
+    if (!existing) return 'ignored';
+    if (p.action === 'deleted' || p.action === 'suspend') {
+      await prisma.installation.update({ where: { id: existing.id }, data: { suspendedAt: now } });
+      if (p.action === 'deleted') {
+        await archiveProjects({ installationId: existing.id }, 'installation_deleted');
+      }
+    } else if (p.action === 'unsuspend') {
+      await prisma.installation.update({ where: { id: existing.id }, data: { suspendedAt: null } });
+    } else {
+      return 'ignored';
+    }
+    await audit(prisma, {
+      actorType: 'GITHUB',
+      action: `installation.${p.action}`,
+      data: { githubInstallationId: inst.id },
+    });
+    return `installation.${p.action}`;
+  }
+
+  async function onInstallationRepos(p: Payload): Promise<string> {
+    const inst = p.installation;
+    if (!inst) return 'ignored';
+    const existing = await prisma.installation.upsert({
+      where: { githubInstallationId: BigInt(inst.id) },
+      create: {
+        githubInstallationId: BigInt(inst.id),
+        accountLogin: inst.account?.login ?? 'unknown',
+        accountType: inst.account?.type ?? 'User',
+      },
+      update: {},
+    });
+    const removed = (p.repositories_removed ?? []).map((r) => BigInt(r.id));
+    if (removed.length) {
+      await archiveProjects(
+        { installationId: existing.id, githubRepoId: { in: removed } },
+        'repository_removed',
+      );
+    }
+    return `installation_repositories.${p.action ?? 'unknown'}`;
+  }
+
+  async function archiveProjects(where: Prisma.ProjectWhereInput, reason: string) {
+    const projects = await prisma.project.findMany({ where: { ...where, archivedAt: null } });
+    for (const project of projects) {
+      await prisma.project.update({ where: { id: project.id }, data: { archivedAt: new Date() } });
+      const open = await prisma.task.findMany({ where: { projectId: project.id, status: 'TODO' } });
+      for (const t of open) await dispatcher.withdrawForTask(t.id, reason);
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'project.archived',
+        projectId: project.id,
+        data: { reason },
+      });
+    }
+  }
+
+  // ---------- issues ----------
+
+  async function onIssues(p: Payload): Promise<string> {
+    const issue = p.issue;
+    if (!issue || issue.pull_request) return 'ignored';
+    const project = await projectOf(p);
+    if (!project || project.archivedAt) return 'ignored';
+    const task = await prisma.task.findUnique({
+      where: {
+        projectId_githubIssueNumber: { projectId: project.id, githubIssueNumber: issue.number },
+      },
+    });
+
+    if (p.action === 'labeled') {
+      if (p.label?.name !== project.poolLabel) return 'ignored';
+      if (task) return 'already_imported';
+      // R3: only issues labeled by a write+ user (or the project owner) become tasks.
+      const sender = p.sender;
+      if (!sender) return 'ignored';
+      const senderUser = await prisma.user.findUnique({ where: { githubId: BigInt(sender.id) } });
+      let allowed = senderUser?.id === project.addedById;
+      if (!allowed && deps.github) {
+        const role = await deps.github
+          .getUserRole(
+            Number(project.installation.githubInstallationId),
+            project.fullName,
+            sender.login,
+          )
+          .catch(() => 'NONE');
+        allowed = WRITE_ROLES.includes(role);
+      }
+      if (!allowed) {
+        await audit(prisma, {
+          actorType: 'GITHUB',
+          action: 'task.import_refused',
+          projectId: project.id,
+          data: { issueNumber: issue.number, sender: sender.login, reason: 'not_writer' },
+        });
+        return 'refused_not_writer';
+      }
+      const imported = await tasks.importIssue(
+        project,
+        {
+          number: issue.number,
+          nodeId: issue.node_id,
+          htmlUrl: issue.html_url,
+          title: issue.title,
+          body: issue.body ?? '',
+          labels: (issue.labels ?? [])
+            .map((l) => (typeof l === 'string' ? l : (l.name ?? '')))
+            .filter(Boolean),
+        },
+        senderUser?.id ?? project.addedById,
+        { actorType: 'GITHUB', actorUserId: senderUser?.id },
+      );
+      dispatcher.kick();
+      return imported ? 'imported' : 'already_imported';
+    }
+
+    if (!task) return 'ignored';
+
+    if (p.action === 'closed') {
+      const r = await prisma.task.updateMany({
+        where: { id: task.id, status: { in: ['PROPOSED', 'TODO'] } },
+        data: { status: 'CANCELLED' },
+      });
+      if (r.count !== 1) return 'not_cancelled_started';
+      await dispatcher.withdrawForTask(task.id, 'cancelled');
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'task.cancelled',
+        projectId: project.id,
+        taskId: task.id,
+        data: { issueNumber: issue.number, reason: 'issue_closed' },
+      });
+      return 'cancelled';
+    }
+
+    if (p.action === 'reopened' && task.status === 'CANCELLED') {
+      await prisma.task.update({ where: { id: task.id }, data: { status: 'PROPOSED' } });
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'task.reopened',
+        projectId: project.id,
+        taskId: task.id,
+      });
+      return 'reopened_proposed';
+    }
+
+    if (p.action === 'edited' && p.changes?.body !== undefined) {
+      // R3: the prompt is a snapshot; a changed body needs a new approval before anyone runs it.
+      const { description } = parseIssueBody(issue.body);
+      const hash = bodyHash(description);
+      if (hash === task.bodyHash) return 'unchanged';
+      const r = await prisma.task.updateMany({
+        where: { id: task.id, status: { in: ['PROPOSED', 'TODO'] } },
+        data: { bodySnapshot: description, bodyHash: hash, status: 'PROPOSED' },
+      });
+      if (r.count !== 1) return 'edited_after_start';
+      await dispatcher.withdrawForTask(task.id, 'edited');
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'task.edited',
+        projectId: project.id,
+        taskId: task.id,
+        data: { issueNumber: issue.number, needsApproval: true },
+      });
+      return 'reapproval_required';
+    }
+    return 'ignored';
+  }
+
+  // ---------- pull requests ----------
+
+  async function onPullRequest(p: Payload): Promise<string> {
+    const pr = p.pull_request;
+    if (!pr) return 'ignored';
+    const project = await projectOf(p);
+    if (!project) return 'ignored';
+    let task = await prisma.task.findFirst({
+      where: { projectId: project.id, prNumber: pr.number },
+    });
+    if (!task) {
+      const m = BRANCH_RE.exec(pr.head.ref);
+      if (m) {
+        const candidate = await prisma.task.findUnique({
+          where: {
+            projectId_githubIssueNumber: { projectId: project.id, githubIssueNumber: Number(m[1]) },
+          },
+        });
+        // Only the task's own branch links a PR to it.
+        if (candidate && (!candidate.branchName || candidate.branchName === pr.head.ref)) {
+          task = candidate;
+        }
+      }
+    }
+    if (!task) return 'ignored';
+
+    if (p.action === 'opened' || p.action === 'reopened' || p.action === 'ready_for_review') {
+      const r = await prisma.task.updateMany({
+        where: { id: task.id, status: { in: ['IN_PROGRESS', 'IN_REVIEW', 'TODO'] } },
+        data: {
+          status: 'IN_REVIEW',
+          prNumber: pr.number,
+          prUrl: pr.html_url,
+          headSha: pr.head.sha,
+        },
+      });
+      if (r.count !== 1) return 'ignored';
+      if (task.status === 'TODO') await dispatcher.withdrawForTask(task.id, 'pr_opened');
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'task.in_review',
+        projectId: project.id,
+        taskId: task.id,
+        data: { prNumber: pr.number },
+      });
+      return 'in_review';
+    }
+
+    if (p.action !== 'closed') return 'ignored';
+    const live = await prisma.assignment.findFirst({
+      where: {
+        taskId: task.id,
+        agentId: { not: null },
+        status: { in: ['ACCEPTED', 'RUNNING', 'PUSHED', 'SUCCEEDED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (pr.merged) {
+      const r = await prisma.task.updateMany({
+        where: { id: task.id, status: { in: ['IN_REVIEW', 'IN_PROGRESS', 'TODO'] } },
+        data: { status: 'DONE', prNumber: pr.number, prUrl: pr.html_url, headSha: pr.head.sha },
+      });
+      if (r.count !== 1) return 'ignored';
+      if (live) {
+        await prisma.assignment.update({
+          where: { id: live.id },
+          data: {
+            cleanupPending: true,
+            ...(live.status === 'PUSHED' ? { status: 'SUCCEEDED', finishedAt: new Date() } : {}),
+          },
+        });
+        if (live.agentId) gateway.sendCleanup(live.agentId, live.id);
+      }
+      await dispatcher.withdrawForTask(task.id, 'done');
+      await audit(prisma, {
+        actorType: 'GITHUB',
+        action: 'task.merged',
+        projectId: project.id,
+        taskId: task.id,
+        data: { prNumber: pr.number },
+      });
+      dispatcher.kick(); // dependents may be unblocked
+      return 'done';
+    }
+    // Closed without merge: the work is dropped, the task goes back to the pool.
+    const r = await prisma.task.updateMany({
+      where: { id: task.id, status: 'IN_REVIEW', prNumber: pr.number },
+      data: {
+        status: 'TODO',
+        prNumber: null,
+        prUrl: null,
+        headSha: null,
+        assigneeId: null,
+        assigneeAgentId: null,
+      },
+    });
+    if (r.count !== 1) return 'ignored';
+    if (live) {
+      await prisma.assignment.update({
+        where: { id: live.id },
+        data: {
+          cleanupPending: true,
+          ...(live.status !== 'SUCCEEDED'
+            ? { status: 'CANCELLED', reason: 'pr_closed', finishedAt: new Date() }
+            : {}),
+        },
+      });
+      if (live.agentId) {
+        if (live.status !== 'PUSHED' && live.status !== 'SUCCEEDED') {
+          gateway.sendTo(
+            live.agentId,
+            serverMessage('task.cancel', { assignmentId: live.id, reason: 'pr_closed' }),
+          );
+        }
+        gateway.sendCleanup(live.agentId, live.id);
+      }
+    }
+    await audit(prisma, {
+      actorType: 'GITHUB',
+      action: 'task.pr_closed',
+      projectId: project.id,
+      taskId: task.id,
+      data: { prNumber: pr.number, returnedToPool: true },
+    });
+    dispatcher.kick();
+    return 'returned_to_pool';
+  }
+}

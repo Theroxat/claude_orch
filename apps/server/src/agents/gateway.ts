@@ -14,9 +14,13 @@ import {
   type TaskOfferPayload,
 } from '@orch/shared';
 import { audit } from '../audit';
+import { ConsentError, assertAutoConsent, assertParticipates } from '../dispatch/consent';
+import type { Dispatcher } from '../dispatch/dispatcher';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
+import type { GithubClient } from '../github';
 import { participationStatus } from '../projects/service';
+import { TaskService } from '../tasks/service';
 import { purgeRetention, recordUsage } from '../usage';
 
 interface Conn {
@@ -26,11 +30,13 @@ interface Conn {
   /** True once the agent sent `hello`. */
   helloed: boolean;
   lastBeat: number;
+  /** Concurrency announced in `hello` (M4). */
+  maxConcurrent: number;
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
 }
 
-export type OfferRefusal = 'offline' | 'paused' | 'revoked';
+export type OfferRefusal = 'offline' | 'paused' | 'revoked' | 'no_consent';
 
 export class OfferRefusedError extends Error {
   constructor(readonly reason: OfferRefusal) {
@@ -42,6 +48,7 @@ export interface GatewayDeps {
   prisma: PrismaClient;
   config: Config;
   log: FastifyBaseLogger;
+  github?: GithubClient;
 }
 
 /**
@@ -57,7 +64,22 @@ export class AgentGateway {
   private sweepTimer: NodeJS.Timeout | undefined;
   private purgeTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly deps: GatewayDeps) {}
+  private readonly tasks: TaskService;
+  private dispatcher: Dispatcher | undefined;
+  /** Message id of a sent `cleanup` -> assignment id, cleared when the agent acks it. */
+  private readonly cleanupAcks = new Map<string, string>();
+
+  constructor(private readonly deps: GatewayDeps) {
+    this.tasks = new TaskService({
+      prisma: deps.prisma,
+      config: deps.config,
+      github: deps.github,
+    });
+  }
+
+  setDispatcher(d: Dispatcher): void {
+    this.dispatcher = d;
+  }
 
   start(): void {
     const { config } = this.deps;
@@ -80,6 +102,42 @@ export class AgentGateway {
     return this.conns.get(agentId)?.helloed === true;
   }
 
+  /** Users with at least one connected agent. */
+  connectedUserIds(): string[] {
+    const ids = new Set<string>();
+    for (const c of this.conns.values()) if (c.helloed) ids.add(c.userId);
+    return [...ids];
+  }
+
+  /** Concurrency the agent announced in `hello` (1 when unknown). */
+  maxConcurrentOf(agentId: string): number {
+    return this.conns.get(agentId)?.maxConcurrent ?? 1;
+  }
+
+  /** Sends a message to one connected agent. False when it is offline. */
+  sendTo(agentId: string, msg: ServerMessage): boolean {
+    const c = this.conns.get(agentId);
+    if (!c || !c.helloed) return false;
+    return this.send(c, msg);
+  }
+
+  /** Sends a message to every connected agent of a user. Returns how many got it. */
+  sendToUser(userId: string, msg: ServerMessage): number {
+    let n = 0;
+    for (const c of this.conns.values()) {
+      if (c.userId === userId && c.helloed && this.send(c, msg)) n++;
+    }
+    return n;
+  }
+
+  /** Sends `cleanup` and clears `cleanupPending` once the agent acks it. */
+  sendCleanup(agentId: string, assignmentId: string): boolean {
+    const msg = serverMessage('cleanup', { assignmentId });
+    if (!this.sendTo(agentId, msg)) return false;
+    this.cleanupAcks.set(msg.id, assignmentId);
+    return true;
+  }
+
   /** Closes the live socket of an agent, if any. */
   disconnect(agentId: string, code: number, reason: string): void {
     const c = this.conns.get(agentId);
@@ -97,6 +155,7 @@ export class AgentGateway {
       socket,
       helloed: false,
       lastBeat: Date.now(),
+      maxConcurrent: 1,
       queue: Promise.resolve(),
     };
     this.conns.set(agent.id, conn);
@@ -150,7 +209,9 @@ export class AgentGateway {
 
   /**
    * Sends `task.offer`. Throws OfferRefusedError when the agent is offline, paused or revoked:
-   * the server never offers work to a paused agent.
+   * the server never offers work to a paused agent. Second consent check (the dispatcher did the
+   * first): an AUTO_OFFER needs an active, approved AUTO-mode participation; an accepted
+   * CONSENT_REQUEST needs an active, approved participation.
    */
   async sendOffer(agentId: string, payload: TaskOfferPayload): Promise<void> {
     const agent = await this.deps.prisma.agent.findUnique({
@@ -159,6 +220,21 @@ export class AgentGateway {
     });
     if (!agent || agent.revokedAt) throw new OfferRefusedError('revoked');
     if (agent.paused || agent.user.paused) throw new OfferRefusedError('paused');
+    const live = this.conns.get(agentId);
+    if (!live || !live.helloed) throw new OfferRefusedError('offline');
+    if (payload.kind !== 'CLAIM') {
+      try {
+        if (payload.kind === 'AUTO_OFFER') {
+          await assertAutoConsent(this.deps.prisma, agent.userId, payload.task.project.id, agentId);
+        } else {
+          if (payload.accepted !== true) throw new ConsentError('not_auto');
+          await assertParticipates(this.deps.prisma, agent.userId, payload.task.project.id);
+        }
+      } catch (err) {
+        if (err instanceof ConsentError) throw new OfferRefusedError('no_consent');
+        throw err;
+      }
+    }
     const c = this.conns.get(agentId);
     if (!c || !c.helloed) throw new OfferRefusedError('offline');
     if (!this.send(c, serverMessage('task.offer', payload))) throw new OfferRefusedError('offline');
@@ -211,16 +287,22 @@ export class AgentGateway {
       });
       return;
     }
-    if (m.type === 'ack') return; // acks of config.update etc.: nothing to retry server-side yet
-    if (m.type === 'token.request') {
-      this.send(
-        c,
-        serverMessage(
-          'token.deny',
-          { requestId: m.payload.requestId, reason: 'not_implemented' },
-          { replyTo: m.id },
-        ),
-      );
+    if (m.type === 'ack') {
+      const assignmentId = this.cleanupAcks.get(m.replyTo);
+      if (assignmentId !== undefined) {
+        this.cleanupAcks.delete(m.replyTo);
+        await this.deps.prisma.assignment.updateMany({
+          where: { id: assignmentId, agentId: c.agentId },
+          data: { cleanupPending: false },
+        });
+      }
+      return;
+    }
+    if (m.type === 'token.request') return this.onTokenRequest(c, m);
+    if (m.type === 'tasks.list.request') {
+      const agent = await this.loadAgent(c);
+      const list = await this.tasks.takeable(agent, m.payload.projectFullName);
+      this.send(c, serverMessage('tasks.list', list, { replyTo: m.id }));
       return;
     }
     if (!AGENT_ACKED_TYPES.includes(m.type)) return;
@@ -235,14 +317,46 @@ export class AgentGateway {
       throw err;
     }
     let result: AckPayload;
+    const after: Array<() => void> = [];
     try {
-      result = await this.process(c, m);
+      result = await this.process(c, m, after);
     } catch (err) {
       // Let the agent retry with the same id.
       await prisma.agentMessageSeen.deleteMany({ where: { agentId: c.agentId, messageId: m.id } });
       throw err;
     }
     this.ack(c, m.id, result);
+    for (const f of after) f();
+  }
+
+  private loadAgent(c: Conn) {
+    return this.deps.prisma.agent.findUniqueOrThrow({
+      where: { id: c.agentId },
+      include: { user: true },
+    });
+  }
+
+  private async onTokenRequest(c: Conn, m: Extract<AgentMessage, { type: 'token.request' }>) {
+    const agent = await this.loadAgent(c);
+    const r = await this.tasks.mintToken(agent, m.payload);
+    const reply = r.ok
+      ? serverMessage(
+          'token.grant',
+          {
+            requestId: m.payload.requestId,
+            token: r.token,
+            expiresAt: r.expiresAt.toISOString(),
+            repository: r.repository,
+            permissions: r.permissions,
+          },
+          { replyTo: m.id },
+        )
+      : serverMessage(
+          'token.deny',
+          { requestId: m.payload.requestId, reason: r.reason },
+          { replyTo: m.id },
+        );
+    this.send(c, reply);
   }
 
   private async onHello(c: Conn, m: Extract<AgentMessage, { type: 'hello' }>) {
@@ -253,6 +367,7 @@ export class AgentGateway {
     });
     const cfg = await this.configFor(c.agentId);
     c.helloed = true;
+    c.maxConcurrent = m.payload.maxConcurrent;
     this.send(
       c,
       serverMessage(
@@ -261,9 +376,10 @@ export class AgentGateway {
         { replyTo: m.id },
       ),
     );
+    await this.dispatcher?.onAgentHello(c.agentId, m.payload.running);
   }
 
-  private async process(c: Conn, m: AgentMessage): Promise<AckPayload> {
+  private async process(c: Conn, m: AgentMessage, after: Array<() => void>): Promise<AckPayload> {
     const { prisma } = this.deps;
     const refuse = (code: string, message: string): AckPayload => ({
       ok: false,
@@ -287,16 +403,69 @@ export class AgentGateway {
           action: paused ? 'agent.paused' : 'agent.resumed',
           data: { source: 'agent' },
         });
+        const d = this.dispatcher;
+        if (d) after.push(() => void d.onAgentPauseChanged(c.agentId, paused));
         return { ok: true };
       }
-      case 'offer.accept':
       case 'task.claim': {
-        const agent = await prisma.agent.findUniqueOrThrow({
-          where: { id: c.agentId },
-          include: { user: true },
-        });
+        const agent = await this.loadAgent(c);
+        const r = await this.tasks.claim(agent, m.payload);
+        const { offer, withdrawn } = r;
+        if (offer) {
+          after.push(() => this.send(c, serverMessage('task.offer', offer, { replyTo: m.id })));
+        }
+        if (withdrawn?.length && this.dispatcher) {
+          const d = this.dispatcher;
+          after.push(() => d.notifyWithdrawn(withdrawn, 'taken'));
+        }
+        return r.ack;
+      }
+      case 'task.status':
+        return this.tasks.onStatus(await this.loadAgent(c), m.payload);
+      case 'task.pushed': {
+        const r = await this.tasks.onPushed(await this.loadAgent(c), m.payload);
+        const pr = r.prOpened;
+        if (pr) after.push(() => this.send(c, serverMessage('pr.opened', pr)));
+        return r.ack;
+      }
+      case 'task.finished': {
+        const r = await this.tasks.onFinished(await this.loadAgent(c), m.payload);
+        const d = this.dispatcher;
+        if (d) after.push(() => d.kick());
+        return r;
+      }
+      case 'done.request':
+        return this.tasks.onDoneRequest(await this.loadAgent(c), m.payload.assignmentId);
+      case 'offer.accept': {
+        const agent = await this.loadAgent(c);
         if (agent.paused || agent.user.paused) return refuse('paused', 'The agent is paused');
-        return refuse('not_implemented', 'Tasks are not available yet');
+        if (!this.dispatcher) return refuse('not_implemented', 'Offers are not available');
+        const r = await this.dispatcher.accept(m.payload.assignmentId, {
+          userId: c.userId,
+          agentId: c.agentId,
+          via: 'agent',
+        });
+        if (!r.ok) {
+          if (r.code === 'offer_closed') {
+            // PLAN 4.5: a second accept for the same task is answered with a cancel.
+            const id = m.payload.assignmentId;
+            after.push(() =>
+              this.send(c, serverMessage('task.cancel', { assignmentId: id, reason: 'taken' })),
+            );
+          }
+          return refuse(r.code, r.message);
+        }
+        return { ok: true };
+      }
+      case 'offer.reject': {
+        if (!this.dispatcher) return refuse('not_implemented', 'Offers are not available');
+        const r = await this.dispatcher.reject(
+          m.payload.assignmentId,
+          { userId: c.userId, agentId: c.agentId, via: 'agent' },
+          m.payload.reason,
+          m.payload.detail,
+        );
+        return r.ok ? { ok: true } : refuse(r.code, r.message);
       }
       default:
         return refuse('not_implemented', `${m.type} is not available yet`);

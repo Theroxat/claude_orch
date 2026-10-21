@@ -10,8 +10,11 @@ import {
   type AckPayload,
   type AgentConfigPayload,
   type ServerMessage,
+  type TasksListPayload,
 } from '@orch/shared';
-import type { StatusInfo } from './cli/protocol';
+import type { ControlResult, StatusInfo } from './cli/protocol';
+import { ManualExecutor, type ExecutorConfig, type ExecutorDeps } from './exec/executor';
+import { TokenBroker } from './exec/tokens';
 import { startControlServer, type ControlServer } from './control/server';
 import { InboundDedup } from './dedup';
 import { errorMessage, type Logger } from './log';
@@ -36,6 +39,19 @@ export interface AgentOptions {
   backoff?: Partial<BackoffOptions>;
   outboxRetryMs?: number;
   usageFirstDelayMs?: number;
+  /** Manual-mode task execution. Without it, take/done/list answer "not configured". */
+  exec?: {
+    config: ExecutorConfig;
+    deps: Pick<ExecutorDeps, 'git' | 'docker' | 'screen' | 'fs' | 'readClaudeToken'>;
+  };
+  tokenTimeoutMs?: number;
+  listTimeoutMs?: number;
+}
+
+interface ListWaiter {
+  resolve: (p: TasksListPayload) => void;
+  reject: (e: Error) => void;
+  timer: NodeJS.Timeout;
 }
 
 export class Agent {
@@ -44,6 +60,10 @@ export class Agent {
   readonly dedup: InboundDedup;
   readonly client: WsClient;
   readonly usage: UsageLoop;
+  readonly tokens: TokenBroker;
+  readonly executor: ManualExecutor | undefined;
+  private participations: AgentConfigPayload['participations'] = [];
+  private readonly listWaiters = new Map<string, ListWaiter>();
   private control: ControlServer | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private agentId: string | null;
@@ -66,13 +86,27 @@ export class Agent {
       backoff: opts.backoff,
       hello: () => ({
         agentVersion: AGENT_VERSION,
-        capabilities: [],
+        capabilities: this.executor ? ['manual', 'devcontainer'] : [],
         localPaused: this.pause.isPaused(),
-        maxConcurrent: 1,
-        running: [],
+        maxConcurrent: this.executor?.maxConcurrent ?? 1,
+        running: this.executor?.running() ?? [],
       }),
     });
     this.outbox.setSender((m) => this.client.ready && this.client.send(m));
+    this.tokens = new TokenBroker(
+      (m) => this.client.ready && this.client.send(m),
+      opts.tokenTimeoutMs,
+    );
+    this.executor = opts.exec
+      ? new ManualExecutor(opts.exec.config, {
+          ...opts.exec.deps,
+          requestToken: (id, purpose) => this.tokens.request(id, purpose),
+          enqueue: (type, payload) => this.outbox.enqueue(type, payload as never).id,
+          isPaused: () => this.pause.isPaused(),
+          participations: () => this.participations,
+          logger: this.log,
+        })
+      : undefined;
     this.usage = new UsageLoop({
       source: opts.usageSource,
       intervalMs: opts.usageIntervalSec * 1000,
@@ -107,16 +141,60 @@ export class Agent {
     this.control = await startControlServer(
       this.opts.socketPath,
       {
-        status: () => this.status(),
-        pause: () => this.setPaused(true),
-        resume: () => this.setPaused(false),
+        status: () => ({ status: this.status(), tasks: this.executor?.views() ?? [] }),
+        pause: () => ({ status: this.setPaused(true) }),
+        resume: () => ({ status: this.setPaused(false) }),
+        list: (r) => this.listTasks(r.project),
+        take: async (r) => ({ task: await this.exec().take(r.issue, r.project) }),
+        done: async (r) => ({ task: await this.exec().done(r.issue) }),
+        attach: async (r) => ({ exec: await this.exec().attach(r.issue) }),
+        shell: (r) => ({ exec: this.exec().shell(r.issue) }),
       },
       this.log,
     );
+    if (this.executor) {
+      await this.executor
+        .reconcile()
+        .catch((err: unknown) =>
+          this.log.warn('task reconciliation failed', { error: errorMessage(err) }),
+        );
+    }
     this.client.start();
   }
 
+  private exec(): ManualExecutor {
+    if (!this.executor) {
+      const err = new Error('Task execution is not configured (set ORCH_WORK_DIR).');
+      throw Object.assign(err, { code: 'not_configured' });
+    }
+    return this.executor;
+  }
+
+  /** `orch list`: `tasks.list.request` -> `tasks.list` (replyTo = request id). Online only. */
+  private listTasks(project?: string): Promise<ControlResult> {
+    const msg = agentMessage('tasks.list.request', project ? { projectFullName: project } : {});
+    return new Promise((resolve, reject) => {
+      if (!this.client.ready || !this.client.send(msg)) {
+        reject(Object.assign(new Error('Not connected to the server.'), { code: 'offline' }));
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.listWaiters.delete(msg.id);
+        reject(new Error('The server did not answer the task list request.'));
+      }, this.opts.listTimeoutMs ?? 15_000);
+      this.listWaiters.set(msg.id, {
+        timer,
+        reject,
+        resolve: (p) => resolve({ available: p.tasks }),
+      });
+    });
+  }
+
   async stop(): Promise<void> {
+    this.tokens.close();
+    this.executor?.close();
+    for (const w of this.listWaiters.values()) clearTimeout(w.timer);
+    this.listWaiters.clear();
     this.usage.stop();
     clearInterval(this.heartbeatTimer);
     this.outbox.close();
@@ -133,6 +211,7 @@ export class Agent {
       serverUrl: this.opts.serverUrl,
       lastUsageReportAt: this.lastUsageReportAt,
       outboxPending: this.outbox.pending().length,
+      maxConcurrent: this.executor?.maxConcurrent ?? 1,
     };
   }
 
@@ -145,6 +224,7 @@ export class Agent {
   }
 
   private applyConfig(c: AgentConfigPayload): void {
+    this.participations = c.participations;
     // A pending local pause.set wins until the server acks it (the server value is stale).
     if (!this.outbox.hasPending('pause.set') && this.pause.set(c.paused, 'server')) {
       this.log.info(c.paused ? 'paused from the server' : 'resumed from the server');
@@ -157,7 +237,7 @@ export class Agent {
     this.heartbeatTimer = setInterval(() => {
       this.client.send(
         agentMessage('heartbeat', {
-          running: 0,
+          running: this.executor?.running().length ?? 0,
           localPaused: this.pause.isPaused(),
           load: { cpu: loadavg()[0] ?? 0, memFreeMb: Math.round(freemem() / 1048576) },
         }),
@@ -170,7 +250,18 @@ export class Agent {
       if (!m.payload.ok && !m.payload.duplicate) {
         this.log.warn('server refused a message', { replyTo: m.replyTo, error: m.payload.error });
       }
+      this.executor?.onAck(m.replyTo, m.payload);
       this.outbox.ack(m.replyTo);
+      return;
+    }
+    if (this.tokens.handle(m)) return;
+    if (m.type === 'tasks.list') {
+      const w = m.replyTo !== undefined ? this.listWaiters.get(m.replyTo) : undefined;
+      if (w && m.replyTo !== undefined) {
+        clearTimeout(w.timer);
+        this.listWaiters.delete(m.replyTo);
+        w.resolve(m.payload);
+      }
       return;
     }
     if (m.type === 'error') {
@@ -201,9 +292,24 @@ export class Agent {
         this.applyConfig(m.payload);
         if (this.client.ready) this.startHeartbeat(m.payload.heartbeatSec);
         return;
+      case 'task.offer':
+      case 'task.cancel':
+      case 'pr.opened':
+      case 'cleanup':
+        if (!this.executor) {
+          if (m.type === 'task.offer') {
+            this.outbox.enqueue('offer.reject', {
+              assignmentId: m.payload.assignmentId,
+              reason: 'error',
+              detail: 'Task execution is not configured on this machine.',
+            });
+          }
+          return;
+        }
+        this.executor.handle(m);
+        return;
       default:
-        // task.offer, task.cancel, pr.opened, cleanup: handled from M3.
-        this.log.info('message type not handled yet', { type: m.type });
+        this.log.debug('message type not handled', { type: m.type });
     }
   }
 

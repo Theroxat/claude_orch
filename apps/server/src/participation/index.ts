@@ -6,11 +6,15 @@ import {
 } from '@orch/shared';
 import { audit } from '../audit';
 import { requireUser, toApiUser, type AuthDeps } from '../auth';
+import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError, parseBody } from '../http/errors';
 import { canParticipate, canSee } from '../projects/roles';
 import { getRoleInfo, toParticipationView } from '../projects/service';
 
-export function registerParticipation(app: FastifyInstance, deps: AuthDeps): void {
+export function registerParticipation(
+  app: FastifyInstance,
+  deps: AuthDeps & { dispatcher?: Dispatcher },
+): void {
   const { prisma } = deps;
 
   /**
@@ -79,6 +83,7 @@ export function registerParticipation(app: FastifyInstance, deps: AuthDeps): voi
       data: { active: part.active, percent: part.percent, mode: part.mode },
       ip: req.ip,
     });
+    await deps.dispatcher?.onParticipationChanged(user.id, project.id);
     return toParticipationView(part, project.requireParticipantApproval);
   });
 
@@ -130,6 +135,7 @@ export function registerParticipation(app: FastifyInstance, deps: AuthDeps): voi
         targetUserId: userId,
         ip: req.ip,
       });
+      await deps.dispatcher?.onParticipationChanged(userId, project.id);
       return toParticipationView(part, project.requireParticipantApproval);
     });
   }

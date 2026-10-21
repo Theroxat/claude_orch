@@ -45,6 +45,61 @@ enum Model {
   OPUS
 }
 
+enum TaskSize {
+  S
+  M
+  L
+}
+
+/// BLOCKED is derived (TODO with unfinished dependencies) and shown by the API, never stored.
+enum TaskStatus {
+  PROPOSED
+  TODO
+  BLOCKED
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  /// Issue closed (or creator cancelled) before the task started. Hidden from the Backlog.
+  CANCELLED
+}
+
+/// How the dispatcher picks who gets a task (M4).
+enum DispatchMode {
+  POOL
+  MEMBERS
+  BROADCAST
+}
+
+enum TaskOrigin {
+  PLATFORM
+  LABEL_IMPORT
+  MCP
+}
+
+enum AssignmentKind {
+  AUTO_OFFER
+  CONSENT_REQUEST
+  CLAIM
+}
+
+enum AssignmentStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  RUNNING
+  PUSHED
+  SUCCEEDED
+  FAILED
+  LOST
+}
+
+enum ExecMode {
+  AUTO
+  MANUAL
+}
+
 model User {
   id                String    @id @default(cuid())
   githubId          BigInt    @unique
@@ -61,12 +116,16 @@ model User {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  sessions       Session[]
-  participations Participation[]
-  permissions    ProjectPermission[]
-  addedProjects  Project[]           @relation("ProjectAddedBy")
+  sessions         Session[]
+  participations   Participation[]
+  permissions      ProjectPermission[]
+  addedProjects    Project[]           @relation("ProjectAddedBy")
   agents           Agent[]
   enrollmentTokens EnrollmentToken[]
+  createdTasks     Task[]              @relation("TaskCreator")
+  taskTargets      TaskTarget[]
+  assignedTasks    Task[]              @relation("TaskAssignee")
+  assignments      Assignment[]
 }
 
 model Session {
@@ -116,6 +175,7 @@ model Project {
   addedBy        User                @relation("ProjectAddedBy", fields: [addedById], references: [id])
   permissions    ProjectPermission[]
   participations Participation[]
+  tasks          Task[]
 
   @@index([installationId])
 }
@@ -169,12 +229,14 @@ model AuditLog {
   targetUserId String?
   actorAgentId String?
   agentId      String?
+  taskId       String?
   ip           String?
   data         Json      @default("{}")
 
   @@index([projectId, at])
   @@index([actorUserId, at])
   @@index([agentId, at])
+  @@index([taskId])
 }
 
 /// One per member machine. Only the SHA-256 of the credential secret is stored.
@@ -197,9 +259,11 @@ model Agent {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  usageReports UsageReport[]
-  seen         AgentMessageSeen[]
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageReports  UsageReport[]
+  seen          AgentMessageSeen[]
+  assignedTasks Task[]
+  assignments   Assignment[]
 
   @@index([userId])
 }
@@ -256,4 +320,115 @@ model AgentMessageSeen {
 
   @@id([agentId, messageId])
   @@index([seenAt])
+}
+
+/// A unit of work backed by a GitHub issue. The prompt is `bodySnapshot`, never the live issue.
+model Task {
+  id                 String       @id @default(cuid())
+  projectId          String
+  githubIssueNumber  Int
+  githubIssueNodeId  String
+  title              String
+  bodySnapshot       String
+  bodyHash           String
+  acceptanceCriteria String[]
+  size               TaskSize     @default(M)
+  model              Model        @default(SONNET)
+  baseBranch         String
+  integrationBranch  String? // PR base = integrationBranch ?? baseBranch
+  branchName         String? // orch/issue-<n>-<slug>
+  status             TaskStatus   @default(TODO)
+  origin             TaskOrigin   @default(PLATFORM)
+  createdById        String
+  assigneeId         String?
+  assigneeAgentId    String?
+  prNumber           Int?
+  prUrl              String?
+  headSha            String?
+  dispatchMode       DispatchMode @default(POOL)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy     User             @relation("TaskCreator", fields: [createdById], references: [id])
+  assignee      User?            @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assigneeAgent Agent?           @relation(fields: [assigneeAgentId], references: [id], onDelete: SetNull)
+  dependsOn     TaskDependency[] @relation("TaskDeps")
+  dependents    TaskDependency[] @relation("TaskDependents")
+  assignments   Assignment[]
+  targets       TaskTarget[]
+
+  @@unique([projectId, githubIssueNumber])
+  @@index([projectId, status])
+  @@index([createdById, status])
+}
+
+/// Acyclic: checked before insert.
+model TaskDependency {
+  taskId      String
+  dependsOnId String
+
+  task      Task @relation("TaskDeps", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOn Task @relation("TaskDependents", fields: [dependsOnId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, dependsOnId])
+  @@index([dependsOnId])
+}
+
+/// Members a MEMBERS-dispatched task may be offered to.
+model TaskTarget {
+  taskId String
+  userId String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, userId])
+  @@index([userId])
+}
+
+/// GitHub webhook deliveries already processed (X-GitHub-Delivery dedupe).
+model WebhookDelivery {
+  deliveryId  String    @id
+  event       String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([receivedAt])
+}
+
+/// One claim / offer and its execution. Raw SQL in the migration adds the partial unique index
+/// `one_live_assignment`: at most one ACCEPTED/RUNNING/PUSHED assignment per task.
+model Assignment {
+  id             String           @id @default(cuid())
+  taskId         String
+  userId         String
+  agentId        String?
+  kind           AssignmentKind
+  status         AssignmentStatus
+  execMode       ExecMode?
+  reason         String?
+  offeredAt      DateTime         @default(now())
+  /// PENDING offers and consent requests expire at this time.
+  expiresAt      DateTime?
+  respondedAt    DateTime?
+  /// Accepted auto executions must finish before this time (S/M/L timeouts).
+  leaseExpiresAt DateTime?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  lastSeq        Int              @default(0)
+  usageWeighted  BigInt?
+  /// Set when the agent must delete the clone (merge, PR closed, cancel); cleared on its ack.
+  cleanupPending Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  task  Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, status])
+  @@index([userId, status])
+  @@index([agentId, status])
+  @@index([status, expiresAt])
 }

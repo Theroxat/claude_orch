@@ -26,6 +26,35 @@ export interface GithubRepoAccess {
   admin: boolean;
 }
 
+export interface GithubIssue {
+  number: number;
+  nodeId: string;
+  htmlUrl: string;
+  title: string;
+  body: string;
+  labels: string[];
+}
+
+export interface CreateIssueInput {
+  title: string;
+  body: string;
+  labels: string[];
+}
+
+export interface CreatePullRequestInput {
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  draft: boolean;
+}
+
+export interface InstallationTokenScope {
+  /** Repository NAME without the owner. The token is limited to this single repository. */
+  repository: string;
+  permissions: Record<string, 'read' | 'write'>;
+}
+
 /** Everything the server needs from GitHub. Tests inject a fake. */
 export interface GithubClient {
   exchangeCode(code: string, redirectUri: string): Promise<GithubTokens>;
@@ -35,4 +64,26 @@ export interface GithubClient {
   listUserRepos(accessToken: string): Promise<GithubRepoAccess[]>;
   /** The user's role on a repo, read with an installation token. */
   getUserRole(installationId: number, fullName: string, login: string): Promise<GithubRole>;
+  /** Creates an issue with an installation token. */
+  createIssue(
+    installationId: number,
+    fullName: string,
+    input: CreateIssueInput,
+  ): Promise<GithubIssue>;
+  /** Open issues (not pull requests) carrying the label. */
+  listIssuesByLabel(
+    installationId: number,
+    fullName: string,
+    label: string,
+  ): Promise<GithubIssue[]>;
+  /** Mints an installation token limited to one repository and the given permissions. */
+  createInstallationToken(
+    installationId: number,
+    scope: InstallationTokenScope,
+  ): Promise<{ token: string; expiresAt: Date }>;
+  createPullRequest(
+    installationId: number,
+    fullName: string,
+    input: CreatePullRequestInput,
+  ): Promise<{ number: number; htmlUrl: string }>;
 }

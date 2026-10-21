@@ -26,6 +26,27 @@ const ConfigSchema = z.object({
   AGENT_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
   AGENT_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   RETENTION_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  // Dispatcher (M4).
+  DISPATCHER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  DISPATCHER_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  /** PENDING auto offers expire after this (PLAN 4.5: 60 s). */
+  AUTO_OFFER_TTL_SEC: z.coerce.number().int().positive().default(60),
+  /** PENDING consent requests expire after this (PLAN 4.5: 30 min). */
+  CONSENT_REQUEST_TTL_SEC: z.coerce.number().int().positive().default(1_800),
+  /** A usage report older than this makes the member ineligible for auto offers. */
+  USAGE_STALE_SEC: z.coerce.number().int().positive().default(900),
+  /** Safety reserve s of PLAN section 6. */
+  BUDGET_SAFETY_RESERVE: z.coerce.number().min(0).max(0.9).default(0.2),
+  OPUS_FACTOR: z.coerce.number().positive().default(5),
+  /** Weighted tokens of a Pro 5h window: base of the S/M/L task estimates. */
+  PRO_WINDOW_WEIGHTED: z.coerce.number().positive().default(44_000),
+  /** Grace added to the S/M/L execution timeouts before an auto run is declared lost. */
+  EXEC_LEASE_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
+  /** Running assignments of an agent unseen (and disconnected) for this long become LOST. */
+  AGENT_LEASE_SEC: z.coerce.number().int().positive().default(1_800),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

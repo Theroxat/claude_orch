@@ -4,11 +4,15 @@ import {
   AvailableRepoSchema,
   CreateEnrollmentTokenResponseSchema,
   DiscoverItemSchema,
+  ImportTasksResponseSchema,
   InstallUrlResponseSchema,
+  TaskBoardSchema,
+  TaskViewSchema,
   ParticipantItemSchema,
   ParticipationViewSchema,
   ProjectViewSchema,
   type AddProjectRequest,
+  type CreateTaskRequest,
   type UpdateProjectRequest,
   type UpsertParticipationRequest,
 } from '@orch/shared';
@@ -46,3 +50,12 @@ export const pauseAgent = (id: string) =>
 export const resumeAgent = (id: string) =>
   api('POST', `/agents/${id}/resume`, { schema: AgentViewSchema });
 export const revokeAgent = (id: string) => api<unknown>('DELETE', `/agents/${id}`);
+
+export const fetchTaskBoard = (projectId?: string) =>
+  api('GET', projectId ? `/projects/${projectId}/tasks` : '/tasks', { schema: TaskBoardSchema });
+export const createTask = (projectId: string, body: CreateTaskRequest) =>
+  api('POST', `/projects/${projectId}/tasks`, { body, schema: TaskViewSchema });
+export const importTasks = (projectId: string) =>
+  api('POST', `/projects/${projectId}/tasks/import`, { schema: ImportTasksResponseSchema });
+export const approveTask = (id: string) =>
+  api('POST', `/tasks/${id}/approve`, { schema: TaskViewSchema });

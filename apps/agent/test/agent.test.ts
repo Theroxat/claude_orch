@@ -225,8 +225,8 @@ describe('Agent', () => {
     await s.stop();
     const { agent } = await startAgent(`ws://127.0.0.1:${port}/agent/ws`);
     const res = await sendControl(join(tmp.dir, 'orch.sock'), { cmd: 'pause' });
-    expect(res.ok && res.status.paused).toBe(true);
-    expect(res.ok && res.status.connected).toBe(false);
+    expect(res.ok && res.status?.paused).toBe(true);
+    expect(res.ok && res.status?.connected).toBe(false);
     const state = JSON.parse(readFileSync(join(tmp.dir, 'data', 'state.json'), 'utf8'));
     expect(state.paused).toBe(true);
 

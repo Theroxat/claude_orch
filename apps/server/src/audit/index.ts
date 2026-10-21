@@ -11,6 +11,7 @@ export interface AuditEntry {
   actorAgentId?: string;
   /** The agent the action is about. */
   agentId?: string;
+  taskId?: string;
   ip?: string;
   /** Never put secrets here. */
   data?: Prisma.InputJsonValue;
@@ -26,6 +27,7 @@ export async function audit(prisma: PrismaClient, e: AuditEntry): Promise<void> 
       targetUserId: e.targetUserId,
       actorAgentId: e.actorAgentId,
       agentId: e.agentId,
+      taskId: e.taskId,
       ip: e.ip,
       data: e.data ?? {},
     },

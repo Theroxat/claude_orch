@@ -7,13 +7,18 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
 import {
   ControlRequestSchema,
+  type ControlCommand,
   type ControlRequest,
   type ControlResponse,
-  type StatusInfo,
+  type ControlResult,
 } from '../cli/protocol';
 import { errorMessage, type Logger } from '../log';
 
-export type ControlHandlers = Record<ControlRequest['cmd'], () => StatusInfo | Promise<StatusInfo>>;
+export type ControlHandlers = {
+  [K in ControlCommand]?: (
+    req: Extract<ControlRequest, { cmd: K }>,
+  ) => ControlResult | Promise<ControlResult>;
+};
 
 export interface ControlServer {
   close(): Promise<void>;
@@ -46,10 +51,22 @@ async function handleLine(line: string, handlers: ControlHandlers): Promise<Cont
       error: { code: 'unknown_command', message: `Unknown command: ${String(cmd)}` },
     };
   }
+  const handler = handlers[req.data.cmd] as
+    ((r: ControlRequest) => ControlResult | Promise<ControlResult>) | undefined;
+  if (!handler) {
+    return {
+      ok: false,
+      error: { code: 'unsupported', message: `${req.data.cmd} is not available on this agent` },
+    };
+  }
   try {
-    return { ok: true, status: await handlers[req.data.cmd]() };
+    return { ok: true, ...(await handler(req.data)) };
   } catch (err) {
-    return { ok: false, error: { code: 'internal', message: errorMessage(err) } };
+    const code = (err as { code?: unknown }).code;
+    return {
+      ok: false,
+      error: { code: typeof code === 'string' ? code : 'internal', message: errorMessage(err) },
+    };
   }
 }
 

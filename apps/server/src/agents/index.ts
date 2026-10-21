@@ -16,6 +16,7 @@ import { audit } from '../audit';
 import { requireUser, type AuthDeps } from '../auth';
 import { randomToken, sha256Hex } from '../auth/crypto';
 import { HttpError, parseBody } from '../http/errors';
+import type { Dispatcher } from '../dispatch/dispatcher';
 import { toUsageSummary } from '../usage';
 import { AgentGateway } from './gateway';
 
@@ -38,7 +39,12 @@ function sameHash(a: string, b: string): boolean {
 
 /** Creates the gateway, exposes it as `app.agentGateway` and stops it on close. */
 export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentGateway {
-  const gateway = new AgentGateway({ prisma: deps.prisma, config: deps.config, log: app.log });
+  const gateway = new AgentGateway({
+    prisma: deps.prisma,
+    config: deps.config,
+    log: app.log,
+    github: deps.github,
+  });
   app.decorate('agentGateway', gateway);
   gateway.start();
   app.addHook('onClose', async () => gateway.stop());
@@ -46,7 +52,11 @@ export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentG
 }
 
 /** Registers the agent routes. Must run inside a plugin registered after @fastify/websocket. */
-export function registerAgents(app: FastifyInstance, deps: AuthDeps, gateway: AgentGateway): void {
+export function registerAgents(
+  app: FastifyInstance,
+  deps: AuthDeps & { dispatcher?: Dispatcher },
+  gateway: AgentGateway,
+): void {
   const { prisma, config } = deps;
   const baseUrl = config.ORCH_BASE_URL.replace(/\/+$/, '');
 
@@ -175,6 +185,7 @@ export function registerAgents(app: FastifyInstance, deps: AuthDeps, gateway: Ag
         data: { source: 'web' },
       });
       await gateway.pushConfig(a.id);
+      await deps.dispatcher?.onAgentPauseChanged(a.id, paused);
       return toView(updated);
     });
   }
@@ -191,6 +202,7 @@ export function registerAgents(app: FastifyInstance, deps: AuthDeps, gateway: Ag
       });
     }
     gateway.disconnect(a.id, CloseCode.REVOKED, 'revoked');
+    await deps.dispatcher?.onAgentRevoked(a.id);
     return reply.status(204).send();
   });
 

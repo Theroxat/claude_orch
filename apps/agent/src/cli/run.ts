@@ -1,25 +1,49 @@
-/** `orch` command dispatcher (testable: no process.exit, injectable IO and env). */
+/** `orch` command dispatcher (testable: no process.exit, injectable IO, env and spawner). */
+import { spawn } from 'node:child_process';
 import { loadCliConfig } from '../config';
+import { parseIssueRef } from '../exec/naming';
 import { errorMessage } from '../log';
 import { sendControl } from './client';
 import { login, type LoginIo } from './login';
-import type { ControlRequest, StatusInfo } from './protocol';
+import type { ControlRequest, ControlResult, StatusInfo, TaskViewInfo } from './protocol';
 
 const HELP = `Usage: orch <command>
 
 Commands:
-  status            Show the agent status (connection, pause, usage reports)
+  status            Show the agent status and this machine's tasks
+  list [owner/repo] List the tasks you can take now
+  take <n>          Claim issue <n> and prepare its sandbox (or <owner/repo>#<n>)
+                      --no-wait  return once the claim is accepted
+  attach <n>        Attach to the Claude session of issue <n> (Ctrl-a d to detach)
+  shell <n>         Open a shell in the task container of issue <n>
+  done <n>          Commit, push the branch (the server opens the PR), stop the sandbox
   pause             Pause this machine (applied locally first, works offline)
   resume            Resume this machine
   login             Store your Claude token (wraps \`claude setup-token\`)
                       --token-stdin  read the token from stdin
                       --no-setup     do not run \`claude setup-token\` first
   help              Show this help
-
-Coming in M3: list, take, done, attach, shell
 `;
 
-const LATER = new Set(['list', 'take', 'done', 'attach', 'shell']);
+export interface CliDeps {
+  /** Runs an interactive command with inherited stdio, resolves with its exit code. */
+  spawnInteractive: (argv: string[]) => Promise<number>;
+  sleep: (ms: number) => Promise<void>;
+  /** How long `take` waits for the sandbox to be ready. */
+  takeWaitMs: number;
+}
+
+const defaultDeps: CliDeps = {
+  spawnInteractive: (argv) =>
+    new Promise((resolve, reject) => {
+      const [cmd = '', ...rest] = argv;
+      const child = spawn(cmd, rest, { stdio: 'inherit' });
+      child.on('error', reject);
+      child.on('exit', (code) => resolve(code ?? 1));
+    }),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  takeWaitMs: 60 * 60_000,
+};
 
 export function formatStatus(s: StatusInfo): string {
   return [
@@ -32,15 +56,38 @@ export function formatStatus(s: StatusInfo): string {
   ].join('\n');
 }
 
+export function formatTask(t: TaskViewInfo): string {
+  const lines = [`#${t.issueNumber} ${t.title}  [${t.state}]`, `  ${t.project}  ${t.branch}`];
+  if (t.state === 'running') lines.push(`  attach: ${t.attach}`);
+  if (t.prUrl) lines.push(`  PR: ${t.prUrl}`);
+  if (t.error) lines.push(`  error: ${t.error}`);
+  return lines.join('\n');
+}
+
+function issueArg(args: string[]): { issue: number; project?: string } | null {
+  const ref = args.find((a) => !a.startsWith('--'));
+  return ref ? parseIssueRef(ref) : null;
+}
+
 export async function runCli(
   argv: string[],
   io: LoginIo,
   env: NodeJS.ProcessEnv = process.env,
+  deps: Partial<CliDeps> = {},
 ): Promise<number> {
+  const d = { ...defaultDeps, ...deps };
   const [cmd = 'help', ...args] = argv;
   const cfg = loadCliConfig(env);
   const out = (s: string) => io.stdout.write(`${s}\n`);
   const err = (s: string) => io.stderr.write(`orch: ${s}\n`);
+  const call = async (req: ControlRequest, timeoutMs?: number): Promise<ControlResult | null> => {
+    const res = await sendControl(cfg.socketPath, req, timeoutMs);
+    if (!res.ok) {
+      err(res.error.message);
+      return null;
+    }
+    return res;
+  };
 
   try {
     switch (cmd) {
@@ -49,24 +96,77 @@ export async function runCli(
       case '-h':
         io.stdout.write(HELP);
         return 0;
-      case 'status':
+      case 'status': {
+        const res = await call({ cmd });
+        if (!res?.status) return 1;
+        out(formatStatus(res.status));
+        const tasks = res.tasks ?? [];
+        out(tasks.length ? `\nTasks:\n${tasks.map(formatTask).join('\n')}` : '\nTasks:       none');
+        return 0;
+      }
       case 'pause':
       case 'resume': {
-        const res = await sendControl(cfg.socketPath, { cmd } as ControlRequest);
-        if (!res.ok) {
-          err(res.error.message);
-          return 1;
-        }
-        if (cmd === 'status') out(formatStatus(res.status));
-        else if (cmd === 'pause')
-          out(
-            `Paused.${res.status.connected ? '' : ' (offline: the server will be told on reconnect)'}`,
-          );
-        else
-          out(
-            `Resumed.${res.status.connected ? '' : ' (offline: the server will be told on reconnect)'}`,
-          );
+        const res = await call({ cmd });
+        if (!res?.status) return 1;
+        const offline = res.status.connected
+          ? ''
+          : ' (offline: the server will be told on reconnect)';
+        out(`${cmd === 'pause' ? 'Paused.' : 'Resumed.'}${offline}`);
         return 0;
+      }
+      case 'list': {
+        const project = args.find((a) => !a.startsWith('--'));
+        const res = await call({ cmd, ...(project ? { project } : {}) }, 20_000);
+        if (!res) return 1;
+        const list = res.available ?? [];
+        if (list.length === 0) out('No task available right now.');
+        for (const t of list) {
+          out(
+            `${t.projectFullName}#${t.issueNumber}  [${t.size}, ${t.model.toLowerCase()}]  ${t.title}  (by ${t.createdBy.login})`,
+          );
+        }
+        return 0;
+      }
+      case 'take': {
+        const ref = issueArg(args);
+        if (!ref) {
+          err('usage: orch take <n> | <owner/repo>#<n>');
+          return 2;
+        }
+        const res = await call({ cmd, ...ref }, 90_000);
+        if (!res?.task) return 1;
+        out(`Claimed ${res.task.project}#${res.task.issueNumber}: ${res.task.title}`);
+        out(`Branch ${res.task.branch}. Preparing the sandbox...`);
+        if (args.includes('--no-wait')) {
+          out(`Check progress with "orch status". Then attach with:\n  ${res.task.attach}`);
+          return 0;
+        }
+        return await waitReady(res.task, call, d, out, err);
+      }
+      case 'done': {
+        const ref = issueArg(args);
+        if (!ref) {
+          err('usage: orch done <n>');
+          return 2;
+        }
+        const res = await call({ cmd, issue: ref.issue }, 15 * 60_000);
+        if (!res?.task) return 1;
+        out(
+          `Issue #${res.task.issueNumber}: pushed ${res.task.branch}. The server opens the pull request.`,
+        );
+        out('The sandbox was removed; the clone is kept until the PR is merged.');
+        return 0;
+      }
+      case 'attach':
+      case 'shell': {
+        const ref = issueArg(args);
+        if (!ref) {
+          err(`usage: orch ${cmd} <n>`);
+          return 2;
+        }
+        const res = await call({ cmd, issue: ref.issue }, 30_000);
+        if (!res?.exec) return 1;
+        return await d.spawnInteractive(res.exec);
       }
       case 'login': {
         const unknown = args.filter((a) => a !== '--token-stdin' && a !== '--no-setup');
@@ -87,10 +187,6 @@ export async function runCli(
         return 0;
       }
       default:
-        if (LATER.has(cmd)) {
-          err(`${cmd}: not available yet (M3)`);
-          return 1;
-        }
         err(`unknown command "${cmd}". Run "orch help".`);
         return 2;
     }
@@ -98,4 +194,42 @@ export async function runCli(
     err(errorMessage(e));
     return 1;
   }
+}
+
+/** Polls `status` until the claimed task is running (prints the attach command) or failed. */
+async function waitReady(
+  task: TaskViewInfo,
+  call: (req: ControlRequest, timeoutMs?: number) => Promise<ControlResult | null>,
+  d: CliDeps,
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
+  const end = Date.now() + d.takeWaitMs;
+  let last = '';
+  while (Date.now() < end) {
+    const res = await call({ cmd: 'status' });
+    const t = res?.tasks?.find((x) => x.assignmentId === task.assignmentId);
+    if (!t) {
+      err('the task disappeared (cancelled or cleaned up)');
+      return 1;
+    }
+    if (t.state !== last) {
+      last = t.state;
+      if (t.state === 'building') out('Building the dev environment...');
+    }
+    if (t.state === 'running') {
+      for (const w of t.warnings) out(`warning: ${w}`);
+      out(
+        `Ready. Attach to the Claude session with:\n  ${t.attach}\n(or "orch attach ${t.issueNumber}"; detach with Ctrl-a d). Finish with "orch done ${t.issueNumber}".`,
+      );
+      return 0;
+    }
+    if (t.state === 'failed' || t.state === 'cancelled') {
+      err(`task ${t.state}: ${t.error ?? 'unknown error'}`);
+      return 1;
+    }
+    await d.sleep(1_000);
+  }
+  out('Still preparing. Check "orch status" later.');
+  return 0;
 }

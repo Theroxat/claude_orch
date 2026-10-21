@@ -5,4 +5,7 @@ export * from './domain/permission';
 export * from './domain/participation';
 export * from './api/m1';
 export * from './api/m2';
+export * from './api/m3';
+export * from './api/dispatch';
+export * from './api/m4';
 export * from './protocol';

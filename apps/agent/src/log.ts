@@ -13,10 +13,24 @@ export interface Logger {
 const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
 
 /** Agent credentials and Claude OAuth/API tokens. */
-const SECRET_PATTERNS = [/orch_agent_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, /sk-ant-[A-Za-z0-9_-]+/g];
+const SECRET_PATTERNS = [
+  /orch_agent_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  /sk-ant-[A-Za-z0-9_-]+/g,
+  // GitHub installation / user / OAuth tokens.
+  /\bgh[sopur]_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  // git extraHeader values.
+  /(Authorization:\s*(?:Basic|Bearer)\s+)[A-Za-z0-9+/=._-]+/gi,
+];
 
 export function redact(text: string): string {
-  return SECRET_PATTERNS.reduce((t, re) => t.replace(re, '[REDACTED]'), text);
+  return SECRET_PATTERNS.reduce(
+    (t, re) =>
+      t.replace(re, (m, prefix?: unknown) =>
+        typeof prefix === 'string' && m.startsWith(prefix) ? `${prefix}[REDACTED]` : '[REDACTED]',
+      ),
+    text,
+  );
 }
 
 export function createLogger(

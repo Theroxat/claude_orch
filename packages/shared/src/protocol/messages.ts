@@ -163,6 +163,12 @@ export const TokenRequestPayloadSchema = z.object({
 
 export const DoneRequestPayloadSchema = z.object({ assignmentId: z.string() });
 
+/** `orch list`: tasks this member could take now (M3, additive). */
+export const TasksListRequestPayloadSchema = z.object({
+  projectFullName: z.string().optional(),
+});
+export type TasksListRequestPayload = z.infer<typeof TasksListRequestPayloadSchema>;
+
 export const PauseSetPayloadSchema = z.object({ paused: z.boolean() });
 export type PauseSetPayload = z.infer<typeof PauseSetPayloadSchema>;
 
@@ -176,10 +182,28 @@ export type WelcomePayload = z.infer<typeof WelcomePayloadSchema>;
 
 export const ConfigUpdatePayloadSchema = AgentConfigPayloadSchema;
 
+/**
+ * `task.offer`. Kinds:
+ *  - CLAIM: answer to `task.claim` (manual mode, M3). The assignment is already accepted.
+ *  - AUTO_OFFER (M4): the member's participation is active, approved and in AUTO mode. The agent
+ *    re-checks its local guard (pause, concurrency, budget), then answers `offer.accept`
+ *    `{ execMode: "AUTO" }` and runs `claude -p`, or `offer.reject` with a reason. Unanswered
+ *    offers expire at `expiresAt` (then `task.cancel` reason "expired").
+ *  - CONSENT_REQUEST (M4): sent only with `accepted: true`, after the member accepted the request
+ *    (web, or `offer.accept` from `orch accept <id>`). The agent answers `offer.accept`
+ *    `{ execMode: "AUTO" }` and runs it like an AUTO_OFFER.
+ * Fields marked M4 are optional so older agents keep parsing the frame.
+ */
 export const TaskOfferPayloadSchema = z.object({
   assignmentId: z.string(),
   kind: AssignmentKind,
   expiresAt: IsoDateTime.nullable(),
+  /** M4: how the agent must run it. AUTO = `claude -p`, MANUAL = screen session. */
+  execMode: ExecMode.optional(),
+  /** M4: true when the member already consented (CONSENT_REQUEST accepted, or CLAIM). */
+  accepted: z.boolean().optional(),
+  /** M4: hard execution limit in seconds (size S/M/L = 30/90/180 min). */
+  timeoutSec: z.number().int().positive().optional(),
   task: z.object({
     taskId: z.string(),
     project: z.object({ id: z.string(), fullName: z.string(), defaultBranch: z.string() }),
@@ -193,9 +217,38 @@ export const TaskOfferPayloadSchema = z.object({
     baseBranch: z.string(),
     branchName: z.string(),
     createdBy: z.object({ login: z.string() }),
+    /** M4: integration branch, when set (`baseBranch` already equals it: the PR base). */
+    integrationBranch: z.string().nullable().optional(),
   }),
 });
 export type TaskOfferPayload = z.infer<typeof TaskOfferPayloadSchema>;
+
+/**
+ * M4 `offer.request` (notification, no ack): an approval-mode member has a request waiting.
+ * Nothing starts until the member accepts it on the web (`POST /api/offers/:id/accept`) or with
+ * `orch accept <assignmentId>` (agent sends `offer.accept`). `orch reject` sends `offer.reject`.
+ */
+export const OfferRequestPayloadSchema = z.object({
+  assignmentId: z.string(),
+  expiresAt: IsoDateTime.nullable(),
+  task: z.object({
+    taskId: z.string(),
+    project: z.object({ id: z.string(), fullName: z.string() }),
+    issueNumber: z.number().int().positive(),
+    title: z.string(),
+    size: TaskSize,
+    model: Model,
+    createdBy: z.object({ login: z.string() }),
+  }),
+});
+export type OfferRequestPayload = z.infer<typeof OfferRequestPayloadSchema>;
+
+/** M4 `offer.withdrawn` (notification, no ack): a pending request is gone (taken, expired...). */
+export const OfferWithdrawnPayloadSchema = z.object({
+  assignmentId: z.string(),
+  reason: z.string(),
+});
+export type OfferWithdrawnPayload = z.infer<typeof OfferWithdrawnPayloadSchema>;
 
 export const TaskCancelPayloadSchema = z.object({ assignmentId: z.string(), reason: z.string() });
 
@@ -214,6 +267,19 @@ export const PrOpenedPayloadSchema = z.object({
   prNumber: z.number().int().positive(),
   prUrl: z.string().url(),
 });
+
+export const TasksListItemSchema = z.object({
+  taskId: z.string(),
+  projectFullName: z.string(),
+  issueNumber: z.number().int().positive(),
+  title: z.string(),
+  size: TaskSize,
+  model: Model,
+  createdBy: z.object({ login: z.string() }),
+});
+/** Answer to `tasks.list.request` (`replyTo` = the request id): takeable tasks only. */
+export const TasksListPayloadSchema = z.object({ tasks: z.array(TasksListItemSchema) });
+export type TasksListPayload = z.infer<typeof TasksListPayloadSchema>;
 
 export const CleanupPayloadSchema = z.object({ assignmentId: z.string() });
 
@@ -238,6 +304,7 @@ export const AgentMessageSchemas = {
   'token.request': envelopeOf('token.request', TokenRequestPayloadSchema),
   'done.request': envelopeOf('done.request', DoneRequestPayloadSchema),
   'pause.set': envelopeOf('pause.set', PauseSetPayloadSchema),
+  'tasks.list.request': envelopeOf('tasks.list.request', TasksListRequestPayloadSchema),
   ack: AckMessageSchema,
 } as const;
 
@@ -249,6 +316,9 @@ export const ServerMessageSchemas = {
   'token.grant': envelopeOf('token.grant', TokenGrantPayloadSchema),
   'token.deny': envelopeOf('token.deny', TokenDenyPayloadSchema),
   'pr.opened': envelopeOf('pr.opened', PrOpenedPayloadSchema),
+  'tasks.list': envelopeOf('tasks.list', TasksListPayloadSchema),
+  'offer.request': envelopeOf('offer.request', OfferRequestPayloadSchema),
+  'offer.withdrawn': envelopeOf('offer.withdrawn', OfferWithdrawnPayloadSchema),
   cleanup: envelopeOf('cleanup', CleanupPayloadSchema),
   error: envelopeOf('error', ErrorPayloadSchema),
   ack: AckMessageSchema,
@@ -267,6 +337,7 @@ export const AgentMessageSchema = z.discriminatedUnion('type', [
   AgentMessageSchemas['token.request'],
   AgentMessageSchemas['done.request'],
   AgentMessageSchemas['pause.set'],
+  AgentMessageSchemas['tasks.list.request'],
   AgentMessageSchemas.ack,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
@@ -280,6 +351,9 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ServerMessageSchemas['token.grant'],
   ServerMessageSchemas['token.deny'],
   ServerMessageSchemas['pr.opened'],
+  ServerMessageSchemas['tasks.list'],
+  ServerMessageSchemas['offer.request'],
+  ServerMessageSchemas['offer.withdrawn'],
   ServerMessageSchemas.cleanup,
   ServerMessageSchemas.error,
   ServerMessageSchemas.ack,

@@ -35,6 +35,13 @@ const EnvSchema = z.object({
   ORCH_CLAUDE_USAGE_ROOT: z.string().min(1).default('/host-claude'),
   ORCH_PLAN: z.enum(['pro', 'max5', 'max20']).default('pro'),
   ORCH_CLAUDE_BIN: z.string().min(1).default('claude'),
+  ORCH_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(1),
+  ORCH_DEFAULT_IMAGE: z.string().min(1).default('node:22-bookworm'),
+  ORCH_GIT_BASE_URL: z.string().url().default('https://github.com'),
+  ORCH_TASK_UID: z.coerce.number().int().min(1).optional(),
+  ORCH_TASK_GID: z.coerce.number().int().min(0).optional(),
+  ORCH_GIT_AUTHOR_NAME: z.string().min(1).default('orch agent'),
+  ORCH_GIT_AUTHOR_EMAIL: z.string().min(3).default('orch-agent@users.noreply.github.com'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
 });
 
@@ -58,6 +65,12 @@ export interface AgentConfig {
   plan: PlanName;
   claudeBin: string;
   logLevel: LogLevel;
+  maxConcurrent: number;
+  defaultImage: string;
+  gitBaseUrl: string;
+  taskUid?: number;
+  taskGid?: number;
+  gitAuthor: { name: string; email: string };
 }
 
 export class ConfigError extends Error {
@@ -113,6 +126,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
     plan: e.ORCH_PLAN,
     claudeBin: e.ORCH_CLAUDE_BIN,
     logLevel: toLogLevel(e.LOG_LEVEL),
+    maxConcurrent: e.ORCH_MAX_CONCURRENT,
+    defaultImage: e.ORCH_DEFAULT_IMAGE,
+    gitBaseUrl: e.ORCH_GIT_BASE_URL.replace(/\/+$/, ''),
+    taskUid: e.ORCH_TASK_UID,
+    taskGid: e.ORCH_TASK_GID,
+    gitAuthor: { name: e.ORCH_GIT_AUTHOR_NAME, email: e.ORCH_GIT_AUTHOR_EMAIL },
   };
 }
 

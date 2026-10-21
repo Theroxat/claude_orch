@@ -2,7 +2,16 @@ import { readFileSync } from 'node:fs';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import type { GithubRole } from '@orch/shared';
-import type { GithubClient, GithubRepoAccess, GithubTokens, GithubUserInfo } from './client';
+import type {
+  CreateIssueInput,
+  CreatePullRequestInput,
+  GithubClient,
+  GithubIssue,
+  GithubRepoAccess,
+  GithubTokens,
+  GithubUserInfo,
+  InstallationTokenScope,
+} from './client';
 
 export interface OctokitGithubOptions {
   appId: string;
@@ -21,6 +30,30 @@ const ROLES: Record<string, GithubRole> = {
 
 export function mapGithubRoleName(name: string | null | undefined): GithubRole {
   return (name && ROLES[name]) || 'NONE';
+}
+
+function splitFullName(fullName: string): { owner: string; repo: string } {
+  const [owner, repo] = fullName.split('/');
+  if (!owner || !repo) throw new Error(`Invalid repository name: ${fullName}`);
+  return { owner, repo };
+}
+
+function toIssue(d: {
+  number: number;
+  node_id: string;
+  html_url: string;
+  title: string;
+  body?: string | null;
+  labels: Array<string | { name?: string }>;
+}): GithubIssue {
+  return {
+    number: d.number,
+    nodeId: d.node_id,
+    htmlUrl: d.html_url,
+    title: d.title,
+    body: d.body ?? '',
+    labels: d.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
+  };
 }
 
 async function tokenRequest(
@@ -114,6 +147,72 @@ export class OctokitGithubClient implements GithubClient {
       if ((err as { status?: number }).status === 404) return 'NONE';
       throw err;
     }
+  }
+
+  async createIssue(
+    installationId: number,
+    fullName: string,
+    input: CreateIssueInput,
+  ): Promise<GithubIssue> {
+    const { owner, repo } = splitFullName(fullName);
+    const { data } = await this.forInstallation(installationId).rest.issues.create({
+      owner,
+      repo,
+      title: input.title,
+      body: input.body,
+      labels: input.labels,
+    });
+    return toIssue(data);
+  }
+
+  async listIssuesByLabel(
+    installationId: number,
+    fullName: string,
+    label: string,
+  ): Promise<GithubIssue[]> {
+    const { owner, repo } = splitFullName(fullName);
+    const octokit = this.forInstallation(installationId);
+    const items = await octokit.paginate(octokit.rest.issues.listForRepo, {
+      owner,
+      repo,
+      labels: label,
+      state: 'open',
+      per_page: 100,
+    });
+    return items.filter((i) => !i.pull_request).map(toIssue);
+  }
+
+  async createInstallationToken(
+    installationId: number,
+    scope: InstallationTokenScope,
+  ): Promise<{ token: string; expiresAt: Date }> {
+    const auth = createAppAuth({ appId: this.opts.appId, privateKey: this.privateKey });
+    const res = await auth({
+      type: 'installation',
+      installationId,
+      repositoryNames: [scope.repository],
+      permissions: scope.permissions,
+      refresh: true,
+    });
+    return { token: res.token, expiresAt: new Date(res.expiresAt ?? Date.now() + 3600_000) };
+  }
+
+  async createPullRequest(
+    installationId: number,
+    fullName: string,
+    input: CreatePullRequestInput,
+  ): Promise<{ number: number; htmlUrl: string }> {
+    const { owner, repo } = splitFullName(fullName);
+    const { data } = await this.forInstallation(installationId).rest.pulls.create({
+      owner,
+      repo,
+      head: input.head,
+      base: input.base,
+      title: input.title,
+      body: input.body,
+      draft: input.draft,
+    });
+    return { number: data.number, htmlUrl: data.html_url };
   }
 
   private forInstallation(installationId: number): Octokit {

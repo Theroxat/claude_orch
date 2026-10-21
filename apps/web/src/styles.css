@@ -240,3 +240,40 @@ button:disabled {
 .usage {
   margin: 8px 0;
 }
+
+.kanban {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  margin-top: 12px;
+}
+.kanban-col {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.kanban-col h2 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+}
+.task-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.task-title {
+  margin: 0;
+  font-weight: 600;
+}
+.avatar.small {
+  width: 20px;
+  height: 20px;
+}

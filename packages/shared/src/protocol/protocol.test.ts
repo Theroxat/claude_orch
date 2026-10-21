@@ -79,4 +79,27 @@ describe('protocol', () => {
     );
     expect(EnrollRequestSchema.safeParse({ token: 't' }).success).toBe(false);
   });
+
+  it('round-trips tasks.list.request and tasks.list', () => {
+    const req = agentMessage('tasks.list.request', {});
+    expect(parseAgentMessage(req).ok).toBe(true);
+    const res = serverMessage(
+      'tasks.list',
+      {
+        tasks: [
+          {
+            taskId: 't1',
+            projectFullName: 'a/b',
+            issueNumber: 3,
+            title: 'x',
+            size: 'S',
+            model: 'SONNET',
+            createdBy: { login: 'u' },
+          },
+        ],
+      },
+      { replyTo: req.id },
+    );
+    expect(parseServerMessage(res).ok).toBe(true);
+  });
 });

@@ -31,6 +31,8 @@ export class FakeServer {
   autoAck: boolean;
   config: AgentConfigPayload;
   port = 0;
+  /** Extra hook for every agent frame (after auto-ack), e.g. to answer task.claim. */
+  onFrame: ((msg: Frame['msg']) => void) | undefined;
 
   constructor(private readonly opts: FakeServerOptions) {
     this.autoAck = opts.autoAck ?? true;
@@ -79,6 +81,7 @@ export class FakeServer {
         } else if (this.autoAck && msg.type !== 'heartbeat' && msg.type !== 'ack') {
           ws.send(JSON.stringify(serverMessage('ack', { ok: true }, { replyTo: msg.id })));
         }
+        this.onFrame?.(msg);
       });
     });
     return this;

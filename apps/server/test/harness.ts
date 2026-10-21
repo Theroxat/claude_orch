@@ -3,7 +3,16 @@ import type { FastifyInstance } from 'fastify';
 import type { GithubRole } from '@orch/shared';
 import { buildApp } from '../src/app';
 import { loadConfig } from '../src/config';
-import type { GithubClient, GithubRepoAccess, GithubTokens, GithubUserInfo } from '../src/github';
+import type {
+  CreateIssueInput,
+  CreatePullRequestInput,
+  GithubClient,
+  GithubIssue,
+  GithubRepoAccess,
+  GithubTokens,
+  GithubUserInfo,
+  InstallationTokenScope,
+} from '../src/github';
 import { testPrisma } from './db';
 
 let seq = 0;
@@ -42,9 +51,71 @@ export class FakeGithub implements GithubClient {
     if (this.failRoles) throw new Error('github down');
     return this.roles.get(`${installationId}:${fullName}:${login}`) ?? 'NONE';
   }
+
+  // ---- M3: issues, installation tokens, pull requests ----
+  issues = new Map<string, GithubIssue[]>(); // by fullName
+  createdIssues: Array<CreateIssueInput & { fullName: string; number: number }> = [];
+  tokenCalls: Array<{ installationId: number; scope: InstallationTokenScope }> = [];
+  pullRequests: Array<CreatePullRequestInput & { fullName: string; number: number }> = [];
+
+  /** Seeds an issue as if someone opened it on GitHub. */
+  addIssue(fullName: string, partial: Partial<GithubIssue> & { number: number }): GithubIssue {
+    const issue: GithubIssue = {
+      nodeId: `I_${fullName}_${partial.number}`,
+      htmlUrl: `https://github.com/${fullName}/issues/${partial.number}`,
+      title: `Issue ${partial.number}`,
+      body: '',
+      labels: ['pool'],
+      ...partial,
+    };
+    this.issues.set(fullName, [...(this.issues.get(fullName) ?? []), issue]);
+    return issue;
+  }
+  async createIssue(
+    _installationId: number,
+    fullName: string,
+    input: CreateIssueInput,
+  ): Promise<GithubIssue> {
+    const list = this.issues.get(fullName) ?? [];
+    const number = Math.max(0, ...list.map((i) => i.number)) + 1;
+    const issue = this.addIssue(fullName, {
+      number,
+      title: input.title,
+      body: input.body,
+      labels: input.labels,
+    });
+    this.createdIssues.push({ ...input, fullName, number });
+    return issue;
+  }
+  async listIssuesByLabel(
+    _installationId: number,
+    fullName: string,
+    label: string,
+  ): Promise<GithubIssue[]> {
+    return (this.issues.get(fullName) ?? []).filter((i) => i.labels.includes(label));
+  }
+  async createInstallationToken(installationId: number, scope: InstallationTokenScope) {
+    this.tokenCalls.push({ installationId, scope });
+    return {
+      token: `ghs_fake_${this.tokenCalls.length}`,
+      expiresAt: new Date(Date.now() + 3600_000),
+    };
+  }
+  async createPullRequest(
+    _installationId: number,
+    fullName: string,
+    input: CreatePullRequestInput,
+  ) {
+    const number = this.pullRequests.length + 100;
+    this.pullRequests.push({ ...input, fullName, number });
+    return { number, htmlUrl: `https://github.com/${fullName}/pull/${number}` };
+  }
 }
 
 export const prisma = testPrisma();
+
+/** Test-only webhook secret (not a real secret). */
+export const TEST_WEBHOOK_SECRET = 'test-webhook-secret';
 
 export interface MakeAppOptions {
   /** Extra config values (e.g. AGENT_HEARTBEAT_TIMEOUT_MS, LOG_LEVEL). */
@@ -64,6 +135,9 @@ export function makeApp(
     GITHUB_CLIENT_ID: 'test-client-id',
     GITHUB_APP_SLUG: 'orch-test',
     ORCH_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+    // M1-M3 suites drive tasks by hand; the M4 suite turns the dispatcher on.
+    DISPATCHER_ENABLED: 'false',
+    GITHUB_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
     ...opts.env,
   });
   return buildApp({ config, prisma, github, logStream: opts.logStream });
