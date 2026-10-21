@@ -3,7 +3,7 @@
  * daemon. Container create arguments come only from `sandbox.ts`.
  */
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, basename } from 'node:path';
+import { isAbsolute, relative } from 'node:path';
 import { childEnv, runOk, type CommandRunner, type RunResult } from './runner';
 
 export interface BuildSpec {
@@ -79,12 +79,14 @@ export class CliDocker implements DockerOps {
 
   copyIn(container: string, hostFile: string): Promise<void> {
     if (!isAbsolute(hostFile)) return Promise.reject(new Error(`${hostFile} must be absolute`));
-    // tar keeps the absolute layout (parents created), `-h` follows symlinks.
+    // The archive holds the path relative to `/` and is extracted at the container's `/`, so the
+    // missing parent directories (e.g. /opt/orch/bin in a repo image) are created. Copying into
+    // `<container>:<dirname>` instead fails when that directory does not exist. `-h` follows links.
     return new Promise((resolve, reject) => {
-      const tar = spawn('tar', ['-C', dirname(hostFile), '-chf', '-', basename(hostFile)], {
+      const tar = spawn('tar', ['-C', '/', '-chf', '-', '--', relative('/', hostFile)], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      const cp = spawn(this.bin, ['cp', '-', `${container}:${dirname(hostFile)}`], {
+      const cp = spawn(this.bin, ['cp', '-', `${container}:/`], {
         env: childEnv(),
         stdio: ['pipe', 'ignore', 'pipe'],
       });

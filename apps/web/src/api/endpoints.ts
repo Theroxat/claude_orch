@@ -3,6 +3,8 @@ import {
   AgentViewSchema,
   AvailableRepoSchema,
   CreateEnrollmentTokenResponseSchema,
+  CreatePersonalTokenResponseSchema,
+  PersonalTokenListResponseSchema,
   DiscoverItemSchema,
   ImportTasksResponseSchema,
   InstallUrlResponseSchema,
@@ -15,6 +17,7 @@ import {
   ParticipationViewSchema,
   ProjectViewSchema,
   type AddProjectRequest,
+  type CreatePersonalTokenRequest,
   type CreateTaskRequest,
   type UpdateProjectRequest,
   type UpsertParticipationRequest,
@@ -72,3 +75,8 @@ export const acceptOffer = (id: string) =>
   api('POST', `/offers/${id}/accept`, { schema: OfferViewSchema });
 export const rejectOffer = (id: string) =>
   api('POST', `/offers/${id}/reject`, { schema: OfferViewSchema });
+
+export const fetchTokens = () => api('GET', '/tokens', { schema: PersonalTokenListResponseSchema });
+export const createToken = (body: CreatePersonalTokenRequest) =>
+  api('POST', '/tokens', { body, schema: CreatePersonalTokenResponseSchema });
+export const revokeToken = (id: string) => api<unknown>('DELETE', `/tokens/${id}`);

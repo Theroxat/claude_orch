@@ -34,13 +34,18 @@ export function NewTaskDialog({
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [invalid, setInvalid] = useState<string | null>(null);
   const projectAccess = access[projectId];
-  const isOwner = projectAccess?.myRole === 'owner';
-  const mode = sendTo === 'broadcast' && !isOwner ? 'pool' : sendTo;
   const pool = useQuery({
     queryKey: ['pool', projectId],
     queryFn: () => fetchPool(projectId),
-    enabled: mode === 'members',
+    enabled: projectId !== '',
   });
+  const isOwner =
+    pool.data?.projects?.find((p) => p.projectId === projectId)?.isOwner ??
+    pool.data?.members.some((m) =>
+      m.projects.some((p) => p.projectId === projectId && p.isOwner === true),
+    ) ??
+    false;
+  const mode = sendTo === 'broadcast' && !isOwner ? 'pool' : sendTo;
   const poolMembers = (pool.data?.members ?? []).filter((m) =>
     m.projects.some((p) => p.projectId === projectId),
   );

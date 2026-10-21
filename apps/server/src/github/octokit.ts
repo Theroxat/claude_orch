@@ -18,6 +18,10 @@ export interface OctokitGithubOptions {
   clientId: string;
   clientSecret: string;
   privateKeyPath: string;
+  /** REST API base URL (default https://api.github.com). */
+  apiUrl?: string;
+  /** Web base URL for the OAuth token exchange (default https://github.com). */
+  webUrl?: string;
 }
 
 const ROLES: Record<string, GithubRole> = {
@@ -60,7 +64,8 @@ async function tokenRequest(
   opts: OctokitGithubOptions,
   params: Record<string, string>,
 ): Promise<GithubTokens> {
-  const res = await fetch('https://github.com/login/oauth/access_token', {
+  const web = (opts.webUrl ?? 'https://github.com').replace(/\/+$/, '');
+  const res = await fetch(`${web}/login/oauth/access_token`, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -88,9 +93,15 @@ async function tokenRequest(
 export class OctokitGithubClient implements GithubClient {
   private readonly privateKey: string;
   private readonly installationClients = new Map<number, Octokit>();
+  private readonly baseUrl: string;
 
   constructor(private readonly opts: OctokitGithubOptions) {
     this.privateKey = readFileSync(opts.privateKeyPath, 'utf8');
+    this.baseUrl = (opts.apiUrl ?? 'https://api.github.com').replace(/\/+$/, '');
+  }
+
+  private userClient(accessToken: string): Octokit {
+    return new Octokit({ auth: accessToken, baseUrl: this.baseUrl });
   }
 
   exchangeCode(code: string, redirectUri: string): Promise<GithubTokens> {
@@ -102,12 +113,12 @@ export class OctokitGithubClient implements GithubClient {
   }
 
   async getUser(accessToken: string): Promise<GithubUserInfo> {
-    const { data } = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
+    const { data } = await this.userClient(accessToken).rest.users.getAuthenticated();
     return { id: data.id, login: data.login, name: data.name, avatarUrl: data.avatar_url };
   }
 
   async listUserRepos(accessToken: string): Promise<GithubRepoAccess[]> {
-    const octokit = new Octokit({ auth: accessToken });
+    const octokit = this.userClient(accessToken);
     const installations = await octokit.paginate(
       octokit.rest.apps.listInstallationsForAuthenticatedUser,
       { per_page: 100 },
@@ -186,7 +197,12 @@ export class OctokitGithubClient implements GithubClient {
     installationId: number,
     scope: InstallationTokenScope,
   ): Promise<{ token: string; expiresAt: Date }> {
-    const auth = createAppAuth({ appId: this.opts.appId, privateKey: this.privateKey });
+    const auth = createAppAuth({
+      appId: this.opts.appId,
+      privateKey: this.privateKey,
+      // Same base URL as the REST calls (GitHub Enterprise, E2E fake).
+      request: new Octokit({ baseUrl: this.baseUrl }).request,
+    });
     const res = await auth({
       type: 'installation',
       installationId,
@@ -286,6 +302,7 @@ export class OctokitGithubClient implements GithubClient {
       client = new Octokit({
         authStrategy: createAppAuth,
         auth: { appId: this.opts.appId, privateKey: this.privateKey, installationId },
+        baseUrl: this.baseUrl,
       });
       this.installationClients.set(installationId, client);
     }

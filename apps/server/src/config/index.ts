@@ -16,6 +16,24 @@ const ConfigSchema = z.object({
   GITHUB_APP_SLUG: z.preprocess(emptyToUndefined, z.string().optional()),
   GITHUB_APP_PRIVATE_KEY_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
   GITHUB_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** GitHub REST API base URL. Only changed for GitHub Enterprise or the E2E fake GitHub. */
+  GITHUB_API_URL: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .url()
+      .default('https://api.github.com')
+      .transform((u) => u.replace(/\/+$/, '')),
+  ),
+  /** GitHub web base URL (OAuth authorize / token exchange). Same caveat as GITHUB_API_URL. */
+  GITHUB_WEB_URL: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .url()
+      .default('https://github.com')
+      .transform((u) => u.replace(/\/+$/, '')),
+  ),
   ORCH_ENCRYPTION_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   // Files served to member machines. Default: resolved from the repository root.
   ORCH_INSTALL_SH_PATH: z.preprocess(emptyToUndefined, z.string().optional()),

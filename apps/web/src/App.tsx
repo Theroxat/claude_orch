@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
 import { Backlog } from './pages/Backlog';
+import { ClaudeCode } from './pages/ClaudeCode';
 import { Discover } from './pages/Discover';
 import { Login } from './pages/Login';
 import { MyServer } from './pages/MyServer';
@@ -21,6 +22,7 @@ export function App() {
           <Route path="/pool" element={<Pool />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/backlog" element={<Backlog />} />
+          <Route path="/claude-code" element={<ClaudeCode />} />
           <Route path="/my-server" element={<MyServer />} />
         </Route>
       </Route>

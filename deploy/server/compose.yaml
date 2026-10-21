@@ -1,0 +1,103 @@
+# orch production stack: Caddy (HTTPS + static web), server, Postgres, nightly backups.
+#
+#   cp .env.example .env     # then fill it in
+#   docker compose up -d     # pulls ghcr.io images; add --build to build from this checkout
+#
+# Only Caddy publishes host ports (HTTP_PORT / HTTPS_PORT). Postgres and the server stay on
+# the internal network.
+name: orch
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  caddy:
+    <<: *restart
+    image: ghcr.io/theroxat/orch-web:${ORCH_VERSION:-latest}
+    build:
+      context: ../..
+      dockerfile: docker/web.Dockerfile
+    ports:
+      - '${HTTP_PORT:-80}:80'
+      - '${HTTPS_PORT:-443}:443'
+    environment:
+      ORCH_DOMAIN: ${ORCH_DOMAIN:?set ORCH_DOMAIN in .env (e.g. orch.selfhostr.io)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      # Caddy admin API, loopback only inside the container.
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:2019/config/']
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  server:
+    <<: *restart
+    image: ghcr.io/theroxat/orch-server:${ORCH_VERSION:-latest}
+    build:
+      context: ../..
+      dockerfile: docker/server.Dockerfile
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ORCH_BASE_URL: ${ORCH_BASE_URL:-https://${ORCH_DOMAIN}}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-orch}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: /run/orch-secrets/github-app.pem
+      ORCH_ENCRYPTION_KEY: ${ORCH_ENCRYPTION_KEY:?set ORCH_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+    volumes:
+      # GitHub App private key (read-only). See README: Creating the GitHub App.
+      - ${GITHUB_APP_PRIVATE_KEY_FILE:-./secrets/github-app.pem}:/run/orch-secrets/github-app.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    <<: *restart
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-orch}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Nightly pg_dump (custom format) into the `backups` volume, pruned after BACKUP_RETENTION_DAYS.
+  backup:
+    <<: *restart
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '/backup.sh']
+    environment:
+      PGUSER: ${POSTGRES_USER:-orch}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-orch}
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-3}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_ON_START: ${BACKUP_ON_START:-false}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  backups:
+  caddy_data:
+  caddy_config:

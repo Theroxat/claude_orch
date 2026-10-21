@@ -1176,8 +1176,9 @@ export class TaskService {
     if (!this.deps.github) return { ok: false, reason: 'github_not_configured' };
     const project = a.task.project;
     const repository = project.fullName.split('/')[1] ?? '';
+    // PLAN 5.5: the server opens the PR itself, so the agent never needs pull_requests:write.
     const permissions: Record<string, 'read' | 'write'> =
-      p.purpose === 'clone' ? { contents: 'read' } : { contents: 'write', pull_requests: 'write' };
+      p.purpose === 'clone' ? { contents: 'read' } : { contents: 'write' };
     const minted = await this.deps.github.createInstallationToken(
       Number(project.installation.githubInstallationId),
       { repository, permissions },

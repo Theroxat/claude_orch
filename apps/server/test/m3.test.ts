@@ -426,11 +426,11 @@ describe('tokens, PRs and the lifecycle', () => {
     const call = gh.tokenCalls.at(-1)!;
     expect(call.scope).toEqual({
       repository: repo.fullName.split('/')[1],
-      permissions: { contents: 'write', pull_requests: 'write' },
+      permissions: { contents: 'write' },
     });
     expect(grant.payload).toMatchObject({
       repository: repo.fullName,
-      permissions: { contents: 'write', pull_requests: 'write' },
+      permissions: { contents: 'write' },
     });
     const clone = agentMessage('token.request', {
       requestId: 'r2',

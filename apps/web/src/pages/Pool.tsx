@@ -59,9 +59,16 @@ function MemberCard({ m }: { m: PoolMember }) {
           <ul className="plain">
             {m.runningTasks.map((t) => (
               <li key={t.taskId}>
-                <a href={`/backlog?task=${t.taskId}`}>
-                  #{t.issueNumber} {t.title}
-                </a>{' '}
+                {t.projectFullName && <span className="hint">{t.projectFullName} </span>}
+                {t.issueUrl ? (
+                  <a href={t.issueUrl} target="_blank" rel="noreferrer">
+                    #{t.issueNumber} {t.title}
+                  </a>
+                ) : (
+                  <a href={`/backlog?task=${t.taskId}`}>
+                    #{t.issueNumber} {t.title}
+                  </a>
+                )}{' '}
                 <span className="badge">{t.status}</span>
               </li>
             ))}

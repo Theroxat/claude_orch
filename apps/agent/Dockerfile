@@ -11,8 +11,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git screen ca-certificates curl tini \
  && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI + compose plugin, used to drive task containers through the host daemon.
+# Docker CLI + buildx and compose plugins, used to drive task containers through the host daemon.
+# buildx is required: task images are built with BuildKit (DOCKER_BUILDKIT=1, PLAN 5.2).
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 # Claude Code CLI (native installer), copied to /opt/orch/bin/claude (PLAN 5.6) so it can be

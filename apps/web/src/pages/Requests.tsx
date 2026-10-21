@@ -56,7 +56,7 @@ function OfferRow({ o, now }: { o: OfferView; now: number }) {
       <div className="row">
         <span className="badge">{o.task.size}</span>
         <span className="badge">{o.task.model.toLowerCase()}</span>
-        <span className="hint">requested by {o.task.createdBy.githubLogin}</span>
+        <span className="hint">requested by {(o.requestedBy ?? o.task.createdBy).githubLogin}</span>
       </div>
       {error && <p className="error">{error}</p>}
       <div className="row">

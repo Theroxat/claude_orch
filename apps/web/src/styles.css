@@ -303,3 +303,6 @@ ul.plain {
   gap: 2px;
   margin: 4px 0;
 }
+.token-revoked {
+  opacity: 0.6;
+}

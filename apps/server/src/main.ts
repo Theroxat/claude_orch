@@ -14,6 +14,8 @@ const github =
         clientId: GITHUB_CLIENT_ID,
         clientSecret: GITHUB_CLIENT_SECRET,
         privateKeyPath: GITHUB_APP_PRIVATE_KEY_PATH,
+        apiUrl: config.GITHUB_API_URL,
+        webUrl: config.GITHUB_WEB_URL,
       })
     : undefined;
 const app = buildApp({ config, prisma, github });

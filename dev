@@ -35,10 +35,11 @@ case "$cmd" in
     dc up -d --build --wait "$@"
     echo "web: http://localhost:${ORCH_DEV_WEB_PORT:-8470}  api: http://localhost:${ORCH_DEV_API_PORT:-8471}"
     ;;
+  e2e) exec ./test/e2e/run.sh "$@" ;;
   down) dc --profile tools down "$@" ;;
   logs) dc logs -f "$@" ;;
   ps) dc ps ;;
   help | *)
-    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
+    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|e2e|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
     ;;
 esac

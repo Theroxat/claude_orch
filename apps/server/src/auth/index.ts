@@ -117,7 +117,7 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
       throw new HttpError(503, 'github_not_configured', 'GitHub App is not configured');
     }
     const state = randomToken();
-    const url = new URL('https://github.com/login/oauth/authorize');
+    const url = new URL(`${config.GITHUB_WEB_URL}/login/oauth/authorize`);
     url.searchParams.set('client_id', config.GITHUB_CLIENT_ID);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('state', state);

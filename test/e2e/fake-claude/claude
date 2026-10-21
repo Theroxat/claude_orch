@@ -1,0 +1,56 @@
+#!/bin/sh
+# Fake Claude Code CLI for the E2E test (./dev e2e). Never talks to Anthropic.
+#   claude --version             prints a version
+#   claude setup-token           no-op (orch login --no-setup skips it anyway)
+#   claude -p ... (auto mode)    reads the prompt on stdin, writes and commits a file in the
+#                                working dir, then emits stream-json events and a `result`
+#   claude [--model m] [prompt]  (manual mode, in screen) just sleeps: the test edits the clone
+set -eu
+
+case "${1:-}" in
+  --version) echo "0.0.0-fake (Claude Code)"; exit 0 ;;
+  setup-token) echo "fake setup-token"; exit 0 ;;
+esac
+
+print=0
+model=unknown
+prev=
+for a in "$@"; do
+  [ "$a" = "-p" ] && print=1
+  [ "$prev" = "--model" ] && model="$a"
+  prev="$a"
+done
+
+if [ "$print" -eq 0 ]; then
+  echo "fake claude (interactive, model $model): waiting"
+  exec sleep infinity
+fi
+
+prompt="$(cat)"
+emit() { printf '%s\n' "$1"; }
+emit '{"type":"system","subtype":"init","session_id":"fake-session","model":"'"$model"'","tools":[]}'
+
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  emit '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"no CLAUDE_CODE_OAUTH_TOKEN in the sandbox","num_turns":0}'
+  exit 1
+fi
+
+# A trace of what the run saw, committed with the change (no secret values).
+title="$(printf '%s\n' "$prompt" | grep -m1 -i '^title:' || true)"
+stamp="$(date +%s)-$$"
+mkdir -p fake-claude
+{
+  echo "fake claude run $stamp"
+  echo "model: $model"
+  echo "uid: $(id -u)"
+  echo "pwd: $(pwd)"
+  echo "prompt-bytes: $(printf '%s' "$prompt" | wc -c)"
+  echo "$title"
+} > "fake-claude/run-$stamp.txt"
+
+if command -v git >/dev/null 2>&1; then
+  git add -A >/dev/null 2>&1 && git commit -q -m "fake claude: add run-$stamp.txt" >/dev/null 2>&1 || true
+fi
+
+emit '{"type":"assistant","message":{"id":"msg_fake_'"$stamp"'","model":"claude-sonnet-fake","role":"assistant","content":[{"type":"text","text":"Wrote fake-claude/run-'"$stamp"'.txt"}],"usage":{"input_tokens":1200,"output_tokens":300}}}'
+emit '{"type":"result","subtype":"success","is_error":false,"result":"Fake run: wrote fake-claude/run-'"$stamp"'.txt","num_turns":1,"usage":{"input_tokens":1200,"output_tokens":300,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}'

@@ -63,6 +63,40 @@ function base(extra: Routes = {}): Routes {
   };
 }
 
+describe('Pool links', () => {
+  it('links running tasks straight to GitHub', async () => {
+    mockApi(
+      base({
+        'GET /pool': () => ({
+          json: {
+            estimate: true,
+            members: [
+              member({
+                runningTasks: [
+                  {
+                    taskId: 't9',
+                    projectId: 'p1',
+                    issueNumber: 9,
+                    title: 'Fix it',
+                    status: 'RUNNING',
+                    projectFullName: 'octo/repo',
+                    issueUrl: 'https://github.com/octo/repo/issues/9',
+                  },
+                ],
+              }),
+            ],
+          },
+        }),
+      }),
+    );
+    renderApp('/pool');
+    const alice = await screen.findByRole('article', { name: 'Member alice' });
+    const link = within(alice).getByRole('link', { name: /#9 Fix it/ });
+    expect(link.getAttribute('href')).toBe('https://github.com/octo/repo/issues/9');
+    expect(within(alice).getByText(/octo\/repo/, { selector: 'span.hint' })).toBeTruthy();
+  });
+});
+
 describe('Pool', () => {
   it('renders members with estimate, stale and paused states', async () => {
     mockApi(
@@ -129,6 +163,26 @@ describe('Pool', () => {
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'p1' } });
     expect(await screen.findByText('dave')).toBeTruthy();
     expect(calls.some((c) => c.path === '/pool?projectId=p1')).toBe(true);
+  });
+});
+
+describe('Requests requestedBy', () => {
+  it('shows requestedBy, falling back to the task creator', async () => {
+    mockApi(
+      base({
+        'GET /offers/mine': () => ({
+          json: [
+            offer({ requestedBy: { githubLogin: 'dave', avatarUrl: null } }),
+            offer({ id: 'o2', task: { ...offer().task, issueNumber: 13 } }),
+          ],
+        }),
+      }),
+    );
+    renderApp('/requests');
+    const a = await screen.findByRole('article', { name: 'Request #12' });
+    expect(within(a).getByText('requested by dave')).toBeTruthy();
+    const b = screen.getByRole('article', { name: 'Request #13' });
+    expect(within(b).getByText('requested by bob')).toBeTruthy();
   });
 });
 
@@ -254,7 +308,11 @@ describe('New task dispatch selector', () => {
     base({
       'GET /tasks': () => ({ json: board(role) }),
       'GET /pool?projectId=p1': () => ({
-        json: { estimate: true, members: [member(), member({ userId: 'u3', login: 'carol' })] },
+        json: {
+          estimate: true,
+          members: [member(), member({ userId: 'u3', login: 'carol' })],
+          projects: [{ projectId: 'p1', fullName: 'octo/repo', isOwner: role === 'owner' }],
+        },
       }),
       'POST /projects/p1/tasks': () => ({ status: 201, json: task }),
     });
@@ -302,6 +360,23 @@ describe('New task dispatch selector', () => {
     expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
       dispatch: { mode: 'broadcast' },
     });
+  });
+
+  it('hides Everyone when the pool says the caller is not the owner, despite an owner board role', async () => {
+    mockApi({
+      ...routes('owner'),
+      'GET /pool?projectId=p1': () => ({
+        json: {
+          estimate: true,
+          members: [member()],
+          projects: [{ projectId: 'p1', fullName: 'octo/repo', isOwner: false }],
+        },
+      }),
+    });
+    renderApp('/backlog');
+    const dialog = await openDialog();
+    await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Pool' })).toBeTruthy());
+    expect(within(dialog).queryByRole('option', { name: 'Everyone' })).toBeNull();
   });
 
   it('hides Everyone for non-owners', async () => {
