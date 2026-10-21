@@ -397,7 +397,7 @@ export class Agent {
 
   private onMessage(m: ServerMessage): void {
     if (m.type === 'ack') {
-      if (!m.payload.ok && !m.payload.duplicate) {
+      if (!m.payload.ok) {
         this.log.warn('server refused a message', { replyTo: m.replyTo, error: m.payload.error });
       }
       this.executor?.onAck(m.replyTo, m.payload);

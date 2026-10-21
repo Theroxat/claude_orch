@@ -317,7 +317,8 @@ export class ManualExecutor {
 
   /** Called for every `ack` the agent receives. */
   onAck(replyTo: string, ack: AckPayload): void {
-    const okAck = ack.ok || ack.duplicate === true;
+    // A duplicate ack replays the server's first answer: trust `ok`, not `duplicate`.
+    const okAck = ack.ok;
     const waiting = this.store.all().find((r) => r.pendingAcceptId === replyTo);
     if (waiting) {
       const id = waiting.assignmentId;
@@ -340,7 +341,7 @@ export class ManualExecutor {
     }
     for (const [key, w] of this.claims) {
       if (w.entryId !== replyTo) continue;
-      if (!ack.ok && !ack.duplicate) {
+      if (!ack.ok) {
         clearTimeout(w.timer);
         this.claims.delete(key);
         const code = ack.error?.code ?? 'claim_refused';
@@ -638,7 +639,7 @@ export class ManualExecutor {
         resolve(a);
       });
     });
-    if (ack && !ack.ok && !ack.duplicate) {
+    if (ack && !ack.ok) {
       this.requests.delete(id);
       throw new ExecError(
         ack.error?.code ?? 'refused',
