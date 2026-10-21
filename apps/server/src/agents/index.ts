@@ -49,6 +49,9 @@ export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentG
     config: deps.config,
     log: app.log,
     github: deps.github,
+    // `app.allowlist` is registered later (registerAuth): resolved at call time.
+    // `reauth` (GitHub token gone past the outage grace period) is a denial too.
+    isAllowed: async (user) => (await app.allowlist.check(user)) === 'allowed',
   });
   app.decorate('agentGateway', gateway);
   gateway.start();
@@ -330,10 +333,11 @@ export function registerAgents(
         ) {
           throw new HttpError(401, 'unauthorized', 'Invalid agent credential');
         }
-        // A user who left the allowlist is denied (agents are kept; re-adding restores them).
+        // A user who left the allowlist is denied with a 403, not the 401 of a bad credential:
+        // the agent keeps retrying with a long backoff and is back once the user is re-approved.
         const owner = await prisma.user.findUnique({ where: { id: agent.userId } });
-        if (!owner || (await app.allowlist.check(owner)) === 'refused') {
-          throw new HttpError(401, 'unauthorized', 'This account is no longer allowed');
+        if (!owner || !(await gateway.ownerAllowed(owner))) {
+          throw new HttpError(403, 'access_suspended', 'Access to this server was removed');
         }
         authed.set(req, agent);
       },

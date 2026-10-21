@@ -383,8 +383,9 @@ export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
     if (decision === 'refused') {
       throw unauthorized('This account is no longer allowed on this server');
     }
-    // GitHub token gone: OAuth clients re-authenticate (and are re-checked); PATs keep working.
-    if (decision === 'reauth' && oauth) throw unauthorized('Sign in with GitHub again');
+    // Only reached for org-based access whose GitHub token is gone past the outage grace period
+    // (admins, listed logins and approved grants never need it): sign in again to be re-checked.
+    if (decision === 'reauth') throw unauthorized('Sign in with GitHub again');
     return user;
   };
 

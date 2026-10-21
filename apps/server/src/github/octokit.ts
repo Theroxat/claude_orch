@@ -124,8 +124,13 @@ export class OctokitGithubClient implements GithubClient {
       ).rest.orgs.getMembershipForAuthenticatedUser({ org });
       return data.state === 'active';
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status === 404 || status === 403) return false;
+      // 404/403: not a member (or the org restricts the App). A rate-limited 403, a 401 (the
+      // user revoked the App authorization), 5xx and network errors throw: the decision is
+      // unknown and the allowlist applies its outage grace period, then denies.
+      const e = err as { status?: number; response?: { headers?: Record<string, unknown> } };
+      const h = e.response?.headers ?? {};
+      const rateLimited = h['x-ratelimit-remaining'] === '0' || h['retry-after'] !== undefined;
+      if (e.status === 404 || (e.status === 403 && !rateLimited)) return false;
       throw err;
     }
   }

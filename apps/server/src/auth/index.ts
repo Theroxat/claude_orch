@@ -33,10 +33,26 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * The org-membership check could not be made (GitHub unreachable, 5xx, rate limit, revoked App
+ * authorization, token not refreshable) and no recent enough decision exists: fail closed.
+ */
+export class AccessUnknownError extends Error {
+  constructor(
+    cause: unknown,
+    /** The user's GitHub token is gone or cannot be refreshed. */
+    readonly reauth: boolean,
+  ) {
+    super('GitHub access check unavailable', { cause });
+  }
+}
+
 export interface Allowlist {
   /**
-   * Whether the user may still use orch. `reauth` when the decision needs the user's GitHub
-   * token and it can no longer be refreshed (treated as signed out).
+   * Whether the user may still use orch. When GitHub cannot answer the org check, the last known
+   * decision is reused while it is younger than ORCH_ACCESS_GRACE_SEC; after that the user is
+   * refused (`reauth` when their GitHub token can no longer be refreshed). Callers treat both
+   * `refused` and `reauth` as a denial.
    */
   check(user: User): Promise<'allowed' | 'refused' | 'reauth'>;
   /**
@@ -123,8 +139,14 @@ export function createAllowlist(deps: AuthDeps): Allowlist {
   const { config, prisma } = deps;
   const envRestricted = signInIsRestricted(config);
   const ttl = config.ORCH_ALLOWLIST_CACHE_SEC * 1000;
+  // Outage policy: on a failed org check, reuse the last known decision for at most `grace`.
+  const grace = config.ORCH_ACCESS_GRACE_SEC * 1000;
+  // After a failed check, GitHub is not asked again for that user for a short while.
+  const retryMs = Math.min(30_000, grace);
   // Org-membership results of signed-in users, so removing someone takes effect within the TTL.
+  // Entries outlive the TTL: they are the last known decision used during a GitHub outage.
   const orgCache = new Map<string, { ok: boolean; at: number }>();
+  const orgFailures = new Map<string, { at: number; err: unknown }>();
   // Access grants by lower-cased login (same TTL), dropped by invalidate() on admin decisions.
   const grantCache = new Map<
     string,
@@ -182,17 +204,33 @@ export function createAllowlist(deps: AuthDeps): Allowlist {
     if (status === 'APPROVED') return true;
     if (config.ORCH_ALLOWED_GITHUB_ORGS.length === 0) return false;
     const hit = cacheKey ? orgCache.get(cacheKey) : undefined;
-    if (hit && Date.now() - hit.at < ttl) return hit.ok;
+    if (hit && fresh(hit.at)) return hit.ok;
     if (!deps.github) return false;
-    const token = await accessToken();
+    /** GitHub could not answer: the last known decision while it is recent enough, else deny. */
+    const lastKnown = (err: unknown): boolean => {
+      if (hit && Date.now() - hit.at < grace) return hit.ok;
+      throw new AccessUnknownError(err, err instanceof HttpError);
+    };
+    const failed = cacheKey ? orgFailures.get(cacheKey) : undefined;
+    if (failed && Date.now() - failed.at < retryMs) return lastKnown(failed.err);
     let ok = false;
-    for (const org of config.ORCH_ALLOWED_GITHUB_ORGS) {
-      if (await deps.github.isOrgMember(token, org)) {
-        ok = true;
-        break;
+    try {
+      const token = await accessToken();
+      for (const org of config.ORCH_ALLOWED_GITHUB_ORGS) {
+        if (await deps.github.isOrgMember(token, org)) {
+          ok = true;
+          break;
+        }
       }
+    } catch (err) {
+      if (!cacheKey) throw err; // sign-in: fails closed with an error page
+      orgFailures.set(cacheKey, { at: Date.now(), err });
+      return lastKnown(err);
     }
-    if (cacheKey) orgCache.set(cacheKey, { ok, at: Date.now() });
+    if (cacheKey) {
+      orgCache.set(cacheKey, { ok, at: Date.now() });
+      orgFailures.delete(cacheKey);
+    }
     return ok;
   }
 
@@ -206,6 +244,8 @@ export function createAllowlist(deps: AuthDeps): Allowlist {
       );
       return ok ? 'allowed' : 'refused';
     } catch (err) {
+      // GitHub unavailable past the grace period, or token gone: fail closed.
+      if (err instanceof AccessUnknownError) return err.reauth ? 'reauth' : 'refused';
       if (err instanceof HttpError) return 'reauth';
       throw err;
     }
@@ -255,11 +295,13 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     });
     if (!session || session.expiresAt.getTime() <= Date.now()) return;
     // Existing sessions are re-checked against the allowlist (org checks are cached).
-    let decision: 'allowed' | 'refused' | 'reauth' = 'allowed';
+    let decision: 'allowed' | 'refused' | 'reauth';
     try {
       decision = await allowlist.check(session.user);
     } catch (err) {
-      req.log.warn({ err }, 'Allowlist re-check failed; keeping the session');
+      // GitHub outages are handled by check() (grace, then deny); anything else fails closed.
+      req.log.warn({ err }, 'Allowlist re-check failed; denying the session');
+      return;
     }
     // Token expired or revoked: treated as signed out, the user signs in again (and is checked).
     if (decision === 'reauth') return;

@@ -29,6 +29,12 @@ export const CloseCode = {
   VERSION_MISMATCH: 4010,
   /** Credential rejected after the socket opened. Do not reconnect. */
   UNAUTHORIZED: 4401,
+  /**
+   * The owner's access was removed or denied by an admin (or cannot be verified). NOT fatal: the
+   * credential stays valid, so the agent retries with a long backoff and comes back once the
+   * owner is approved again.
+   */
+  ACCESS_SUSPENDED: 4403,
 } as const;
 export type CloseCode = (typeof CloseCode)[keyof typeof CloseCode];
 

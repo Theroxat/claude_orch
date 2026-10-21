@@ -6,6 +6,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import {
+  CloseCode,
   FATAL_CLOSE_CODES,
   agentMessage,
   parseServerMessage,
@@ -39,6 +40,11 @@ export interface WsClientOptions {
   backoff?: Partial<BackoffOptions>;
   /** Close and retry when no `welcome` arrives in time. */
   welcomeTimeoutMs?: number;
+  /**
+   * Minimum wait before retrying after the owner's access was suspended (close 4403 or HTTP 403
+   * on upgrade). Default 60 s; the usual jittered backoff is added on top.
+   */
+  suspendedRetryMs?: number;
 }
 
 const FATAL_HINTS: Record<number, string> = {
@@ -149,13 +155,25 @@ export class WsClient extends EventEmitter<WsClientEvents> {
         this.emit('fatal', { code: effective, reason });
         return;
       }
+      if (code === CloseCode.ACCESS_SUSPENDED || httpStatus === 403) {
+        // Not fatal: the credential is still valid. Retry slowly until an admin approves again.
+        this.opts.logger.warn(
+          'access to the server was removed by an admin; retrying until it is approved again',
+        );
+        this.scheduleReconnect(
+          CloseCode.ACCESS_SUSPENDED,
+          reason,
+          this.opts.suspendedRetryMs ?? 60_000,
+        );
+        return;
+      }
       this.scheduleReconnect(code, reason);
     });
   }
 
-  private scheduleReconnect(code: number, reason: string): void {
+  private scheduleReconnect(code: number, reason: string, minDelayMs = 0): void {
     const attempt = this.attempt++;
-    const delayMs = backoffDelay(attempt, this.backoff);
+    const delayMs = minDelayMs + backoffDelay(attempt, this.backoff);
     this.setState('waiting');
     this.opts.logger.info('disconnected, reconnecting', { code, reason, attempt, delayMs });
     this.emit('reconnect', { attempt, delayMs });

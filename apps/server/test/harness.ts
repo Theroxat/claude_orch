@@ -46,9 +46,12 @@ export class FakeGithub implements GithubClient {
   orgs = new Map<string, Set<string>>(); // by access token -> org names (lower-case)
   orgCalls = 0;
   failOrgs = false;
+  /** Thrown by isOrgMember when set (e.g. a 401 after the user revoked the App). */
+  failOrgsWith: Error | undefined;
   async isOrgMember(accessToken: string, org: string): Promise<boolean> {
     this.orgCalls++;
     if (this.failOrgs) throw new Error('github down');
+    if (this.failOrgsWith) throw this.failOrgsWith;
     return this.orgs.get(accessToken)?.has(org.toLowerCase()) ?? false;
   }
   async listUserRepos(accessToken: string): Promise<GithubRepoAccess[]> {
