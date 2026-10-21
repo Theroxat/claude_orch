@@ -25,7 +25,11 @@ function Avatar({ g }: { g: AccessGrant }) {
   return (
     <img
       className="avatar"
-      src={g.avatarUrl ?? `https://github.com/${g.githubLogin}.png?size=64`}
+      // avatars.githubusercontent.com: the only image host the CSP allows (github.com is not).
+      src={
+        g.avatarUrl ??
+        `https://avatars.githubusercontent.com/${encodeURIComponent(g.githubLogin)}?size=64`
+      }
       alt=""
     />
   );
