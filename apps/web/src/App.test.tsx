@@ -9,7 +9,7 @@ describe('auth gate', () => {
     });
     renderApp('/projects');
     const link = await screen.findByRole('link', { name: 'Sign in with GitHub' });
-    expect(link.getAttribute('href')).toBe('/api/auth/github/login');
+    expect(link.getAttribute('href')).toBe('/api/auth/github/login?next=%2Fprojects');
   });
 
   it('shows the layout with nav and user when signed in', async () => {
