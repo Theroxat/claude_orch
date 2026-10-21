@@ -20,7 +20,7 @@
  * through `GIT_CONFIG_COUNT/KEY/VALUE` environment variables. It is never on the command line,
  * in a remote URL, in a git config file or anywhere else on disk.
  */
-import { cpSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, readdirSync, readlinkSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { runOk, type CommandRunner } from './runner';
 
@@ -136,6 +136,40 @@ export function symlinkStaysInside(path: string, target: string): boolean {
   if (target === '' || posix.isAbsolute(target) || target.includes('\0')) return false;
   const resolved = posix.normalize(posix.join(posix.dirname(path), target));
   return resolved !== '..' && !resolved.startsWith('../') && !/(^|\/)\.git(\/|$)/i.test(resolved);
+}
+
+/**
+ * True when the symlink at `path` (repo-relative) resolves inside the worktree, following the
+ * other symlinks on disk the way the kernel does. Text normalization alone is not enough: with
+ * `s -> .`, the target `s/x/../..` normalizes to `.` but resolves to the worktree's parent.
+ */
+export function symlinkResolvesInside(workTree: string, path: string): boolean {
+  const out: string[] = [];
+  let rest = path.split('/');
+  let hops = 0;
+  while (rest.length > 0) {
+    const c = rest.shift()!;
+    if (c === '' || c === '.') continue;
+    if (c === '..') {
+      if (out.length === 0) return false;
+      out.pop();
+      continue;
+    }
+    out.push(c);
+    let link = false;
+    try {
+      link = lstatSync(join(workTree, ...out)).isSymbolicLink();
+    } catch {
+      // Missing: a plain name from here on.
+    }
+    if (!link) continue;
+    if (++hops > 40) return false; // ELOOP
+    const target = readlinkSync(join(workTree, ...out), 'utf8');
+    if (target === '' || posix.isAbsolute(target) || target.includes('\0')) return false;
+    out.pop();
+    rest = [...target.split('/'), ...rest];
+  }
+  return !out.some((c) => /^\.git$/i.test(c));
 }
 
 export class CliGit implements GitOps {
@@ -294,7 +328,7 @@ export class CliGit implements GitOps {
       else if (mode === '160000') problems.push(`${path}: nested repository (gitlink)`);
       else if (mode === '120000') {
         const target = await this.git(['cat-file', 'blob', sha], { repo });
-        if (!symlinkStaysInside(path, target)) {
+        if (!symlinkStaysInside(path, target) || !symlinkResolvesInside(repo.workTree, path)) {
           problems.push(`${path}: symlink to ${JSON.stringify(target.slice(0, 200))}`);
         }
       }

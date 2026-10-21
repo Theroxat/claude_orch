@@ -320,6 +320,20 @@ describe('a hostile task cannot make the agent run anything through git', () => 
     expect(sh(['--git-dir', repo.gitDir, 'diff', '--cached', '--name-only'])).toBe('');
   });
 
+  it('refuses a symlink that escapes through another symlink (text normalization is not enough)', async () => {
+    const { git, repo } = await realRepo();
+    mkdirSync(join(repo.workTree, 'x'));
+    writeFileSync(join(repo.workTree, 'x', 'keep'), '');
+    symlinkSync('.', join(repo.workTree, 's'));
+    // "s/x/../.." normalizes to "." but the kernel resolves s first: it is the worktree's parent.
+    symlinkSync('s/x/../..', join(repo.workTree, 'esc'));
+    await expect(git.commitAll(repo, 'bad', ID)).rejects.toThrow(/esc: symlink/);
+    execFileSync('rm', [join(repo.workTree, 'esc')]);
+    // a chain that stays inside is fine
+    symlinkSync('s/x/keep', join(repo.workTree, 'ok'));
+    expect(await git.commitAll(repo, 'ok chain', ID)).toBe(true);
+  });
+
   it('helpers: nested .git detection and symlink containment', () => {
     const root = join(tmp.dir, 'wt');
     mkdirSync(join(root, '.git'), { recursive: true });
