@@ -341,6 +341,17 @@ describe('ManualExecutor guards', () => {
     await expect(p).rejects.toThrow(/Someone else already took/);
   });
 
+  it('surfaces a replayed claim refusal (duplicate ack)', async () => {
+    const t = setup();
+    const p = t.ex.take(42);
+    t.ex.onAck(t.of('task.claim')[0]!.id, {
+      ok: false,
+      duplicate: true,
+      error: { code: 'already_taken', message: 'raw' },
+    });
+    await expect(p).rejects.toThrow(/Someone else already took/);
+  });
+
   it('times out a claim the server does not answer', async () => {
     const t = setup();
     await expect(t.ex.take(42)).rejects.toMatchObject({ code: 'claim_pending' });
