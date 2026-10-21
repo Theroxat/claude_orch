@@ -1,7 +1,12 @@
+import { useSearchParams } from 'react-router';
+import { safeReturnPath } from '../returnPath';
 import { Brand } from '../ui/Brand';
 import { Icon } from '../ui/Icon';
 
 export function Login() {
+  const [params] = useSearchParams();
+  const next = safeReturnPath(params.get('next'));
+  const href = '/api/auth/github/login' + (next ? `?next=${encodeURIComponent(next)}` : '');
   return (
     <div className="gate">
       <section className="login">
@@ -9,7 +14,7 @@ export function Login() {
           <Brand large />
         </h1>
         <p className="lede">Share your Claude Code capacity with your team.</p>
-        <a className="btn primary big" href="/api/auth/github/login">
+        <a className="btn primary big" href={href}>
           <Icon name="github" size={18} />
           Sign in with GitHub
         </a>
