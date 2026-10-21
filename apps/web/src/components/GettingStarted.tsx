@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchInstallUrl, fetchOnboarding } from '../api/endpoints';
 import { AddRepoDialog } from './AddRepoDialog';
+import { claudeRejectedText, relativeTime } from './AgentCard';
 
 export const DISMISS_KEY = 'orch.gettingStarted.dismissed';
 
@@ -174,9 +175,25 @@ export function GettingStarted() {
                 s.state === 'todo' &&
                 s.reason === 'claude_login_expired' && (
                   <p className="warning">
-                    Claude login expired: run <code>orch login</code>
+                    {claudeRejectedText(
+                      { claudeAuthError: s.errorClass },
+                      s.agentName ? <> on {s.agentName}</> : null,
+                    )}
                   </p>
                 )}
+              {s.id === 'claude_connected' && s.done && (
+                <p className="hint">
+                  {s.reason === 'claude_login_unverified' ? (
+                    <>
+                      Claude login not verified yet: run <code>orch doctor</code>
+                    </>
+                  ) : s.reason === 'claude_check_inconclusive' ? (
+                    `Could not verify (${s.errorClass ?? 'error'}) ${relativeTime(s.checkedAt)}`
+                  ) : s.checkedAt ? (
+                    `Claude login verified ${relativeTime(s.checkedAt)}`
+                  ) : null}
+                </p>
+              )}
               {!s.done && <div>{actions(s)}</div>}
             </div>
           </li>

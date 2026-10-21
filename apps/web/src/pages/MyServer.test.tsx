@@ -89,7 +89,7 @@ describe('My server', () => {
     });
     renderApp('/my-server');
     const ok = await screen.findByRole('article', { name: 'laptop' });
-    expect(within(ok).getByText('Claude: connected')).toBeTruthy();
+    expect(ok.textContent).toContain('Claude login not verified yet: run orch doctor');
     const todo = await screen.findByRole('article', { name: 'desktop' });
     expect(todo.textContent).toContain('Claude: not connected: run orch login');
   });
@@ -195,6 +195,50 @@ describe('My server', () => {
     );
     await waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true));
     await waitFor(() => expect(screen.queryByRole('article', { name: 'laptop' })).toBeNull());
+  });
+
+  it('shows verified, rejected (401) and inconclusive Claude checks', async () => {
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /agents/mine': () => ({
+        json: [
+          agent({
+            id: 'a1',
+            machineName: 'laptop',
+            claudeTokenPresent: true,
+            claudeAuthValid: true,
+            claudeAuthCheckedAt: ago(5 * 60_000),
+            claudeAuthError: null,
+          }),
+          agent({
+            id: 'a2',
+            machineName: 'desktop',
+            claudeTokenPresent: true,
+            claudeAuthValid: false,
+            claudeAuthCheckedAt: ago(60_000),
+            claudeAuthError: 'unauthorized',
+          }),
+          agent({
+            id: 'a3',
+            machineName: 'nas',
+            claudeTokenPresent: true,
+            claudeAuthValid: true,
+            claudeAuthCheckedAt: ago(2 * 3600_000),
+            claudeAuthError: 'timeout',
+          }),
+        ],
+      }),
+    });
+    renderApp('/my-server');
+    const ok = await screen.findByRole('article', { name: 'laptop' });
+    expect(ok.textContent).toContain('Claude login verified 5 min ago');
+    const bad = await screen.findByRole('article', { name: 'desktop' });
+    expect(within(bad).getByRole('alert').textContent).toBe(
+      'Claude rejected the token (401): run orch login',
+    );
+    const inc = await screen.findByRole('article', { name: 'nas' });
+    expect(inc.textContent).toContain('Could not verify (timeout) 2 h ago');
   });
 
   it('warns when the Claude login expired', async () => {

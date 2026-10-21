@@ -1,4 +1,5 @@
 import type { AgentView } from '@orch/shared';
+import type { ReactNode } from 'react';
 import { AgentUpdateState } from './AgentUpdate';
 
 export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
@@ -14,6 +15,65 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
 function hhmm(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Copy for a refused Claude login: depends on the class of the agent's last real check. */
+export function claudeRejectedText(
+  agent: Pick<AgentView, 'claudeAuthError'>,
+  where: ReactNode = null,
+): ReactNode {
+  if (agent.claudeAuthError === 'unauthorized') {
+    return (
+      <>
+        Claude rejected the token (401): run <code>orch login</code>
+        {where}
+      </>
+    );
+  }
+  if (agent.claudeAuthError === 'no_token') {
+    return (
+      <>
+        No Claude token: run <code>orch login</code>
+        {where}
+      </>
+    );
+  }
+  return (
+    <>
+      Claude login expired{where}: run <code>orch login</code>
+    </>
+  );
+}
+
+/** Non-blocking state of a login the server still considers valid; null when nothing to say. */
+export function claudeCheckLine(
+  agent: Pick<
+    AgentView,
+    'claudeAuthValid' | 'claudeAuthCheckedAt' | 'claudeAuthError' | 'claudeTokenPresent'
+  >,
+): ReactNode {
+  if (agent.claudeAuthValid === false) return null;
+  if (agent.claudeAuthCheckedAt) {
+    const when = relativeTime(agent.claudeAuthCheckedAt);
+    return agent.claudeAuthError
+      ? `Could not verify (${agent.claudeAuthError}) ${when}`
+      : `Claude login verified ${when}`;
+  }
+  if (agent.claudeTokenPresent === true) {
+    return (
+      <>
+        Claude login not verified yet: run <code>orch doctor</code>
+      </>
+    );
+  }
+  if (agent.claudeTokenPresent === false) {
+    return (
+      <>
+        Claude: not connected: run <code>orch login</code>
+      </>
+    );
+  }
+  return null;
 }
 
 export function UsageEstimate({ usage }: { usage: AgentView['lastUsage'] }) {
@@ -66,20 +126,10 @@ export function AgentCard({
       <AgentUpdateState agent={agent} />
       {agent.claudeAuthValid === false && (
         <p className="warning" role="alert">
-          Claude login expired: run <code>orch login</code>
+          {claudeRejectedText(agent)}
         </p>
       )}
-      {agent.claudeAuthValid !== false && agent.claudeTokenPresent != null && (
-        <p className="hint">
-          {agent.claudeTokenPresent ? (
-            'Claude: connected'
-          ) : (
-            <>
-              Claude: not connected: run <code>orch login</code>
-            </>
-          )}
-        </p>
-      )}
+      {claudeCheckLine(agent) && <p className="hint">{claudeCheckLine(agent)}</p>}
       <UsageEstimate usage={agent.lastUsage} />
       {agent.paused && (
         <div className="warning" role="status">
