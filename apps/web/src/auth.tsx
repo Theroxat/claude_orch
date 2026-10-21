@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Navigate, Outlet } from 'react-router';
+import { Navigate, Outlet, useLocation } from 'react-router';
 import { ApiError } from './api/client';
 import { fetchMe } from './api/endpoints';
+import { loginPathFor } from './returnPath';
 import { PageFallback } from './ui/PageFallback';
 
 export function useMe() {
@@ -16,9 +17,10 @@ export function useMe() {
 /** Redirects unauthenticated users to /login. */
 export function AuthGate() {
   const me = useMe();
+  const location = useLocation();
   if (me.isPending) return <PageFallback />;
   if (me.error instanceof ApiError && me.error.status === 401)
-    return <Navigate to="/login" replace />;
+    return <Navigate to={loginPathFor(location)} replace />;
   if (me.error) return <p className="error page-loading">{me.error.message}</p>;
   return <Outlet />;
 }
