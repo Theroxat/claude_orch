@@ -70,7 +70,14 @@ export function registerTasks(
     const { id } = req.params as { id: string };
     const patch = parseBody(UpdateTaskRequestSchema, req.body);
     const [t, access] = await svc.getVisible(id, user);
-    return svc.view(await svc.update(t, user, access, patch, req.ip), access, user);
+    const updated = await svc.update(t, user, access, patch, req.ip);
+    // Pending offers and requests were made for the old size, model and dependencies: withdraw
+    // them (a new dependency must not be skipped by accepting an older offer), then re-dispatch.
+    if (deps.dispatcher) {
+      await deps.dispatcher.withdrawForTask(t.id, 'edited');
+      deps.dispatcher.kick();
+    }
+    return svc.view(updated, access, user);
   });
 
   return svc;
