@@ -338,6 +338,29 @@ describe('auto mode: headless run', () => {
     expect(t.docker.containers.size).toBe(0);
   });
 
+  it('a cancel during the push reports only the cancel (no task.pushed, no succeeded)', async () => {
+    const t = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const push = t.git.push.bind(t.git);
+    let pushing = false;
+    t.git.push = async (...a: Parameters<typeof push>) => {
+      pushing = true;
+      await gate;
+      return push(...a);
+    };
+    t.proc.script = finishOk;
+    acceptAndAck(t, autoOffer());
+    await waitFor(() => pushing, { what: 'push started' });
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'mode_changed' }));
+    await waitFor(() => t.of('task.finished').length === 1, { what: 'cancel reported' });
+    release();
+    await t.ex.idle();
+    expect(t.of('task.finished').map((s) => s.payload.outcome)).toEqual(['cancelled']);
+    expect(t.of('task.pushed')).toEqual([]);
+    expect(t.ex.store.get('asg_1')?.state).toBe('cancelled');
+  });
+
   it('runs an accepted CONSENT_REQUEST like an auto offer (approval-mode participation)', async () => {
     const t = setup({ mode: 'APPROVAL' });
     t.proc.script = finishOk;
