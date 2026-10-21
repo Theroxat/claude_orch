@@ -78,7 +78,7 @@ function execOptions(cfg: AgentConfig, log: Logger, agentId: string): AgentOptio
 
 /** Self-update needs the host docker socket and the own container id (HOSTNAME). */
 function updateOptions(cfg: AgentConfig, log: Logger): AgentOptions['update'] {
-  let socket = false;
+  let socket: boolean;
   try {
     socket = statSync('/var/run/docker.sock').isSocket();
   } catch {

@@ -1118,7 +1118,9 @@ export class ManualExecutor {
           paused.push(c);
         } catch (err) {
           if (await docker.isRunning(c).catch(() => true)) {
-            throw new Error(`could not pause ${c} before committing: ${errorMessage(err)}`);
+            throw new Error(`could not pause ${c} before committing: ${errorMessage(err)}`, {
+              cause: err,
+            });
           }
         }
       }
