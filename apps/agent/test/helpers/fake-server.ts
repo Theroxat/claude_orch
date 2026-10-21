@@ -22,6 +22,9 @@ export interface FakeServerOptions {
   config?: Partial<AgentConfigPayload>;
 }
 
+/** How the fake answers `config.request`: current config, an older server's error, or nothing. */
+export type ConfigRequestMode = 'answer' | 'legacy' | 'silent';
+
 export class FakeServer {
   wss: WebSocketServer | undefined;
   readonly frames: Frame[] = [];
@@ -31,6 +34,7 @@ export class FakeServer {
   autoAck: boolean;
   config: AgentConfigPayload;
   port = 0;
+  configRequests: ConfigRequestMode = 'answer';
   /** Extra hook for every agent frame (after auto-ack), e.g. to answer task.claim. */
   onFrame: ((msg: Frame['msg']) => void) | undefined;
 
@@ -78,6 +82,22 @@ export class FakeServer {
               }),
             ),
           );
+        } else if (msg.type === 'config.request') {
+          if (this.configRequests === 'answer') {
+            ws.send(
+              JSON.stringify(serverMessage('config.update', this.config, { replyTo: msg.id })),
+            );
+          } else if (this.configRequests === 'legacy') {
+            ws.send(
+              JSON.stringify(
+                serverMessage('error', {
+                  code: 'invalid_message',
+                  message: 'unknown type',
+                  replyTo: msg.id,
+                }),
+              ),
+            );
+          }
         } else if (this.autoAck && msg.type !== 'heartbeat' && msg.type !== 'ack') {
           ws.send(JSON.stringify(serverMessage('ack', { ok: true }, { replyTo: msg.id })));
         }

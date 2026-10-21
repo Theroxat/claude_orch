@@ -77,7 +77,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
     registerAccess(app, deps);
-    registerProjects(app, deps);
+    registerProjects(app, m4);
     registerParticipation(app, m4);
     registerTasks(app, m4);
     registerOffers(app, m4);

@@ -124,6 +124,16 @@ export const OfferRejectPayloadSchema = z.object({
   detail: z.string().max(2000).optional(),
 });
 
+/**
+ * `config.request` (no ack): the agent asks for its current config, e.g. when an AUTO_OFFER names
+ * a project missing from its synced participation list. The server answers `config.update` with
+ * `replyTo` = the request id. Older servers answer `error` (invalid_message) with the same
+ * `replyTo`; the agent then keeps its config (and treats a timeout the same way).
+ */
+export const ConfigRequestPayloadSchema = z.object({
+  reason: z.string().max(200).optional(),
+});
+
 export const TaskClaimPayloadSchema = z.object({
   projectFullName: z.string(),
   issueNumber: z.number().int().positive(),
@@ -184,6 +194,11 @@ export const WelcomePayloadSchema = AgentConfigPayloadSchema.extend({
 });
 export type WelcomePayload = z.infer<typeof WelcomePayloadSchema>;
 
+/**
+ * `config.update`: pushed whenever the effective config changes (pause, participation created,
+ * edited, approved, rejected or removed, project settings or removal), and sent as the answer to
+ * `config.request` (with `replyTo`). `participations` is always the full current list.
+ */
 export const ConfigUpdatePayloadSchema = AgentConfigPayloadSchema;
 
 /**
@@ -316,6 +331,7 @@ export const AgentMessageSchemas = {
   'done.request': envelopeOf('done.request', DoneRequestPayloadSchema),
   'pause.set': envelopeOf('pause.set', PauseSetPayloadSchema),
   'tasks.list.request': envelopeOf('tasks.list.request', TasksListRequestPayloadSchema),
+  'config.request': envelopeOf('config.request', ConfigRequestPayloadSchema),
   ack: AckMessageSchema,
 } as const;
 
@@ -349,6 +365,7 @@ export const AgentMessageSchema = z.discriminatedUnion('type', [
   AgentMessageSchemas['done.request'],
   AgentMessageSchemas['pause.set'],
   AgentMessageSchemas['tasks.list.request'],
+  AgentMessageSchemas['config.request'],
   AgentMessageSchemas.ack,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;

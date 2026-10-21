@@ -166,7 +166,9 @@ describe('Agent with the manual executor', () => {
     }
 
     server.send(serverMessage('cleanup', { assignmentId: 'asg_1' }));
-    await waitFor(() => fs.removed.length === 1, { what: 'cleanup' });
+    // cleanup removes the clone and the private git dir: wait for the job, not for a count
+    await waitFor(() => fs.removed.length >= 1, { what: 'cleanup' });
+    await agent.executor?.idle();
     await waitFor(() => agent.executor?.store.get('asg_1') === undefined, {
       what: 'record removed',
     });
@@ -334,5 +336,142 @@ describe('Agent in auto mode', () => {
       expect(f.raw).not.toContain(GH_TOKEN);
       expect(f.raw).not.toContain(CLAUDE_TOKEN);
     }
+  });
+});
+
+describe('Agent: participation sync for auto offers', () => {
+  const part = (mode: 'AUTO' | 'APPROVAL' = 'AUTO') => ({
+    projectId: 'prj_1',
+    fullName: 'acme/widgets',
+    percent: 50,
+    mode,
+    allowedModels: ['SONNET' as const],
+  });
+  const autoOffer = (assignmentId: string) =>
+    serverMessage('task.offer', {
+      ...offer({ assignmentId, issueNumber: 42 }),
+      kind: 'AUTO_OFFER',
+      execMode: 'AUTO',
+      accepted: false,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      timeoutSec: 1800,
+    });
+  const configUpdate = (participations: ReturnType<typeof part>[]) =>
+    serverMessage('config.update', {
+      heartbeatSec: 30,
+      usageSec: 300,
+      paused: false,
+      participations,
+    });
+
+  async function boot(participations: ReturnType<typeof part>[], configRequestTimeoutMs = 2_000) {
+    const server = await new FakeServer({
+      credential: CREDENTIAL,
+      config: { participations },
+    }).start();
+    cleanups.push(() => server.stop());
+    const agent = new Agent({
+      serverUrl: 'http://127.0.0.1',
+      wsUrl: server.url,
+      credential: CREDENTIAL,
+      agentId: 'agt_test',
+      dataDir: join(tmp.dir, 'data'),
+      socketPath: join(tmp.dir, 'orch.sock'),
+      usageIntervalSec: 3600,
+      usageIntervalExplicit: true,
+      usageSource: {
+        estimateUsage: async () => {
+          throw new Error('unused');
+        },
+      },
+      logger: silentLogger,
+      backoff: { baseMs: 20, maxMs: 50 },
+      configRequestTimeoutMs,
+      exec: {
+        config: {
+          agentId: 'agt_test',
+          workDir: join(tmp.dir, 'work'),
+          dataDir: join(tmp.dir, 'data'),
+          maxConcurrent: 1,
+          gitBaseUrl: 'https://github.com',
+          defaultImage: 'node:22-bookworm',
+          claudeBin: '/opt/orch/bin/claude',
+          uid: process.getuid?.() || 1000,
+          gid: process.getgid?.() || 1000,
+          identity: { name: 'orch', email: 'orch@example.com' },
+        },
+        deps: {
+          git: new FakeGit(),
+          docker: new FakeDocker(),
+          screen: new FakeScreen(),
+          proc: new FakeProc(),
+          fs: recordingFs(),
+          readClaudeToken: () => CLAUDE_TOKEN,
+        },
+      },
+    });
+    cleanups.push(() => agent.stop());
+    await agent.start();
+    await waitFor(() => agent.client.ready, { what: 'welcome' });
+    return { server, agent };
+  }
+
+  it('joined after connecting: config.update applies at once and the AUTO offer is accepted', async () => {
+    const { server } = await boot([]);
+    server.config = { ...server.config, participations: [part()] };
+    const update = configUpdate([part()]);
+    server.send(update);
+    await waitFor(() => server.ofType('ack').some((a) => a.replyTo === update.id), {
+      what: 'config.update acked',
+    });
+    server.send(autoOffer('asg_join'));
+    await waitFor(() => server.ofType('offer.accept').length === 1, { what: 'accept' });
+    expect(server.ofType('offer.accept')[0]?.payload).toEqual({
+      assignmentId: 'asg_join',
+      execMode: 'AUTO',
+    });
+    expect(server.ofType('config.request')).toHaveLength(0);
+    expect(server.ofType('offer.reject')).toHaveLength(0);
+  });
+
+  it('missed update: asks for a fresh config once, then accepts', async () => {
+    const { server } = await boot([]);
+    server.config = { ...server.config, participations: [part()] }; // no push
+    server.send(autoOffer('asg_stale'));
+    await waitFor(() => server.ofType('offer.accept').length === 1, { what: 'accept' });
+    expect(server.ofType('config.request')).toHaveLength(1);
+    expect(server.ofType('offer.reject')).toHaveLength(0);
+  });
+
+  it('participation removed: config.update, then the AUTO offer is refused', async () => {
+    const { server } = await boot([part()]);
+    server.config = { ...server.config, participations: [] };
+    server.send(configUpdate([]));
+    server.send(autoOffer('asg_gone'));
+    await waitFor(() => server.ofType('offer.reject').length === 1, { what: 'reject' });
+    expect(server.ofType('offer.reject')[0]?.payload).toMatchObject({
+      assignmentId: 'asg_gone',
+      reason: 'not_participating',
+    });
+    expect(server.ofType('config.request')).toHaveLength(1);
+    expect(server.ofType('offer.accept')).toHaveLength(0);
+  });
+
+  it('older server (error) or no answer (timeout): rejects as not_participating', async () => {
+    const legacy = await boot([]);
+    legacy.server.configRequests = 'legacy';
+    legacy.server.send(autoOffer('asg_old'));
+    await waitFor(() => legacy.server.ofType('offer.reject').length === 1, { what: 'reject' });
+    expect(legacy.server.ofType('offer.reject')[0]?.payload).toMatchObject({
+      reason: 'not_participating',
+    });
+
+    const quiet = await boot([], 100);
+    quiet.server.configRequests = 'silent';
+    const t0 = Date.now();
+    quiet.server.send(autoOffer('asg_quiet'));
+    await waitFor(() => quiet.server.ofType('offer.reject').length === 1, { what: 'reject' });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(90);
+    expect(quiet.server.ofType('offer.accept')).toHaveLength(0);
   });
 });
