@@ -2181,3 +2181,9 @@ details.card > summary {
   color: var(--ink);
   text-decoration: underline;
 }
+
+.task-card[data-highlighted] {
+  border-color: var(--lamp);
+  box-shadow: 0 0 0 2px var(--lamp);
+  outline: none;
+}
