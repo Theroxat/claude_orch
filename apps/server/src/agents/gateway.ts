@@ -596,9 +596,9 @@ export class AgentGateway {
         ...(m.payload.claudeTokenPresent !== undefined && {
           claudeTokenPresent: m.payload.claudeTokenPresent,
         }),
-        // Agents older than v0.5.1 do not report it: a reconnect (restart after `orch login`,
-        // update) gives them another chance; a new claude_auth failure flags them again.
-        ...claudeAuthUpdate(prev, m.payload.claudeAuthValid ?? true),
+        // A reported false sets the flag; a reported true never clears it (only `claude.auth`
+        // with a real check, or a succeeded run, does).
+        ...claudeAuthUpdate(prev, m.payload.claudeAuthValid),
       },
     });
     if (updated) {
@@ -642,6 +642,56 @@ export class AgentGateway {
       case 'usage.report':
         await recordUsage(prisma, { id: c.agentId, userId: c.userId }, m.payload);
         return { ok: true };
+      case 'claude.auth': {
+        const p = m.payload;
+        const prev = await prisma.agent.findUnique({
+          where: { id: c.agentId },
+          select: { claudeAuthValid: true, claudeAuthInvalidAt: true },
+        });
+        const checkedAt = new Date(p.checkedAt);
+        const definitive =
+          !p.valid && (p.errorClass === 'unauthorized' || p.errorClass === 'no_token');
+        const wasValid = prev?.claudeAuthValid ?? true;
+        if (p.valid) {
+          await prisma.agent.update({
+            where: { id: c.agentId },
+            data: {
+              claudeAuthValid: true,
+              claudeAuthInvalidAt: null,
+              claudeAuthCheckedAt: checkedAt,
+              claudeAuthError: null,
+            },
+          });
+          if (!wasValid) {
+            const d = this.dispatcher;
+            if (d) after.push(() => d.kick());
+          }
+        } else if (definitive) {
+          await prisma.agent.update({
+            where: { id: c.agentId },
+            data: {
+              claudeAuthValid: false,
+              ...(wasValid && { claudeAuthInvalidAt: new Date() }),
+              claudeAuthCheckedAt: checkedAt,
+              claudeAuthError: p.errorClass,
+            },
+          });
+        } else {
+          // Inconclusive (rate limit, timeout, network, check error): the flag stays as it is.
+          await prisma.agent.update({
+            where: { id: c.agentId },
+            data: { claudeAuthCheckedAt: checkedAt, claudeAuthError: p.errorClass ?? 'error' },
+          });
+        }
+        const flag = p.valid ? true : definitive ? false : wasValid;
+        if (flag !== wasValid) {
+          this.deps.log.info(
+            { agentId: c.agentId, claudeAuthValid: flag, errorClass: p.errorClass ?? null },
+            'claude auth check changed the agent login state',
+          );
+        }
+        return { ok: true };
+      }
       case 'pause.set': {
         const paused = m.payload.paused;
         await prisma.agent.update({

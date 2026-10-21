@@ -44,7 +44,15 @@ export async function computeOnboarding(
     prisma.projectPermission.count({ where: { userId } }),
     prisma.agent.findMany({
       where: { userId, revokedAt: null },
-      select: { id: true, lastSeenAt: true, claudeTokenPresent: true, claudeAuthValid: true },
+      select: {
+        id: true,
+        name: true,
+        lastSeenAt: true,
+        claudeTokenPresent: true,
+        claudeAuthValid: true,
+        claudeAuthCheckedAt: true,
+        claudeAuthError: true,
+      },
     }),
     prisma.personalToken.count({
       where: { userId, revokedAt: null, lastUsedAt: { not: null } },
@@ -78,6 +86,41 @@ export async function computeOnboarding(
     : loginExpired || live.some((a) => a.claudeTokenPresent === false)
       ? 'todo'
       : 'unknown';
+  // Detail for the step: which agent, when it was checked and how (real `claude -p` check).
+  const okAgents = live.filter(loginOk);
+  const latest = (xs: typeof live) =>
+    xs.reduce<(typeof live)[number] | undefined>(
+      (b, a) =>
+        !b || (a.claudeAuthCheckedAt?.getTime() ?? 0) > (b.claudeAuthCheckedAt?.getTime() ?? 0)
+          ? a
+          : b,
+      undefined,
+    );
+  let detail: Partial<OnboardingStep> = {};
+  if (okAgents.length > 0) {
+    const verified = latest(okAgents.filter((a) => a.claudeAuthCheckedAt && !a.claudeAuthError));
+    const inconclusive = latest(okAgents.filter((a) => a.claudeAuthCheckedAt && a.claudeAuthError));
+    if (verified) {
+      detail = { agentName: verified.name, checkedAt: verified.claudeAuthCheckedAt!.toISOString() };
+    } else if (inconclusive) {
+      detail = {
+        reason: 'claude_check_inconclusive',
+        agentName: inconclusive.name,
+        checkedAt: inconclusive.claudeAuthCheckedAt!.toISOString(),
+        errorClass: inconclusive.claudeAuthError,
+      };
+    } else {
+      detail = { reason: 'claude_login_unverified', agentName: okAgents[0]!.name };
+    }
+  } else if (loginExpired) {
+    const bad = latest(live.filter((a) => !a.claudeAuthValid))!;
+    detail = {
+      reason: 'claude_login_expired',
+      agentName: bad.name,
+      checkedAt: bad.claudeAuthCheckedAt?.toISOString() ?? null,
+      errorClass: bad.claudeAuthError,
+    };
+  }
   const mcpOk = usedPat > 0 || (await hasOauthGrant(prisma, userId));
 
   return {
@@ -86,10 +129,7 @@ export async function computeOnboarding(
       flag('project_added', ownedCount > 0 || activeParticipation > 0),
       flag('participation_set', activeParticipation > 0 || ownedCount > 0),
       flag('agent_connected', agentOk),
-      {
-        ...step('claude_connected', claudeState),
-        ...(loginExpired && { reason: 'claude_login_expired' }),
-      },
+      { ...step('claude_connected', claudeState), ...detail },
       flag('mcp_connected', mcpOk),
     ],
   };

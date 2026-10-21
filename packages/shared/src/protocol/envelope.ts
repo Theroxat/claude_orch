@@ -61,7 +61,7 @@ export function parseAgentCredential(
 }
 
 export const MessageId = z.string().min(1).max(128);
-export const IsoDateTime = z.string().datetime({ offset: true });
+export const IsoDateTime = z.iso.datetime({ offset: true });
 
 export const EnvelopeBaseSchema = z.object({
   v: z.number().int().positive(),
