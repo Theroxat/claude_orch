@@ -1,7 +1,8 @@
 /**
  * `orch login` (PLAN 5.4): runs `claude setup-token` so the member creates a long-lived OAuth
- * token for their own subscription, then stores the pasted token in
- * `${ORCH_SECRETS_DIR}/claude-token` (0600, atomic). The token is never printed or logged.
+ * token for their own subscription, then captures the token it prints (read from a pty; failing that, asked as a hidden paste) and
+ * stores it in `${ORCH_SECRETS_DIR}/claude-token` (0600, atomic). orch itself never prints or
+ * logs the token (only `claude setup-token` shows it, on the member's own terminal).
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -14,6 +15,9 @@ export interface LoginIo {
   stderr: Writable;
 }
 
+/** Runs `claude setup-token`; returns its raw output, or null when it could not be captured. */
+export type SetupRunner = (bin: string, io: LoginIo) => Promise<string | null>;
+
 export interface LoginOptions {
   secretsDir: string;
   claudeBin: string;
@@ -21,6 +25,8 @@ export interface LoginOptions {
   tokenFromStdin: boolean;
   /** Skip running `claude setup-token` (token already generated elsewhere). */
   skipSetup: boolean;
+  /** Test hook: replaces the real `claude setup-token` run. */
+  setupRunner?: SetupRunner;
 }
 
 export class LoginError extends Error {
@@ -37,26 +43,87 @@ export function validateToken(raw: string): string {
   return token;
 }
 
+const missingCli = (bin: string, err: NodeJS.ErrnoException) =>
+  new LoginError(
+    err.code === 'ENOENT'
+      ? `Claude Code CLI not found (${bin}). Set ORCH_CLAUDE_BIN or install Claude Code.`
+      : `Could not run ${bin} setup-token: ${err.message}`,
+  );
+
+const exitError = (code: number | null, signal: NodeJS.Signals | null) =>
+  new LoginError(`claude setup-token failed (${signal ?? `exit ${code}`}).`);
+
+/** Runs `claude setup-token` with the terminal inherited; nothing is captured. */
 function runSetupToken(bin: string, interactive: boolean): Promise<void> {
   return new Promise((resolve, reject) => {
     // In --token-stdin mode stdin carries the token, so the child must not read it.
     const child = spawn(bin, ['setup-token'], {
       stdio: [interactive ? 'inherit' : 'ignore', 'inherit', 'inherit'],
     });
+    child.on('error', (err: NodeJS.ErrnoException) => reject(missingCli(bin, err)));
+    child.on('exit', (code, signal) => (code === 0 ? resolve() : reject(exitError(code, signal))));
+  });
+}
+
+// eslint-disable-next-line no-control-regex -- matching terminal escape sequences is the point
+const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g;
+const TOKEN_START = /sk-ant-[A-Za-z0-9_-]*/;
+const TOKEN_CHARS = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Finds the OAuth token printed by `claude setup-token` in its raw terminal output (ANSI codes,
+ * CRLF, and a token wrapped over several lines are handled). Returns null when none is found.
+ */
+export function extractToken(output: string): string | null {
+  const lines = output.replace(ANSI, '').replace(/\r/g, '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = TOKEN_START.exec(lines[i] ?? '');
+    if (!m) continue;
+    let token = m[0];
+    // A token that ends its line may continue on the next ones (terminal wrapping).
+    if ((lines[i] ?? '').trimEnd().endsWith(token)) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = (lines[j] ?? '').trim();
+        if (!TOKEN_CHARS.test(next)) break;
+        token += next;
+      }
+    }
+    return token.length >= 20 ? token : null;
+  }
+  return null;
+}
+
+/** Quote for /bin/sh. */
+const shq = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Runs `claude setup-token` inside a pty (util-linux `script`) so its interactive UI works, shows
+ * everything to the member and captures the output to find the token. Resolves with the captured
+ * output, or null when `script` is unavailable (the caller then runs without capture).
+ */
+function runSetupTokenCaptured(bin: string, io: LoginIo): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const out = io.stdout as Writable & { columns?: number; rows?: number };
+    const size = out.columns && out.rows ? `stty cols ${out.columns} rows ${out.rows}; ` : '';
+    const child = spawn(
+      'script',
+      ['-q', '-e', '-c', `${size}exec ${shq(bin)} setup-token`, '/dev/null'],
+      { stdio: [io.stdin.isTTY === true ? 'inherit' : 'ignore', 'pipe', 'inherit'] },
+    );
+    let captured = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      captured = (captured + chunk.toString('utf8')).slice(-65_536);
+      io.stdout.write(chunk);
+    });
     child.on('error', (err: NodeJS.ErrnoException) =>
-      reject(
-        new LoginError(
-          err.code === 'ENOENT'
-            ? `Claude Code CLI not found (${bin}). Set ORCH_CLAUDE_BIN or install Claude Code.`
-            : `Could not run ${bin} setup-token: ${err.message}`,
-        ),
-      ),
+      err.code === 'ENOENT' ? resolve(null) : reject(missingCli(bin, err)),
     );
-    child.on('exit', (code, signal) =>
-      code === 0
-        ? resolve()
-        : reject(new LoginError(`claude setup-token failed (${signal ?? `exit ${code}`}).`)),
-    );
+    child.on('exit', (code, signal) => {
+      // `script -e` returns the child's exit code; 127 means the shell could not find the binary.
+      if (code === 127)
+        return reject(missingCli(bin, Object.assign(new Error(), { code: 'ENOENT' })));
+      return code === 0 ? resolve(captured) : reject(exitError(code, signal));
+    });
   });
 }
 
@@ -106,15 +173,31 @@ function promptHidden(io: LoginIo, question: string): Promise<string> {
 }
 
 export async function login(opts: LoginOptions, io: LoginIo): Promise<string> {
-  if (!opts.skipSetup) {
-    io.stderr.write(
-      'Running `claude setup-token`. Follow the steps to create a long-lived token.\n',
-    );
-    await runSetupToken(opts.claudeBin, !opts.tokenFromStdin);
+  let raw: string | null = null;
+  if (opts.tokenFromStdin) {
+    if (!opts.skipSetup) {
+      io.stderr.write('Running `claude setup-token`. Follow the steps to create a token.\n');
+      await runSetupToken(opts.claudeBin, false);
+    }
+    raw = await readAll(io.stdin);
+  } else {
+    if (!opts.skipSetup) {
+      io.stderr.write(
+        'Running `claude setup-token`. Open the URL, sign in and paste the code back here.\n',
+      );
+      const output = opts.setupRunner
+        ? await opts.setupRunner(opts.claudeBin, io)
+        : ((await runSetupTokenCaptured(opts.claudeBin, io)) ??
+          (await runSetupToken(opts.claudeBin, true).then(() => null)));
+      const found = output === null ? null : extractToken(output);
+      if (found) raw = found;
+      else
+        io.stderr.write(
+          output === null ? '' : 'Could not read the token automatically; paste it below.\n',
+        );
+    }
+    raw ??= await promptHidden(io, 'Paste the token shown above (input hidden): ');
   }
-  const raw = opts.tokenFromStdin
-    ? await readAll(io.stdin)
-    : await promptHidden(io, 'Paste the token shown above (input hidden): ');
   const token = validateToken(raw);
   if (!token.startsWith('sk-ant-')) {
     io.stderr.write(

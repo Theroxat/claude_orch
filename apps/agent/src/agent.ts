@@ -35,6 +35,8 @@ export interface AgentOptions {
   usageIntervalSec: number;
   usageIntervalExplicit: boolean;
   usageSource: UsageSource;
+  /** Whether the Claude token file exists and is non-empty (never reads its value). */
+  claudeTokenPresent?: () => boolean;
   logger: Logger;
   backoff?: Partial<BackoffOptions>;
   outboxRetryMs?: number;
@@ -70,6 +72,15 @@ export class Agent {
   private lastUsageReportAt: string | null = null;
   private readonly log: Logger;
 
+  private tokenFlag(): { claudeTokenPresent?: boolean } {
+    if (!this.opts.claudeTokenPresent) return {};
+    try {
+      return { claudeTokenPresent: this.opts.claudeTokenPresent() };
+    } catch {
+      return {};
+    }
+  }
+
   constructor(private readonly opts: AgentOptions) {
     this.log = opts.logger;
     this.agentId = opts.agentId;
@@ -90,6 +101,7 @@ export class Agent {
         localPaused: this.pause.isPaused(),
         maxConcurrent: this.executor?.maxConcurrent ?? 1,
         running: this.executor?.running() ?? [],
+        ...this.tokenFlag(),
       }),
     });
     this.outbox.setSender((m) => this.client.ready && this.client.send(m));
@@ -113,7 +125,11 @@ export class Agent {
       firstDelayMs: opts.usageFirstDelayMs,
       logger: this.log,
       onReport: (payload) => {
-        this.outbox.enqueue('usage.report', payload, { replaceSameType: true });
+        this.outbox.enqueue(
+          'usage.report',
+          { ...payload, ...this.tokenFlag() },
+          { replaceSameType: true },
+        );
         this.lastUsageReportAt = new Date().toISOString();
       },
     });

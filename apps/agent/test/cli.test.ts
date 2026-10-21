@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DaemonNotRunningError, sendControl } from '../src/cli/client';
 import type { StatusInfo } from '../src/cli/protocol';
+import { extractToken, login } from '../src/cli/login';
 import { runCli } from '../src/cli/run';
 import { startControlServer, type ControlServer } from '../src/control/server';
 import { silentLogger } from '../src/log';
@@ -200,5 +201,54 @@ describe('orch login', () => {
       }),
     ).toBe(1);
     expect(missing.err.join('')).toContain('Claude Code CLI not found');
+  });
+
+  it('captures the token from the setup-token output in a pty, without asking or echoing it', async () => {
+    const secrets = join(tmp.dir, 'secrets');
+    const bin = join(tmp.dir, 'fake-claude-print');
+    writeFileSync(
+      bin,
+      `#!/bin/sh\necho "Open https://claude.ai/oauth/authorize?x=1"\necho "Your OAuth token (valid for 1 year):"\necho "${TOKEN}"\necho "Store this token securely."\n`,
+    );
+    chmodSync(bin, 0o755);
+    const r = await runEntry(['login'], { ORCH_SECRETS_DIR: secrets, ORCH_CLAUDE_BIN: bin }, '');
+    expect(r.stderr).not.toContain('Paste the token');
+    expect(r.code).toBe(0);
+    const file = join(secrets, 'claude-token');
+    expect(readFileSync(file, 'utf8').trim()).toBe(TOKEN);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('uses the injected runner output and falls back to the hidden prompt when none is found', async () => {
+    const secrets = join(tmp.dir, 'secrets');
+    const base = { secretsDir: secrets, claudeBin: 'x', tokenFromStdin: false, skipSetup: false };
+    const a = io('');
+    await login(
+      { ...base, setupRunner: async () => `\u001b[1mtoken\u001b[0m\r\n${TOKEN}\r\n` },
+      a.io,
+    );
+    expect(readFileSync(join(secrets, 'claude-token'), 'utf8').trim()).toBe(TOKEN);
+    expect(a.out.join('') + a.err.join('')).not.toContain(TOKEN);
+
+    const other = 'sk-ant-oat01-' + 'Zz9Yy8Xx'.repeat(8);
+    const b = io(`${other}\n`);
+    await login({ ...base, setupRunner: async () => 'no token here\n' }, b.io);
+    expect(b.err.join('')).toContain('Could not read the token automatically');
+    expect(readFileSync(join(secrets, 'claude-token'), 'utf8').trim()).toBe(other);
+  });
+});
+
+describe('extractToken', () => {
+  it('finds a token among ANSI codes and CRLF', () => {
+    const out = `\u001b[2J\u001b[1;1HOpen the URL\r\n\u001b[32m${TOKEN}\u001b[0m\r\nStore it.\r\n`;
+    expect(extractToken(out)).toBe(TOKEN);
+  });
+  it('joins a token wrapped over several lines but not following prose', () => {
+    const out = `Your token:\n${TOKEN.slice(0, 40)}\n${TOKEN.slice(40, 80)}\n${TOKEN.slice(80)}\n\nStore this token securely.\n`;
+    expect(extractToken(out)).toBe(TOKEN);
+  });
+  it('returns null when there is no token', () => {
+    expect(extractToken('Open https://claude.ai ... paste the code\n')).toBeNull();
+    expect(extractToken('sk-ant-\n')).toBeNull();
   });
 });

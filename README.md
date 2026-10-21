@@ -249,21 +249,15 @@ Because a `Contents: write` installation token can push to any branch, **enable 
 
    The token travels in an environment variable, not in a command-line argument, so it does not show up in the process list. The old `sh -s -- --token <token>` form still works but is deprecated.
 
-   This needs only Docker Engine 26+ with Compose, `curl` and `sh`. It writes `~/orch/compose.yaml` and `~/orch/.env`, enrolls the machine and starts the agent. Re-run with `--force` to re-enroll; `--uninstall [--purge]` removes it.
+   This needs only Docker Engine 26+ with Compose, `curl` and `sh`. It writes `~/orch/compose.yaml` and `~/orch/.env`, enrolls the machine, starts the agent and installs an `orch` shortcut in `~/.local/bin/orch` (it tells you how to add that directory to your `PATH` if needed). Re-run it any time: it is idempotent and does not re-enroll (use `--force` for that). `--uninstall [--purge]` removes the stack and the shortcut.
 
-5. **Link Claude.** The only manual step:
-
-   ```sh
-   docker compose -f ~/orch/compose.yaml exec agent orch login
-   ```
-
-   This wraps `claude setup-token`. The long-lived token is stored in the agent's `orch-secrets` volume on that machine and never sent to the server.
-
-   Optional alias used in the rest of this README:
+5. **Link Claude.** At the end, in a terminal, the installer asks `Connect your Claude account now? [Y/n]`. Answer yes, open the URL it shows, sign in and paste the code back. `orch login` captures the long-lived token by itself; it is stored in the agent's `orch-secrets` volume on that machine (mode 0600) and never sent to the server. To do it later (or when installing without a terminal, or with `--yes`), run:
 
    ```sh
-   alias orch='docker compose -f ~/orch/compose.yaml exec agent orch'
+   orch login
    ```
+
+   The `orch` shortcut is `docker compose -f ~/orch/compose.yaml exec agent orch "$@"` (with a terminal attached when you have one), so every command below works as written.
 
 Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGENT_CREDENTIAL`, `ORCH_WORK_DIR`, `ORCH_CLAUDE_DIR`, `ORCH_PLAN` (`pro`, `max5` or `max20`), plus optional `ORCH_AGENT_IMAGE` and `ORCH_AGENT_TAG`. Further agent options such as `ORCH_MAX_CONCURRENT` (default 1) are defined in [`apps/agent/src/config.ts`](apps/agent/src/config.ts).
 
@@ -271,7 +265,7 @@ Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGE
 
 **Web.** Issues carrying the project's pool label (default `pool`) become tasks. **Backlog** shows tasks by status. **Pool** shows teammates' availability (estimates). **Requests** lists approval requests addressed to you. New tasks can also be created from the Backlog page or through [MCP](#mcp-setup).
 
-**CLI** (run inside the agent container, see the alias above):
+**CLI** (the `orch` shortcut installed on your machine runs these inside the agent container):
 
 | Command                  | What it does                                                     |
 | ------------------------ | ---------------------------------------------------------------- |
@@ -288,7 +282,7 @@ Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGE
 | `orch pause` / `resume`  | Stop or restart receiving work (applied locally first)           |
 | `orch login`             | Store your Claude token                                          |
 
-**Manual mode** (`orch take`): orch builds the dev container, starts an interactive Claude session in a `screen` named `issue-<n>` inside the agent container, and you attach with `orch attach <n>` (or `docker compose -f ~/orch/compose.yaml exec agent screen -r issue-<n>`). When you are happy, `orch done <n>` pushes and the PR is opened ready for review.
+**Manual mode** (`orch take`): orch builds the dev container, starts an interactive Claude session in a `screen` named `issue-<n>` inside the agent container, and you attach with `orch attach <n>` (detach with `Ctrl-a d`). When you are happy, `orch done <n>` pushes and the PR is opened ready for review.
 
 **Auto vs approval.** In `AUTO` participation, the server offers a task to a member with enough estimated budget, and the agent runs it headlessly; the PR is opened as a **draft**. In `APPROVAL` participation you get a request (web or `orch requests`) and nothing starts until you accept. Your agent can always refuse locally (`orch pause`). Limits: 1 concurrent task per machine, 20 pending tasks per creator, timeouts of 30, 90 and 180 minutes for sizes S, M and L.
 

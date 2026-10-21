@@ -82,8 +82,8 @@ export function screenName(
   for (let i = 2; ; i++) if (!used.has(`${long}-${i}`)) return `${long}-${i}`;
 }
 
-export const attachCommand = (screen: string) =>
-  `docker compose -f ~/orch/compose.yaml exec agent screen -r ${screen}`;
+/** The host shortcut written by install.sh (`~/.local/bin/orch`) runs this inside the agent. */
+export const attachCommand = (issueNumber: number) => `orch attach ${issueNumber}`;
 
 export const taskLabels = (
   assignmentId: string,

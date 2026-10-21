@@ -48,6 +48,11 @@ RUN printf '#!/bin/sh\nexec node --import tsx /app/apps/agent/src/cli/main.ts "$
  && mkdir -p /data /secrets \
  && chmod 0700 /data /secrets
 
+# Real version, set by release.yml from the git tag ("dev" for local builds). Declared late so
+# changing it does not invalidate the dependency layers above.
+ARG ORCH_VERSION=dev
+ENV ORCH_VERSION=${ORCH_VERSION}
+
 ENV NODE_ENV=production \
     ORCH_DATA_DIR=/data \
     ORCH_SECRETS_DIR=/secrets \

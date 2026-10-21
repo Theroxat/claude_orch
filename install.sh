@@ -7,9 +7,11 @@
 #   --server <u>   server URL (default: URL this script was served from, or $ORCH_SERVER_URL)
 #   --dir <path>   install directory (default: ~/orch)
 #   --force        re-enroll even if already enrolled
-#   --uninstall    stop and remove containers and volumes
+#   --uninstall    stop and remove containers and volumes (and the ~/.local/bin/orch shortcut)
 #   --purge        with --uninstall: also delete the install directory
-#   --yes          do not ask for confirmation
+#   --yes          do not ask for confirmation (also skips the Claude login offer)
+# After installing it writes a shortcut ~/.local/bin/orch (runs `orch` inside the agent container)
+# and, when a terminal is available, offers to run `orch login` right away.
 # Tests: docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck install.sh
 #        docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install   (or ./dev test:install)
 set -eu
@@ -59,6 +61,17 @@ if [ -z "$SERVER" ]; then
 fi
 SERVER="${SERVER%/}"
 
+# Absolute install directory (the shortcut must keep working from any cwd).
+case "$DIR" in
+  /*) ;;
+  *) DIR="$(pwd)/$DIR" ;;
+esac
+BIN_DIR="${HOME}/.local/bin"
+WRAPPER="$BIN_DIR/orch"
+WRAPPER_MARK="# orch-shortcut: managed by install.sh"
+# The terminal used for questions (stdin is the curl pipe). ORCH_TTY overrides it (tests).
+TTY_DEV="${ORCH_TTY:-/dev/tty}"
+
 check_docker() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed. Install Docker Engine 26+ first: https://docs.docker.com/engine/install/"
   docker compose version >/dev/null 2>&1 || die "the docker compose plugin is missing. See https://docs.docker.com/compose/install/linux/"
@@ -71,15 +84,81 @@ env_value() { # env_value KEY -> value from $DIR/.env (empty if absent)
   sed -n "s/^$1=//p" "$DIR/.env" | tail -n 1
 }
 
+# have_tty: a terminal we can talk to. stdout must be a terminal unless ORCH_TTY is set (tests).
+have_tty() {
+  if [ -z "${ORCH_TTY:-}" ]; then [ -t 1 ] || return 1; fi
+  [ -r "$TTY_DEV" ] && : <"$TTY_DEV" 2>/dev/null
+}
+
 confirm() {
   [ "$YES" -eq 1 ] && return 0
-  if [ -r /dev/tty ] && : </dev/tty 2>/dev/null; then
-    printf '%s [y/N] ' "$1" >/dev/tty
-    read -r answer </dev/tty || answer=""
+  if [ -r "$TTY_DEV" ] && : <"$TTY_DEV" 2>/dev/null; then
+    printf '%s [y/N] ' "$1" >>"$TTY_DEV"
+    read -r answer <"$TTY_DEV" || answer=""
     case "$answer" in y | Y | yes | YES) return 0 ;; esac
     return 1
   fi
   die "cannot ask for confirmation without a terminal; rerun with --yes"
+}
+
+# The shortcut: `orch <cmd>` runs `orch <cmd>` inside the agent container. -T (no pseudo-TTY) is
+# used when stdin or stdout is not a terminal, so pipes and scripts keep working.
+install_wrapper() {
+  case "$DIR" in *"'"*) die "the install directory must not contain a single quote" ;; esac
+  if [ -e "$WRAPPER" ] && ! grep -qF "$WRAPPER_MARK" "$WRAPPER" 2>/dev/null; then
+    info "Not touching $WRAPPER: it is not an orch shortcut. Remove it to get the 'orch' command."
+    return 0
+  fi
+  mkdir -p "$BIN_DIR"
+  tmp="$WRAPPER.tmp.$$"
+  {
+    printf '#!/bin/sh\n%s\n' "$WRAPPER_MARK"
+    printf "compose='%s/compose.yaml'\n" "$DIR"
+    cat <<'WRAP'
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker compose -f "$compose" exec agent orch "$@"
+fi
+exec docker compose -f "$compose" exec -T agent orch "$@"
+WRAP
+  } >"$tmp"
+  chmod 755 "$tmp"
+  mv "$tmp" "$WRAPPER"
+}
+
+remove_wrapper() {
+  if [ -f "$WRAPPER" ] && grep -qF "$WRAPPER_MARK" "$WRAPPER" 2>/dev/null &&
+    grep -qF "compose='$DIR/compose.yaml'" "$WRAPPER"; then
+    rm -f "$WRAPPER"
+    info "Removed $WRAPPER."
+  fi
+}
+
+path_hint() {
+  case ":${PATH}:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+      info "Note: $BIN_DIR is not on your PATH. Add it with:"
+      info "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile   # then open a new shell"
+      ;;
+  esac
+}
+
+# Offer to link the Claude account now. Never fatal: the member can always run `orch login` later.
+offer_login() {
+  if compose exec -T agent test -s /secrets/claude-token >/dev/null 2>&1; then
+    info "Claude account already connected."
+    return 0
+  fi
+  if [ "$YES" -eq 1 ] || ! have_tty; then return 1; fi
+  printf '\nConnect your Claude account now? [Y/n] ' >>"$TTY_DEV"
+  read -r answer <"$TTY_DEV" || answer="n"
+  case "$answer" in "" | y | Y | yes | YES | Yes) ;; *) return 1 ;; esac
+  # shellcheck disable=SC2094
+  if compose exec agent orch login <"$TTY_DEV" >>"$TTY_DEV" 2>&1; then
+    return 0
+  fi
+  info "Claude login did not finish."
+  return 1
 }
 
 do_uninstall() {
@@ -90,6 +169,7 @@ do_uninstall() {
   else
     info "No compose.yaml in $DIR, nothing to stop."
   fi
+  remove_wrapper
   if [ "$PURGE" -eq 1 ]; then
     rm -rf "$DIR"
     info "Removed $DIR."
@@ -157,17 +237,18 @@ do_install() {
 
   compose up -d
 
-  cat <<MSG
-
-orch is running. One manual step remains: link your Claude subscription.
-
-  docker compose -f $DIR/compose.yaml exec agent orch login
-
-This wraps 'claude setup-token'; the token stays in the agent container.
-Optional shell alias:
-
-  alias orch='docker compose -f $DIR/compose.yaml exec agent orch'
-MSG
+  install_wrapper
+  info ""
+  info "orch is running. The 'orch' command is installed at $WRAPPER."
+  path_hint
+  if offer_login; then
+    info ""
+    info "All set. Try: orch status"
+  else
+    info ""
+    info "Last step: connect your Claude account (it stays on this machine):"
+    info "  orch login"
+  fi
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then do_uninstall; else do_install; fi

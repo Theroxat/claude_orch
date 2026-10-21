@@ -43,6 +43,10 @@ ARG PRISMA_VERSION=6.19.3
 RUN npm install -g --no-audit --no-fund tsx@${TSX_VERSION} prisma@${PRISMA_VERSION} \
  && npm cache clean --force
 
+# Real version, set by release.yml from the git tag ("dev" for local builds).
+ARG ORCH_VERSION=dev
+ENV ORCH_VERSION=${ORCH_VERSION}
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \

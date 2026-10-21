@@ -64,6 +64,8 @@ export const HelloPayloadSchema = z.object({
   localPaused: z.boolean(),
   maxConcurrent: z.number().int().positive(),
   running: z.array(RunningTaskSchema),
+  /** True when the member ran `orch login` (the token file exists and is non-empty). */
+  claudeTokenPresent: z.boolean().optional(),
 });
 export type HelloPayload = z.infer<typeof HelloPayloadSchema>;
 
@@ -97,6 +99,8 @@ export const UsageReportPayloadSchema = z.object({
   capacityEstimate: z.number().nonnegative().nullable(),
   rateLimitedUntil: IsoDateTime.optional(),
   source: z.enum(['jsonl', 'stream', 'mixed']),
+  /** Recomputed on each report; flips to true right after `orch login`. */
+  claudeTokenPresent: z.boolean().optional(),
 });
 export type UsageReportPayload = z.infer<typeof UsageReportPayloadSchema>;
 

@@ -209,7 +209,7 @@ export class ManualExecutor {
       prUrl: r.prUrl,
       error: r.error,
       warnings: r.warnings,
-      attach: auto ? `orch logs ${r.issueNumber}` : attachCommand(r.screen),
+      attach: auto ? `orch logs ${r.issueNumber}` : attachCommand(r.issueNumber),
       mode: auto ? 'auto' : 'manual',
       startedAt: r.runStartedAt,
       timeoutSec: auto ? (r.timeoutSec ?? DEFAULT_TIMEOUT_SEC[r.size]) : null,
@@ -785,8 +785,8 @@ export class ManualExecutor {
       }
       await this.deps.screen.start(r0.screen, this.claudeArgv(rec(), prompt));
       this.store.update(id, { prompt: null });
-      this.status(id, 'running', `attach: ${attachCommand(r0.screen)}`);
-      this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.screen) });
+      this.status(id, 'running', `attach: ${attachCommand(r0.issueNumber)}`);
+      this.log.info('task ready', { issue: r0.issueNumber, attach: attachCommand(r0.issueNumber) });
     } catch (err) {
       if (this.cancelled(id)) return;
       await this.fail(id, err);

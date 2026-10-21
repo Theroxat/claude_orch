@@ -142,7 +142,7 @@ describe('Agent with the manual executor', () => {
     expect(await runCli(['take', '42'], t.io, env, { sleep: async () => undefined })).toBe(0);
     const text = t.out.join('');
     expect(text).toContain('Claimed acme/widgets#42');
-    expect(text).toContain('docker compose -f ~/orch/compose.yaml exec agent screen -r issue-42');
+    expect(text).toContain('orch attach 42');
     expect(server.ofType('offer.accept')[0]?.payload).toEqual({
       assignmentId: 'asg_1',
       execMode: 'MANUAL',

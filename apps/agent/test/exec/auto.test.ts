@@ -463,9 +463,7 @@ describe('auto mode: restart and screen names', () => {
     );
     await t.ex.idle();
     expect([...t.screen.sessions.keys()].sort()).toEqual(['gadgets-issue-42', 'issue-42']);
-    expect(t.ex.view(t.ex.store.get('asg_b')!).attach).toBe(
-      'docker compose -f ~/orch/compose.yaml exec agent screen -r gadgets-issue-42',
-    );
+    expect(t.ex.view(t.ex.store.get('asg_b')!).attach).toBe('orch attach 42');
     await expect(t.ex.done(42)).rejects.toMatchObject({ code: 'ambiguous' });
     await expect(t.ex.done(42, 'acme/gadgets')).resolves.toMatchObject({ state: 'finished' });
   });

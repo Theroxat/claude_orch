@@ -15,6 +15,15 @@ import { createLogger, errorMessage, redact } from './log';
 import { jsonlUsageSource } from './usage-loop';
 import { AGENT_VERSION } from './version';
 
+/** True when the token file exists and is non-empty. The value is never read. */
+function claudeTokenPresent(secretsDir: string): boolean {
+  try {
+    return statSync(join(secretsDir, 'claude-token')).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Reads `/secrets/claude-token` at use time (never cached, never logged). */
 function readClaudeToken(secretsDir: string): string | null {
   try {
@@ -88,6 +97,7 @@ async function main(): Promise<void> {
     socketPath: cfg.socketPath,
     usageIntervalSec: cfg.usageIntervalSec,
     usageIntervalExplicit: cfg.usageIntervalExplicit,
+    claudeTokenPresent: () => claudeTokenPresent(cfg.secretsDir),
     usageSource: jsonlUsageSource({
       root: cfg.claudeUsageRoot,
       plan: cfg.plan,
