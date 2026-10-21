@@ -1095,4 +1095,30 @@ describe('pool endpoint', () => {
     );
     expect(again.members.find((x) => x.userId === appr.user.userId)!.paused).toBe(true);
   });
+
+  it("does not show a member's running tasks of projects the caller cannot see", async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id);
+    // m also works on a private project the owner of p has nothing to do with
+    const other = await project();
+    await participate(m.user, other.project.id);
+    await report(m, { projectId: other.project.id });
+    const secret = await createTask(other.owner, other.project.id, { title: 'Secret thing' });
+    const offer = await m.client.next('task.offer', (o) => o.payload.task.taskId === secret.id);
+    await m.client.call(
+      agentMessage('offer.accept', { assignmentId: offer.payload.assignmentId, execMode: 'AUTO' }),
+    );
+    for (const url of ['/api/pool', `/api/pool?projectId=${p.id}`]) {
+      const pool = PoolResponseSchema.parse((await api(app, owner)('GET', url)).json());
+      const row = pool.members.find((x) => x.userId === m.user.userId)!;
+      expect(row.runningTasks).toEqual([]);
+    }
+    // the other project's owner still sees it
+    const theirs = PoolResponseSchema.parse(
+      (await api(app, other.owner)('GET', `/api/pool?projectId=${other.project.id}`)).json(),
+    );
+    expect(
+      theirs.members.find((x) => x.userId === m.user.userId)!.runningTasks.map((r) => r.taskId),
+    ).toEqual([secret.id]);
+  });
 });
