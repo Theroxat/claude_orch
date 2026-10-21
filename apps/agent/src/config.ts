@@ -11,6 +11,7 @@
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { DEFAULT_AGENT_IMAGE_REPO, IMAGE_REPO_RE } from '@orch/shared';
 import type { LogLevel } from './log';
 import type { PlanName } from './usage';
 
@@ -47,6 +48,16 @@ const EnvSchema = z.object({
   ORCH_TASK_GID: z.coerce.number().int().min(0).optional(),
   ORCH_GIT_AUTHOR_NAME: z.string().min(1).default('orch agent'),
   ORCH_GIT_AUTHOR_EMAIL: z.string().min(3).default('orch-agent@users.noreply.github.com'),
+  /** Image repository the agent may update itself to (`<repo>:<version>` only). */
+  ORCH_AGENT_IMAGE_REPO: z
+    .string()
+    .regex(
+      IMAGE_REPO_RE,
+      'must be an image repository without tag (e.g. ghcr.io/theroxat/orch-agent)',
+    )
+    .default(DEFAULT_AGENT_IMAGE_REPO),
+  /** Set by docker to the container id: used to find the own container for self-update. */
+  HOSTNAME: optionalString,
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
 });
 
@@ -78,6 +89,9 @@ export interface AgentConfig {
   taskUid?: number;
   taskGid?: number;
   gitAuthor: { name: string; email: string };
+  imageRepo: string;
+  /** Own container id (HOSTNAME), undefined outside a container. */
+  selfContainerId?: string;
 }
 
 export class ConfigError extends Error {
@@ -140,6 +154,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
     taskUid: e.ORCH_TASK_UID,
     taskGid: e.ORCH_TASK_GID,
     gitAuthor: { name: e.ORCH_GIT_AUTHOR_NAME, email: e.ORCH_GIT_AUTHOR_EMAIL },
+    imageRepo: e.ORCH_AGENT_IMAGE_REPO,
+    selfContainerId: e.HOSTNAME,
   };
 }
 

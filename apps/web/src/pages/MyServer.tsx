@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AgentView } from '@orch/shared';
 import { useState } from 'react';
+import { AGENTS_KEY } from '../components/AgentUpdate';
 import { fetchMyAgents, pauseAgent, resumeAgent, revokeAgent } from '../api/endpoints';
 import { AgentCard } from '../components/AgentCard';
 import { InstallAgentCard } from '../components/InstallAgentCard';
 
-const KEY = ['agents', 'mine'];
+const KEY = AGENTS_KEY;
 
 export function MyServer() {
   const qc = useQueryClient();

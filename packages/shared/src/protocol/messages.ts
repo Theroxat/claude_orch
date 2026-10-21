@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { Model, ParticipationMode } from '../domain/enums';
+import { ReleaseVersionSchema } from '../domain/version';
 import {
   AckMessageSchema,
   EnvelopeBaseSchema,
@@ -66,6 +67,8 @@ export const HelloPayloadSchema = z.object({
   running: z.array(RunningTaskSchema),
   /** True when the member ran `orch login` (the token file exists and is non-empty). */
   claudeTokenPresent: z.boolean().optional(),
+  /** True when the agent understands `agent.update` (one-click update). Absent = no. */
+  selfUpdate: z.boolean().optional(),
 });
 export type HelloPayload = z.infer<typeof HelloPayloadSchema>;
 
@@ -186,11 +189,41 @@ export type TasksListRequestPayload = z.infer<typeof TasksListRequestPayloadSche
 export const PauseSetPayloadSchema = z.object({ paused: z.boolean() });
 export type PauseSetPayload = z.infer<typeof PauseSetPayloadSchema>;
 
+/**
+ * Self-update progress. `pending` (accepted, starting), `deferred` (tasks are running and the
+ * member chose "update when idle"), `pulling`, `restarting` (helper container handed off),
+ * `failed` (`code` + `detail`; the old container keeps running), `done` (the new version is up;
+ * normally set by the server when the agent reconnects with `targetVersion`).
+ */
+export const UpdateStatus = z.enum([
+  'pending',
+  'deferred',
+  'pulling',
+  'restarting',
+  'failed',
+  'done',
+]);
+export type UpdateStatus = z.infer<typeof UpdateStatus>;
+
+/** `update.status` (acked): progress of an `agent.update` or of a local `orch update`. */
+export const UpdateStatusPayloadSchema = z.object({
+  /** Id from `agent.update`, or `local-<...>` for `orch update`. */
+  updateId: z.string().min(1).max(128),
+  targetVersion: z.string().max(64),
+  status: UpdateStatus,
+  /** Machine-readable failure reason: busy, invalid_image, not_compose, pull_failed, ... */
+  code: z.string().max(64).optional(),
+  detail: z.string().max(2000).optional(),
+});
+export type UpdateStatusPayload = z.infer<typeof UpdateStatusPayloadSchema>;
+
 // ---------- server -> agent payloads ----------
 
 export const WelcomePayloadSchema = AgentConfigPayloadSchema.extend({
   agentId: z.string(),
   serverTime: IsoDateTime,
+  /** Version the server recommends for agents (its own release version). Absent when `dev`. */
+  latestAgentVersion: z.string().max(64).optional(),
 });
 export type WelcomePayload = z.infer<typeof WelcomePayloadSchema>;
 
@@ -309,6 +342,22 @@ export type TasksListPayload = z.infer<typeof TasksListPayloadSchema>;
 
 export const CleanupPayloadSchema = z.object({ assignmentId: z.string() });
 
+/**
+ * `agent.update` (acked): update this agent to `targetVersion`. Sent only on the owner's request
+ * (POST /api/agents/:id/update). `image` is decided by the server (`<repo>:<targetVersion>`, repo
+ * from server config) and is checked again by the agent against its own configured repository:
+ * the agent never runs anything but `docker pull <image>` and `docker compose up -d agent` for
+ * its own compose project. Progress comes back as `update.status`.
+ */
+export const AgentUpdatePayloadSchema = z.object({
+  updateId: z.string().min(1).max(128),
+  targetVersion: ReleaseVersionSchema,
+  image: z.string().min(1).max(256),
+  /** When tasks are running: false = refuse (`failed`, code `busy`), true = defer until idle. */
+  whenIdle: z.boolean(),
+});
+export type AgentUpdatePayload = z.infer<typeof AgentUpdatePayloadSchema>;
+
 export const ErrorPayloadSchema = z.object({
   code: z.string(),
   message: z.string(),
@@ -332,6 +381,7 @@ export const AgentMessageSchemas = {
   'pause.set': envelopeOf('pause.set', PauseSetPayloadSchema),
   'tasks.list.request': envelopeOf('tasks.list.request', TasksListRequestPayloadSchema),
   'config.request': envelopeOf('config.request', ConfigRequestPayloadSchema),
+  'update.status': envelopeOf('update.status', UpdateStatusPayloadSchema),
   ack: AckMessageSchema,
 } as const;
 
@@ -347,6 +397,7 @@ export const ServerMessageSchemas = {
   'offer.request': envelopeOf('offer.request', OfferRequestPayloadSchema),
   'offer.withdrawn': envelopeOf('offer.withdrawn', OfferWithdrawnPayloadSchema),
   cleanup: envelopeOf('cleanup', CleanupPayloadSchema),
+  'agent.update': envelopeOf('agent.update', AgentUpdatePayloadSchema),
   error: envelopeOf('error', ErrorPayloadSchema),
   ack: AckMessageSchema,
 } as const;
@@ -366,6 +417,7 @@ export const AgentMessageSchema = z.discriminatedUnion('type', [
   AgentMessageSchemas['pause.set'],
   AgentMessageSchemas['tasks.list.request'],
   AgentMessageSchemas['config.request'],
+  AgentMessageSchemas['update.status'],
   AgentMessageSchemas.ack,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
@@ -383,6 +435,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ServerMessageSchemas['offer.request'],
   ServerMessageSchemas['offer.withdrawn'],
   ServerMessageSchemas.cleanup,
+  ServerMessageSchemas['agent.update'],
   ServerMessageSchemas.error,
   ServerMessageSchemas.ack,
 ]);
@@ -405,6 +458,7 @@ export const AGENT_ACKED_TYPES: readonly AgentMessageType[] = [
   'task.finished',
   'done.request',
   'pause.set',
+  'update.status',
 ];
 
 /** Server -> agent types that need an `ack`. */
@@ -414,6 +468,7 @@ export const SERVER_ACKED_TYPES: readonly ServerMessageType[] = [
   'task.cancel',
   'pr.opened',
   'cleanup',
+  'agent.update',
 ];
 
 export interface BuildOptions {

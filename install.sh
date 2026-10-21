@@ -115,6 +115,12 @@ install_wrapper() {
     printf '#!/bin/sh\n%s\n' "$WRAPPER_MARK"
     printf "compose='%s/compose.yaml'\n" "$DIR"
     cat <<'WRAP'
+# `orch update` with the agent stopped: update the stack directly.
+if [ "${1:-}" = "update" ] && [ -z "$(docker compose -f "$compose" ps -q agent 2>/dev/null)" ]; then
+  echo "orch: the agent is not running; updating with docker compose pull + up -d"
+  docker compose -f "$compose" pull agent && exec docker compose -f "$compose" up -d agent
+  exit 1
+fi
 if [ -t 0 ] && [ -t 1 ]; then
   exec docker compose -f "$compose" exec agent orch "$@"
 fi

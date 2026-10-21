@@ -262,6 +262,14 @@ model Agent {
   pausedAt     DateTime?
   pauseSource  String? // "web" | "agent"
   revokedAt    DateTime?
+  // Last one-click / local update (status: pending|deferred|pulling|restarting|failed|done).
+  updateId            String?
+  updateStatus        String?
+  updateTargetVersion String?
+  updateCode          String?
+  updateDetail        String?
+  updateRequestedAt   DateTime?
+  updateUpdatedAt     DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

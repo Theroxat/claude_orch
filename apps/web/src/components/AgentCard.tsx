@@ -1,4 +1,5 @@
 import type { AgentView } from '@orch/shared';
+import { AgentUpdateState } from './AgentUpdate';
 
 export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return 'never';
@@ -62,6 +63,7 @@ export function AgentCard({
       <p className="hint">
         Version {agent.version ?? 'unknown'} · Last seen {relativeTime(agent.lastSeenAt)}
       </p>
+      <AgentUpdateState agent={agent} />
       {agent.claudeTokenPresent != null && (
         <p className="hint">
           {agent.claudeTokenPresent ? (

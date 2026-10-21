@@ -16,6 +16,7 @@ Design and decisions: [docs/PLAN.md](docs/PLAN.md).
 - [Server installation](#server-installation)
 - [Creating the GitHub App](#creating-the-github-app)
 - [Adding a member](#adding-a-member)
+- [Updating agents](#updating-agents)
 - [Day-to-day usage](#day-to-day-usage)
 - [MCP setup](#mcp-setup)
 - [Local development](#local-development)
@@ -272,6 +273,30 @@ Because a `Contents: write` installation token can push to any branch, **enable 
    The `orch` shortcut is `docker compose -f ~/orch/compose.yaml exec agent orch "$@"` (with a terminal attached when you have one), so every command below works as written.
 
 Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGENT_CREDENTIAL`, `ORCH_WORK_DIR`, `ORCH_CLAUDE_DIR`, `ORCH_PLAN` (`pro`, `max5` or `max20`), plus optional `ORCH_AGENT_IMAGE` and `ORCH_AGENT_TAG`. Further agent options such as `ORCH_MAX_CONCURRENT` (default 1) are defined in [`apps/agent/src/config.ts`](apps/agent/src/config.ts).
+
+## Updating agents
+
+The server knows its own release (`ORCH_VERSION`) and the version each agent reports when it connects. When one of your agents runs an older release, the web app shows a banner at the top of every page, for example "Your agent on laptop is out of date (v0.4.1 → v0.4.3)", and the **My Server** page shows the state of each agent. Local `dev` builds are never reported as outdated.
+
+**One click.** Press **Update now**. The server sends the agent an `agent.update` message naming the target version and the image `ghcr.io/theroxat/orch-agent:<version>`. The server decides the image from its own release and `ORCH_AGENT_IMAGE_REPO`; the request cannot choose it. The agent then:
+
+1. refuses when tasks are running (choose **Update when idle** to wait until they finish; meanwhile it takes no new automatic offers);
+2. checks that the image is exactly `<its configured repository>:<release>` (`ORCH_AGENT_IMAGE_REPO`, from `ORCH_AGENT_IMAGE` in `~/orch/.env`); anything else is refused;
+3. finds its compose project, files and directory from its own container labels, and pulls the image. If the pull fails, nothing changes and the old version keeps running;
+4. writes `ORCH_AGENT_TAG=<version>` into `~/orch/.env` (or `ORCH_AGENT_IMAGE`, if your compose file uses only that), keeping a backup;
+5. starts a short-lived helper container from its current image, with the Docker socket and `~/orch` mounted at the same path. After a few seconds the helper runs `docker compose up -d agent`. If that fails, it restores the backup and starts the old version again.
+
+The page follows the steps (requested, waiting for tasks, downloading, restarting). The update is marked done when the agent reconnects with the new version. Only the owner of an agent can update it, and every request is audited (`agent.update_requested`, `agent.update_done`, `agent.update_failed`).
+
+**From the machine.** `orch update` does the same thing locally, for the version the server announces (`orch update --when-idle` waits for running tasks; `orch update --version=0.4.3` picks a release). `orch status` shows the latest version and the update progress. If the agent container is stopped, the `orch` shortcut falls back to `docker compose pull agent && docker compose up -d agent`.
+
+**Manually**, for agents too old for one-click updates, or for installs not made with `install.sh`:
+
+```sh
+cd ~/orch
+# pin a release: echo ORCH_AGENT_TAG=0.4.3 >> .env   (or leave the default tag, latest)
+docker compose pull && docker compose up -d
+```
 
 ## Day-to-day usage
 

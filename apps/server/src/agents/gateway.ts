@@ -5,11 +5,13 @@ import type { WebSocket } from 'ws';
 import {
   AGENT_ACKED_TYPES,
   CloseCode,
+  normalizeVersion,
   parseAgentMessage,
   serverMessage,
   type AckPayload,
   type AgentConfigPayload,
   type AgentMessage,
+  type AgentUpdatePayload,
   type ServerMessage,
   type TaskOfferPayload,
 } from '@orch/shared';
@@ -32,6 +34,8 @@ interface Conn {
   lastBeat: number;
   /** Concurrency announced in `hello` (M4). */
   maxConcurrent: number;
+  /** True when `hello` announced `selfUpdate` (understands `agent.update`). */
+  selfUpdate: boolean;
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
 }
@@ -102,6 +106,17 @@ export class AgentGateway {
     return this.conns.get(agentId)?.helloed === true;
   }
 
+  /** Connected and able to update itself on request (`agent.update`). */
+  canSelfUpdate(agentId: string): boolean {
+    const c = this.conns.get(agentId);
+    return c?.helloed === true && c.selfUpdate;
+  }
+
+  /** Sends `agent.update` to one agent. False when it is offline. */
+  sendUpdate(agentId: string, payload: AgentUpdatePayload): boolean {
+    return this.sendTo(agentId, serverMessage('agent.update', payload));
+  }
+
   /** Users with at least one connected agent. */
   connectedUserIds(): string[] {
     const ids = new Set<string>();
@@ -156,6 +171,7 @@ export class AgentGateway {
       helloed: false,
       lastBeat: Date.now(),
       maxConcurrent: 1,
+      selfUpdate: false,
       queue: Promise.resolve(),
     };
     this.conns.set(agent.id, conn);
@@ -476,24 +492,54 @@ export class AgentGateway {
 
   private async onHello(c: Conn, m: Extract<AgentMessage, { type: 'hello' }>) {
     c.lastBeat = Date.now();
+    const prev = await this.deps.prisma.agent.findUnique({ where: { id: c.agentId } });
+    // The agent came back running the version it was asked to update to: the update is done.
+    const updated =
+      !!prev?.updateTargetVersion &&
+      !!prev.updateStatus &&
+      prev.updateStatus !== 'done' &&
+      normalizeVersion(m.payload.agentVersion) === prev.updateTargetVersion;
     await this.deps.prisma.agent.update({
       where: { id: c.agentId },
       data: {
         agentVersion: m.payload.agentVersion,
+        ...(updated && {
+          updateStatus: 'done',
+          updateUpdatedAt: new Date(),
+          updateCode: null,
+          updateDetail: null,
+        }),
         lastSeenAt: new Date(),
         ...(m.payload.claudeTokenPresent !== undefined && {
           claudeTokenPresent: m.payload.claudeTokenPresent,
         }),
       },
     });
+    if (updated) {
+      await audit(this.deps.prisma, {
+        actorType: 'AGENT',
+        actorUserId: c.userId,
+        actorAgentId: c.agentId,
+        agentId: c.agentId,
+        action: 'agent.update_done',
+        data: { targetVersion: prev.updateTargetVersion! },
+      });
+    }
     const cfg = await this.configFor(c.agentId);
     c.helloed = true;
     c.maxConcurrent = m.payload.maxConcurrent;
+    c.selfUpdate = m.payload.selfUpdate === true;
+    const latest = normalizeVersion(this.deps.config.ORCH_VERSION);
     this.send(
       c,
       serverMessage(
         'welcome',
-        { ...cfg, agentId: c.agentId, serverTime: new Date().toISOString() },
+        {
+          ...cfg,
+          agentId: c.agentId,
+          serverTime: new Date().toISOString(),
+          ...(latest && { latestAgentVersion: latest }),
+        },
         { replyTo: m.id },
       ),
     );
@@ -587,6 +633,41 @@ export class AgentGateway {
           m.payload.detail,
         );
         return r.ok ? { ok: true } : refuse(r.code, r.message);
+      }
+      case 'update.status': {
+        const p = m.payload;
+        const agent = await prisma.agent.findUniqueOrThrow({ where: { id: c.agentId } });
+        const local = p.updateId.startsWith('local-');
+        // Stale ids are acked and ignored. Only progress is stored: never the image or anything else.
+        if (p.updateId !== agent.updateId && !local) return { ok: true };
+        const now = new Date();
+        const fresh = p.updateId !== agent.updateId;
+        await prisma.agent.update({
+          where: { id: c.agentId },
+          data: {
+            updateId: p.updateId,
+            updateTargetVersion: p.targetVersion,
+            ...(fresh && { updateRequestedAt: now }),
+            updateStatus: p.status,
+            updateCode: p.code ?? null,
+            updateDetail: p.detail ?? null,
+            updateUpdatedAt: now,
+          },
+        });
+        if (p.status === 'failed' || p.status === 'done') {
+          await audit(prisma, {
+            actorType: 'AGENT',
+            actorUserId: c.userId,
+            actorAgentId: c.agentId,
+            agentId: c.agentId,
+            action: p.status === 'failed' ? 'agent.update_failed' : 'agent.update_done',
+            data: {
+              targetVersion: p.targetVersion,
+              ...(p.code && { code: p.code }),
+            },
+          });
+        }
+        return { ok: true };
       }
       default:
         return refuse('not_implemented', `${m.type} is not available yet`);

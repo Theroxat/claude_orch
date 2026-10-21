@@ -6,11 +6,16 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   CloseCode,
   ENROLLMENT_TOKEN_TTL_SEC,
+  AgentUpdateRequestSchema,
   EnrollRequestSchema,
+  isOutdated,
+  normalizeVersion,
   parseAgentCredential,
   type AgentView,
   type CreateEnrollmentTokenResponse,
   type EnrollResponse,
+  type OutdatedCountResponse,
+  type UpdateStatus,
 } from '@orch/shared';
 import { audit } from '../audit';
 import { requireUser, type AuthDeps } from '../auth';
@@ -60,6 +65,8 @@ export function registerAgents(
   const { prisma, config } = deps;
   const baseUrl = config.ORCH_BASE_URL.replace(/\/+$/, '');
 
+  const latestAgentVersion = normalizeVersion(config.ORCH_VERSION);
+
   async function toView(a: Agent): Promise<AgentView> {
     const last = await prisma.usageReport.findFirst({
       where: { agentId: a.id },
@@ -75,6 +82,19 @@ export function registerAgents(
       paused: a.paused,
       revokedAt: a.revokedAt?.toISOString() ?? null,
       claudeTokenPresent: a.claudeTokenPresent,
+      latestAgentVersion,
+      updateAvailable: !a.revokedAt && isOutdated(a.agentVersion, latestAgentVersion),
+      canSelfUpdate: !a.revokedAt && gateway.canSelfUpdate(a.id),
+      update: a.updateStatus
+        ? {
+            status: a.updateStatus as UpdateStatus,
+            targetVersion: a.updateTargetVersion ?? '',
+            code: a.updateCode,
+            detail: a.updateDetail,
+            requestedAt: a.updateRequestedAt?.toISOString() ?? null,
+            updatedAt: a.updateUpdatedAt?.toISOString() ?? null,
+          }
+        : null,
     };
   }
 
@@ -167,6 +187,65 @@ export function registerAgents(
       orderBy: { createdAt: 'desc' },
     });
     return Promise.all(agents.map(toView));
+  });
+
+  app.get('/api/agents/outdated-count', async (req): Promise<OutdatedCountResponse> => {
+    const user = requireUser(req);
+    const agents = await prisma.agent.findMany({
+      where: { userId: user.id, revokedAt: null },
+      select: { agentVersion: true },
+    });
+    return { count: agents.filter((a) => isOutdated(a.agentVersion, latestAgentVersion)).length };
+  });
+
+  app.post('/api/agents/:id/update', async (req, reply) => {
+    const a = await ownAgent(req, true);
+    const body = parseBody(AgentUpdateRequestSchema, req.body ?? {});
+    const target = latestAgentVersion;
+    if (!target) {
+      throw new HttpError(409, 'server_version_unknown', 'This server runs a dev build');
+    }
+    if (!isOutdated(a.agentVersion, target)) {
+      throw new HttpError(409, 'up_to_date', 'The agent is already up to date');
+    }
+    if (!gateway.isConnected(a.id)) throw new HttpError(409, 'agent_offline', 'Agent is offline');
+    if (!gateway.canSelfUpdate(a.id)) {
+      throw new HttpError(409, 'update_unsupported', 'This agent cannot update itself remotely');
+    }
+    const updateId = `upd_${randomBytes(12).toString('base64url')}`;
+    // The image is decided here and only here: never taken from the request.
+    const image = `${config.ORCH_AGENT_IMAGE_REPO}:${target}`;
+    const whenIdle = body.whenIdle ?? false;
+    const now = new Date();
+    await prisma.agent.update({
+      where: { id: a.id },
+      data: {
+        updateId,
+        updateStatus: 'pending',
+        updateTargetVersion: target,
+        updateCode: null,
+        updateDetail: null,
+        updateRequestedAt: now,
+        updateUpdatedAt: now,
+      },
+    });
+    await audit(prisma, {
+      actorUserId: a.userId,
+      agentId: a.id,
+      action: 'agent.update_requested',
+      ip: req.ip,
+      data: { fromVersion: a.agentVersion, targetVersion: target, image, whenIdle },
+    });
+    const sent = gateway.sendUpdate(a.id, { updateId, targetVersion: target, image, whenIdle });
+    if (!sent) {
+      await prisma.agent.update({
+        where: { id: a.id },
+        data: { updateStatus: 'failed', updateCode: 'agent_offline', updateUpdatedAt: new Date() },
+      });
+      throw new HttpError(409, 'agent_offline', 'Agent is offline');
+    }
+    const fresh = await prisma.agent.findUniqueOrThrow({ where: { id: a.id } });
+    return reply.status(202).send(await toView(fresh));
   });
 
   for (const action of ['pause', 'resume'] as const) {
