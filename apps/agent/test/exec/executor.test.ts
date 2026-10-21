@@ -254,6 +254,10 @@ describe('ManualExecutor take -> done', () => {
     // commitAll removed the task's .git: it is seeded again so the live session keeps working.
     const names = t.git.calls.map((c) => c[0]);
     expect(names.lastIndexOf('seedTaskGit')).toBeGreaterThan(names.indexOf('commitAll'));
+    // ... with the task frozen (once for staging, once for the restore), then resumed.
+    const dockerCalls = t.docker.calls.map((c) => c[0]);
+    expect(dockerCalls.filter((n) => n === 'pause')).toHaveLength(2);
+    expect(t.docker.paused.size).toBe(0);
   });
 
   it('uses the default image and runs postCreateCommand from devcontainer.json', async () => {
