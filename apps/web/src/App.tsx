@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Navigate, Route, Routes } from 'react-router';
+import { Link, Navigate, Route, Routes } from 'react-router';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
 import { pages } from './routes';
@@ -17,6 +17,18 @@ const Backlog = pages['/backlog'];
 const ClaudeCode = pages['/claude-code'];
 const MyServer = pages['/my-server'];
 const AdminAccess = pages['/admin/access'];
+
+function NotFound() {
+  return (
+    <section className="gate" aria-label="Page not found">
+      <div className="card">
+        <h1>Page not found</h1>
+        <p className="lede">This page does not exist.</p>
+        <Link to="/">Back to orch</Link>
+      </div>
+    </section>
+  );
+}
 
 export function App() {
   return (
@@ -39,6 +51,7 @@ export function App() {
               <Route path="/admin/access" element={<AdminAccess />} />
             </Route>
           </Route>
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
     </ToastProvider>

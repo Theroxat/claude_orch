@@ -42,6 +42,20 @@ describe('OAuth consent page', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
+  it('sends a single POST on a double click in the same tick', async () => {
+    stubAssign();
+    const calls = mockApi({
+      ['GET /oauth/consent?' + qs]: () => ({ json: info }),
+      'POST /oauth/consent': () => ({ json: { redirectTo: 'http://localhost:1/cb?code=x' } }),
+    });
+    renderApp('/oauth/consent?' + qs);
+    const approve = await screen.findByRole('button', { name: 'Approve' });
+    fireEvent.click(approve);
+    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1));
+  });
+
   it('denies', async () => {
     const assign = stubAssign();
     const calls = mockApi({

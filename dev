@@ -25,6 +25,10 @@ case "$cmd" in
     docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install.sh
     docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install
     ;;
+  test:ui)
+    dc --profile tools build tools
+    exec ./test/ui/stack.sh test
+    ;;
   build) tools pnpm -r build ;;
   prisma) tools pnpm --filter @orch/server exec prisma "$@" ;;
   pnpm) tools pnpm "$@" ;;
@@ -40,6 +44,6 @@ case "$cmd" in
   logs) dc logs -f "$@" ;;
   ps) dc ps ;;
   help | *)
-    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|e2e|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
+    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|test:ui|e2e|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
     ;;
 esac

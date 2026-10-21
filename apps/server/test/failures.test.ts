@@ -584,6 +584,12 @@ describe('retry', () => {
     const t = await createTask(creator, p.id);
     const m = await member(p.id);
     await app.dispatcher.withdrawForTask(t.id, 'test');
+    // A task that never failed offers no Retry, even to its owner and creator.
+    for (const who of [owner, creator]) {
+      expect(
+        TaskViewSchema.parse((await api(app, who)('GET', `/api/tasks/${t.id}`)).json()).canRetry,
+      ).toBe(false);
+    }
     await seedFailures(m, t.id, ['task', 'task', 'task', 'task', 'task']);
     expect((await reasonOf(owner, t.id, m)).reasons[0]?.code).toBe('shut_out');
     const card = TaskViewSchema.parse((await api(app, owner)('GET', `/api/tasks/${t.id}`)).json());

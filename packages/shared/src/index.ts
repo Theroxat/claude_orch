@@ -1,3 +1,4 @@
+import './browser-jitless';
 export * from './domain/enums';
 export * from './domain/user';
 export * from './domain/project';

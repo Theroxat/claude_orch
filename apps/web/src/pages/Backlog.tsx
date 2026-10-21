@@ -153,7 +153,7 @@ export function Backlog() {
       <div className="board-tools">
         {importTargets.map((p) => (
           <button key={p.id} disabled={imp.isPending} onClick={() => imp.mutate(p.id)}>
-            Import issues labeled <code>`pool`</code> ({p.fullName})
+            Import issues labeled <code>pool</code> ({p.fullName})
           </button>
         ))}
       </div>

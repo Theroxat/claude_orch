@@ -223,7 +223,7 @@ describe('Backlog', () => {
     );
     renderApp('/backlog');
     fireEvent.click(
-      await screen.findByRole('button', { name: /Import issues labeled `pool` \(octo\/repo\)/ }),
+      await screen.findByRole('button', { name: /Import issues labeled pool \(octo\/repo\)/ }),
     );
     expect(await screen.findByText(/Imported 1 issue\(s\), 2 already imported/)).toBeTruthy();
     expect(calls.some((c) => c.method === 'POST' && c.path === '/projects/p1/tasks/import')).toBe(
