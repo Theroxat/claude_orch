@@ -484,6 +484,24 @@ describe('participation', () => {
     ).toBe(200);
   });
 
+  it('keeps the 100 percent cap under concurrent PUTs on different projects', async () => {
+    const a = await setup();
+    const others = await Promise.all([ownerWithProject(), ownerWithProject(), ownerWithProject()]);
+    for (const o of others) setRole(o.repo, a.member, 'READ');
+    const results = await Promise.all(
+      [a.project.id, ...others.map((o) => o.project.id)].map((pid) =>
+        a.put(a.member, { participating: true, budgetPercent: 60, mode: 'auto' }, pid),
+      ),
+    );
+    expect(results.filter((r) => r.statusCode === 200)).toHaveLength(1);
+    expect(results.filter((r) => r.statusCode === 409)).toHaveLength(3);
+    const sum = await prisma.participation.aggregate({
+      where: { userId: a.member.userId, active: true },
+      _sum: { percent: true },
+    });
+    expect(sum._sum.percent).toBe(60);
+  });
+
   it('refuses users who may not see or join the project', async () => {
     const { put } = await setup();
     const stranger = await loginAs(app, gh);
