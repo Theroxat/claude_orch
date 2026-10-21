@@ -198,7 +198,7 @@ class Session {
   async api(method, path, body, expect = [200, 201, 204]) {
     const res = await this.raw(method, path, body);
     const text = await res.text();
-    let json = null;
+    let json;
     try {
       json = text ? JSON.parse(text) : null;
     } catch {

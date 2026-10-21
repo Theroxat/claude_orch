@@ -5,7 +5,7 @@
 # (needed for `prisma migrate deploy` at start) are installed globally at the versions pinned
 # in pnpm-lock.yaml.
 
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ---- build: resolve dependencies, generate the Prisma client, prune to production deps ----
 FROM ${NODE_IMAGE} AS build
@@ -15,7 +15,7 @@ RUN apt-get update \
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     CI=true
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@12.14.0 --activate
 WORKDIR /repo
 
 # Manifests first for layer caching.
@@ -39,7 +39,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 # Keep these in sync with pnpm-lock.yaml (tsx, prisma).
 ARG TSX_VERSION=4.23.15
-ARG PRISMA_VERSION=6.19.3
+ARG PRISMA_VERSION=7.10.1
 RUN npm install -g --no-audit --no-fund tsx@${TSX_VERSION} prisma@${PRISMA_VERSION} \
  && npm cache clean --force
 

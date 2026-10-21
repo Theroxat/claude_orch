@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
 import { AdminAccess } from './pages/AdminAccess';

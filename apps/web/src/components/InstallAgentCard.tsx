@@ -22,6 +22,8 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
 
   useEffect(() => {
     if (!data) return;
+    // Sync the clock when a new token arrives, before the first interval tick.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);

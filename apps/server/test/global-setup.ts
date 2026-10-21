@@ -8,7 +8,7 @@ export default function setup(): void {
   const url = process.env.DATABASE_URL_TEST;
   if (!url) throw new Error('DATABASE_URL_TEST is not set (run tests through ./dev test)');
   process.env.DATABASE_URL = url;
-  execSync('pnpm exec prisma migrate reset --force --skip-seed --skip-generate', {
+  execSync('pnpm exec prisma migrate reset --force', {
     stdio: 'inherit',
     env: { ...process.env, DATABASE_URL: url },
   });
