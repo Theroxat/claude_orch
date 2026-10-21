@@ -2,10 +2,10 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { serverMessage } from '@orch/shared';
-import { Agent } from '../src/agent';
+import { Agent, type ClaudeCheckOptions } from '../src/agent';
 import { ClaudeAuthState } from '../src/claude-auth';
 import { sendControl } from '../src/cli/client';
-import { silentLogger } from '../src/log';
+import { silentLogger, type Logger } from '../src/log';
 import type { UsageEstimate } from '../src/usage';
 import { toUsageReport } from '../src/usage-loop';
 import { FakeServer } from './helpers/fake-server';
@@ -71,7 +71,12 @@ async function startServer(opts: { port?: number; autoAck?: boolean; heartbeatSe
 
 async function startAgent(
   url: string,
-  extra: { usageIntervalSec?: number; usageFirstDelayMs?: number } = {},
+  extra: {
+    usageIntervalSec?: number;
+    usageFirstDelayMs?: number;
+    claudeCheck?: ClaudeCheckOptions;
+    logger?: Logger;
+  } = {},
 ) {
   let calls = 0;
   const agent = new Agent({
@@ -89,10 +94,11 @@ async function startAgent(
         return estimate;
       },
     },
-    logger: silentLogger,
+    logger: extra.logger ?? silentLogger,
     backoff: { baseMs: 20, maxMs: 100 },
     outboxRetryMs: 150,
     usageFirstDelayMs: extra.usageFirstDelayMs ?? 3_600_000,
+    ...(extra.claudeCheck ? { claudeCheck: extra.claudeCheck } : {}),
   });
   await agent.start();
   cleanups.push(() => agent.stop());
@@ -142,8 +148,11 @@ describe('Agent', () => {
     expect(s.ofType('hello')[0]?.payload).toMatchObject({ claudeAuthValid: false });
     expect(s.ofType('usage.report')[0]?.payload).toMatchObject({ claudeAuthValid: false });
     expect(agent.status().claudeAuthValid).toBe(false);
-    // `orch login` in another process flips it back; the next report carries it.
-    new ClaudeAuthState(join(tmp.dir, 'data')).markValid();
+    // A successful real check flips it back; the next report carries it.
+    new ClaudeAuthState(join(tmp.dir, 'data')).recordCheck(
+      { valid: true, checkedAt: new Date().toISOString() },
+      'hash',
+    );
     await waitFor(() => s.ofType('usage.report').some((m) => m.payload.claudeAuthValid === true), {
       timeoutMs: 4000,
       what: 'valid report',
@@ -302,5 +311,89 @@ describe('Agent', () => {
       expect(f.raw).not.toContain('orch_agent_');
       expect(f.raw).not.toMatch(/sk-ant-[A-Za-z0-9_-]+/);
     }
+  });
+
+  it('drops a claude.auth rejected by an old server (invalid_message) instead of resending it forever', async () => {
+    const s = await startServer({ autoAck: false });
+    s.onFrame = (msg) => {
+      if (msg.type === 'claude.auth') {
+        s.send(
+          serverMessage('error', {
+            code: 'invalid_message',
+            message: 'unknown type',
+            replyTo: msg.id,
+          }),
+        );
+      }
+    };
+    const infos: string[] = [];
+    const logger: Logger = { ...silentLogger, info: (msg) => infos.push(msg) };
+    let n = 0;
+    const { agent } = await startAgent(s.url, {
+      logger,
+      claudeCheck: {
+        run: async () => ({
+          payload: { valid: true, checkedAt: new Date().toISOString() },
+          tokenHash: `h${++n}`,
+        }),
+        tokenStat: () => 'stat',
+        tokenHash: () => 'h-current',
+      },
+    });
+    await waitFor(() => s.ofType('claude.auth').length >= 1, { what: 'claude.auth sent' });
+    await waitFor(() => !agent.outbox.hasPending('claude.auth'), { what: 'claude.auth dropped' });
+    await sleep(400); // > outboxRetryMs: nothing resent
+    expect(s.ofType('claude.auth')).toHaveLength(1);
+    await agent.checkClaudeAuth('again');
+    await waitFor(() => !agent.outbox.hasPending('claude.auth'), { what: 'second drop' });
+    expect(infos.filter((m) => m.includes('does not support claude.auth'))).toHaveLength(1);
+  });
+
+  it('keeps an unrelated invalid_message error from acking a pending claude.auth', async () => {
+    const s = await startServer({ autoAck: false });
+    const { agent } = await startAgent(s.url, {
+      claudeCheck: {
+        run: async () => ({
+          payload: { valid: true, checkedAt: new Date().toISOString() },
+          tokenHash: 'h',
+        }),
+        tokenStat: () => 'stat',
+        tokenHash: () => 'h-current',
+      },
+    });
+    await waitFor(() => s.ofType('claude.auth').length >= 1, { what: 'claude.auth sent' });
+    s.send(serverMessage('error', { code: 'invalid_message', message: 'x', replyTo: 'other' }));
+    await sleep(100);
+    expect(agent.outbox.hasPending('claude.auth')).toBe(true);
+  });
+
+  it('starts the first Claude check only after the startup container cleanup settled', async () => {
+    const s = await startServer();
+    let releaseCleanup!: () => void;
+    const cleanupDone = new Promise<void>((r) => (releaseCleanup = r));
+    const events: string[] = [];
+    await startAgent(s.url, {
+      claudeCheck: {
+        cleanup: async () => {
+          events.push('cleanup:start');
+          await cleanupDone;
+          events.push('cleanup:end');
+        },
+        run: async () => {
+          events.push('run');
+          return {
+            payload: { valid: true, checkedAt: new Date().toISOString() },
+            tokenHash: 'h-current',
+          };
+        },
+        tokenStat: () => 'stat',
+        tokenHash: () => 'h-current',
+      },
+    });
+    await sleep(100);
+    expect(events).toEqual(['cleanup:start']);
+    releaseCleanup();
+    await waitFor(() => events.includes('run'), { what: 'first check' });
+    expect(events).toEqual(['cleanup:start', 'cleanup:end', 'run']);
   });
 });

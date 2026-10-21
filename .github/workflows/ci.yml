@@ -65,8 +65,14 @@ jobs:
           context: .
           file: apps/agent/Dockerfile
           push: false
+          load: true
+          tags: orch-agent:ci
           cache-from: type=gha,scope=agent
           cache-to: type=gha,scope=agent,mode=max
+      - name: Agent image smoke test (Claude binary and orch CLI)
+        run: |
+          docker run --rm --entrypoint sh orch-agent:ci -c \
+            'test -x "$ORCH_CLAUDE_BIN" && "$ORCH_CLAUDE_BIN" --version && "$ORCH_CLAUDE_BIN" setup-token --help >/dev/null && command -v script && orch help >/dev/null'
 
   gitleaks:
     name: Secret scan (gitleaks)

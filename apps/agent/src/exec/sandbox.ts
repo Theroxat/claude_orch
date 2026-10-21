@@ -55,12 +55,28 @@ const FORBIDDEN_SOURCES = [
   '/home',
   '/etc',
 ];
-const RESERVED_ENV = new Set([
+/**
+ * Variables that would make Claude Code authenticate (or talk) elsewhere than with the member's
+ * OAuth token. Passed as `-e NAME=` (empty: Claude Code treats it as unset), which also overrides
+ * an `ENV` of the repo's image, so a devcontainer cannot swap the credential.
+ */
+export const BLANKED_AUTH_ENV = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+] as const;
+
+const RESERVED_ENV = new Set<string>([
   CLAUDE_TOKEN_ENV,
   'CLAUDE_CONFIG_DIR',
   'HOME',
   'DOCKER_HOST',
-  'ANTHROPIC_API_KEY',
+  ...BLANKED_AUTH_ENV,
 ]);
 
 /** Env the sandbox always sets (values are not secret). */
@@ -71,6 +87,22 @@ export const SANDBOX_ENV: Record<string, string> = {
   DISABLE_TELEMETRY: '1',
   DISABLE_AUTOUPDATER: '1',
 };
+
+/**
+ * The `-e` arguments of every Claude container (tasks and the auth check): the devcontainer env
+ * without reserved names, then SANDBOX_ENV, the blanked auth variables and, last, the token by
+ * NAME only (docker reads its value from the docker CLI child's environment).
+ */
+export function sandboxEnvArgs(containerEnv: Record<string, string> = {}): string[] {
+  const args: string[] = [];
+  for (const [k, v] of Object.entries(containerEnv)) {
+    if (!RESERVED_ENV.has(k)) args.push('-e', `${k}=${v}`);
+  }
+  for (const [k, v] of Object.entries(SANDBOX_ENV)) args.push('-e', `${k}=${v}`);
+  for (const k of BLANKED_AUTH_ENV) args.push('-e', `${k}=`);
+  args.push('-e', CLAUDE_TOKEN_ENV);
+  return args;
+}
 
 function checkSpec(s: SandboxSpec): void {
   if (!Number.isInteger(s.uid) || s.uid <= 0 || !Number.isInteger(s.gid) || s.gid < 0) {
@@ -123,12 +155,7 @@ export function buildCreateArgs(s: SandboxSpec): string[] {
     '--init',
   ];
   for (const [k, v] of Object.entries(s.labels)) args.push('--label', `${k}=${v}`);
-  for (const [k, v] of Object.entries(s.containerEnv)) {
-    if (!RESERVED_ENV.has(k)) args.push('-e', `${k}=${v}`);
-  }
-  for (const [k, v] of Object.entries(SANDBOX_ENV)) args.push('-e', `${k}=${v}`);
-  // Name only: docker reads the value from its own environment.
-  args.push('-e', CLAUDE_TOKEN_ENV);
+  args.push(...sandboxEnvArgs(s.containerEnv));
   // Keep the container alive; the member's Claude session runs through `docker exec`.
   args.push('--entrypoint', 'sleep', s.image, 'infinity');
   return args;

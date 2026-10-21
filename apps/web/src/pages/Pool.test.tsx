@@ -40,4 +40,34 @@ describe('Pool', () => {
     expect(alert.textContent).toContain('No task is offered to that machine until then.');
     expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
+
+  it('names the 401 rejection and shows verified machines', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/mine': () => ({ json: [] }),
+      'GET /projects/discover': () => ({ json: [] }),
+      'GET /pool': () => ({ json: { members: [] } }),
+      'GET /agents/mine': () => ({
+        json: [
+          agent({
+            claudeAuthValid: false,
+            claudeAuthError: 'unauthorized',
+            claudeAuthCheckedAt: new Date().toISOString(),
+          }),
+          agent({
+            id: 'a3',
+            machineName: 'fine',
+            claudeAuthValid: true,
+            claudeAuthCheckedAt: new Date(Date.now() - 600_000).toISOString(),
+          }),
+        ],
+      }),
+    });
+    renderApp('/pool');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain(
+      'Claude rejected the token (401): run orch login on laptop',
+    );
+    expect(await screen.findByText(/fine: Claude login verified 10 min ago/)).toBeTruthy();
+  });
 });

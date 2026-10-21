@@ -611,7 +611,10 @@ describe('failure classification and Claude login state', () => {
     expect(() => t.ex.take(9, 'acme/widgets')).toThrow(/Claude login expired/);
 
     // `orch login` (another process) resets the state; the next offer is accepted.
-    new ClaudeAuthState(t.cfg.dataDir).markValid();
+    new ClaudeAuthState(t.cfg.dataDir).recordCheck(
+      { valid: true, checkedAt: new Date().toISOString() },
+      'hash',
+    );
     expect(t.ex.claudeAuth.isValid()).toBe(true);
     t.proc.script = undefined as never;
     t.ex.handle(msg(autoOffer({ assignmentId: 'asg_3', issueNumber: 9 })));
