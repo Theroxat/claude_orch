@@ -1,4 +1,4 @@
-import type { Agent } from '@prisma/client';
+import type { Agent, User } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
 import type { WebSocket } from 'ws';
@@ -49,6 +49,11 @@ export interface GatewayDeps {
   config: Config;
   log: FastifyBaseLogger;
   github?: GithubClient;
+  /**
+   * Sign-in allowlist decision for the agent's owner. Checked on every frame (the result is
+   * cached by the allowlist), so removing someone's access also cuts off their connected agents.
+   */
+  isAllowed?: (user: User) => Promise<boolean>;
 }
 
 /**
@@ -364,6 +369,21 @@ export class AgentGateway {
       return;
     }
     const m = r.message;
+    if (m.type !== 'ack' && this.deps.isAllowed) {
+      const owner = await this.deps.prisma.user.findUnique({ where: { id: c.userId } });
+      const allowed = owner
+        ? await this.deps.isAllowed(owner).catch((err: unknown) => {
+            // GitHub unreachable (org check): keep the agent, as at the last decision.
+            this.deps.log.warn({ err, agentId: c.agentId }, 'agent allowlist check failed');
+            return true;
+          })
+        : false;
+      if (!allowed) {
+        this.sendError(c, 'unauthorized', 'This account is no longer allowed', m.id);
+        this.disconnect(c.agentId, CloseCode.UNAUTHORIZED, 'access removed');
+        return;
+      }
+    }
     if (m.type === 'hello') return this.onHello(c, m);
     if (!c.helloed) return this.sendError(c, 'hello_required', 'Send hello first', m.id);
     if (m.type === 'heartbeat') {

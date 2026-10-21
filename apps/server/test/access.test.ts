@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
+import { CloseCode, EnrollResponseSchema, agentMessage, type ServerMessage } from '@orch/shared';
 import { signToken } from '../src/auth/crypto';
 import { loadConfig, signInIsRestricted } from '../src/config';
 import { FakeGithub, makeApp, prisma, uid, uniqueInt } from './harness';
@@ -291,6 +294,63 @@ describe('request access', () => {
     // Re-approving restores the existing session.
     await as(a, admin)('POST', `/api/admin/access/grants/${grant.id}/approve`);
     expect((await as(a, s.cookie)('GET', '/api/me')).statusCode).toBe(200);
+  });
+
+  it('remove -> a connected agent is cut off: no token, socket closed', async () => {
+    const login = `agent-${uid()}`;
+    const r = await as(a, admin)('POST', '/api/admin/access/grants', { githubLogin: login });
+    const grant = r.json<{ grant: GrantJson }>().grant;
+    const s = await signIn(a, login);
+    const enrollToken = (await as(a, s.cookie)('POST', '/api/agents/enrollment-tokens')).json<{
+      token: string;
+    }>().token;
+    const enr = EnrollResponseSchema.parse(
+      (
+        await a.inject({
+          method: 'POST',
+          url: '/api/agents/enroll',
+          payload: { token: enrollToken, machineName: 'box', agentVersion: '0.1.0' },
+        })
+      ).json(),
+    );
+    if (!a.server.listening) await a.listen({ port: 0, host: '127.0.0.1' });
+    const port = (a.server.address() as AddressInfo).port;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/agent/ws`, {
+      headers: { authorization: `Bearer ${enr.credential}` },
+    });
+    const msgs: ServerMessage[] = [];
+    ws.on('message', (d) => msgs.push(JSON.parse(d.toString()) as ServerMessage));
+    const closed = new Promise<number>((res) => ws.once('close', (code) => res(code)));
+    await new Promise((res) => ws.once('open', res));
+    ws.send(
+      JSON.stringify(
+        agentMessage('hello', {
+          agentVersion: '0.4.0',
+          capabilities: ['auto', 'manual'],
+          localPaused: false,
+          maxConcurrent: 1,
+          running: [],
+        }),
+      ),
+    );
+    const end = Date.now() + 3000;
+    while (!msgs.some((m) => m.type === 'welcome') && Date.now() < end) {
+      await new Promise((res) => setTimeout(res, 15));
+    }
+    expect(msgs.some((m) => m.type === 'welcome')).toBe(true);
+
+    await as(a, admin)('POST', `/api/admin/access/grants/${grant.id}/remove`);
+    ws.send(
+      JSON.stringify(
+        agentMessage('token.request', {
+          requestId: 'r1',
+          assignmentId: 'whatever',
+          purpose: 'push',
+        }),
+      ),
+    );
+    expect(await closed).toBe(CloseCode.UNAUTHORIZED);
+    expect(msgs.some((m) => m.type === 'token.grant' || m.type === 'token.deny')).toBe(false);
   });
 
   it('an approved grant does not follow a login to another GitHub account', async () => {

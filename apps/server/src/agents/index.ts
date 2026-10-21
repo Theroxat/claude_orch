@@ -44,6 +44,8 @@ export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentG
     config: deps.config,
     log: app.log,
     github: deps.github,
+    // `app.allowlist` is registered later (registerAuth): resolved at call time.
+    isAllowed: async (user) => (await app.allowlist.check(user)) !== 'refused',
   });
   app.decorate('agentGateway', gateway);
   gateway.start();
