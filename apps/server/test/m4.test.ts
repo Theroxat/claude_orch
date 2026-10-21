@@ -510,6 +510,32 @@ describe('offers: accept, reject, timeout', () => {
       b.user.userId,
     );
   });
+
+  it('editing a task withdraws its pending offers: a new dependency cannot be skipped', async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id, { mode: 'APPROVAL' });
+    const dep = await createTask(owner, p.id, { title: 'dependency' });
+    const t = await createTask(owner, p.id, { title: 'dependent' });
+    const req = await m.client.next('offer.request', (o) => o.payload.task.taskId === t.id);
+    const patched = await api(app, owner)('PATCH', `/api/tasks/${t.id}`, {
+      size: 'M',
+      dependsOn: [dep.id],
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(TaskViewSchema.parse(patched.json()).status).toBe('BLOCKED');
+    await settle();
+    expect(
+      (await prisma.assignment.findUniqueOrThrow({ where: { id: req.payload.assignmentId } }))
+        .status,
+    ).toBe('CANCELLED');
+    await m.client.next(
+      'offer.withdrawn',
+      (x) => x.payload.assignmentId === req.payload.assignmentId,
+    );
+    const res = await api(app, m.user)('POST', `/api/offers/${req.payload.assignmentId}/accept`);
+    expect(res.statusCode).not.toBe(200);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe('TODO');
+  });
 });
 
 describe('consent is absolute', () => {
@@ -922,7 +948,7 @@ describe('github webhooks', () => {
       number: n,
       html_url: `https://github.com/${repo.fullName}/pull/${n}`,
       merged,
-      head: { ref: branch, sha: `sha${n}` },
+      head: { ref: branch, sha: `sha${n}`, repo: { id: repo.githubRepoId } },
       base: { ref: 'main' },
     });
     // the agent pushed; someone opened the PR by hand on the task branch
@@ -939,7 +965,10 @@ describe('github webhooks', () => {
     // a PR on an unrelated branch is ignored
     const other = await hook('pull_request', {
       action: 'opened',
-      pull_request: { ...pr(901), head: { ref: 'feature/x', sha: 's' } },
+      pull_request: {
+        ...pr(901),
+        head: { ref: 'feature/x', sha: 's', repo: { id: repo.githubRepoId } },
+      },
       repository: repoPayload(repo),
     });
     expect(other.json()).toMatchObject({ result: 'ignored' });
@@ -1003,6 +1032,82 @@ describe('github webhooks', () => {
     expect(await auditActions(base.id)).toEqual(
       expect.arrayContaining(['task.in_review', 'task.pr_closed', 'task.merged']),
     );
+  });
+
+  it('a PR from a fork on a branch named like a task branch is not linked to the task', async () => {
+    const { owner, repo, project: p } = await project();
+    const a = await member(p.id);
+    const t = await createTask(owner, p.id, { title: 'Forked' });
+    const offer = await a.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    const id = offer.payload.assignmentId;
+    await a.client.call(agentMessage('offer.accept', { assignmentId: id, execMode: 'AUTO' }));
+    const forkPr = (head: object) => ({
+      number: 960,
+      html_url: `https://github.com/${repo.fullName}/pull/960`,
+      merged: false,
+      head: { ref: offer.payload.task.branchName, sha: 'evil', ...head },
+      base: { ref: 'main' },
+    });
+    for (const head of [{ repo: { id: repo.githubRepoId + 1 } }, { repo: null }]) {
+      for (const action of ['opened', 'closed']) {
+        const res = await hook('pull_request', {
+          action,
+          pull_request: forkPr(head),
+          repository: repoPayload(repo),
+        });
+        expect(res.json()).toMatchObject({ result: 'ignored' });
+      }
+    }
+    expect(await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).toMatchObject({
+      status: 'IN_PROGRESS',
+      prNumber: null,
+    });
+    expect((await prisma.assignment.findUniqueOrThrow({ where: { id } })).status).toBe('ACCEPTED');
+    expect(a.client.find('task.cancel', (c) => c.payload.assignmentId === id)).toHaveLength(0);
+  });
+
+  it('a run that finishes after its PR was merged by hand leaves the task DONE', async () => {
+    const { owner, repo, project: p } = await project();
+    const a = await member(p.id);
+    const t = await createTask(owner, p.id, { title: 'Merged early' });
+    const offer = await a.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    const id = offer.payload.assignmentId;
+    await a.client.call(agentMessage('offer.accept', { assignmentId: id, execMode: 'AUTO' }));
+    await a.client.call(
+      agentMessage('task.status', { assignmentId: id, seq: 1, state: 'running' }),
+    );
+    // the member opened and merged a PR on the task branch by hand while the run was going
+    const pr = (merged: boolean) => ({
+      number: 950,
+      html_url: `https://github.com/${repo.fullName}/pull/950`,
+      merged,
+      head: { ref: offer.payload.task.branchName, sha: 'sha950', repo: { id: repo.githubRepoId } },
+      base: { ref: 'main' },
+    });
+    await hook('pull_request', {
+      action: 'opened',
+      pull_request: pr(false),
+      repository: repoPayload(repo),
+    });
+    const merged = await hook('pull_request', {
+      action: 'closed',
+      pull_request: pr(true),
+      repository: repoPayload(repo),
+    });
+    expect(merged.json()).toMatchObject({ result: 'done' });
+    const ack = await a.client.call(
+      agentMessage('task.finished', {
+        assignmentId: id,
+        seq: 2,
+        outcome: 'succeeded',
+        usage: { weighted: 10, input: 1, output: 1 },
+      }),
+    );
+    expect(ack.ok).toBe(true);
+    expect(await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).toMatchObject({
+      status: 'DONE',
+      prNumber: 950,
+    });
   });
 
   it('installation events update installations and archive removed repositories', async () => {
@@ -1094,5 +1199,210 @@ describe('pool endpoint', () => {
       (await api(app, owner)('GET', `/api/pool?projectId=${p.id}`)).json(),
     );
     expect(again.members.find((x) => x.userId === appr.user.userId)!.paused).toBe(true);
+  });
+
+  it("does not show a member's running tasks of projects the caller cannot see", async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id);
+    // m also works on a private project the owner of p has nothing to do with
+    const other = await project();
+    await participate(m.user, other.project.id);
+    await report(m, { projectId: other.project.id });
+    const secret = await createTask(other.owner, other.project.id, { title: 'Secret thing' });
+    const offer = await m.client.next('task.offer', (o) => o.payload.task.taskId === secret.id);
+    await m.client.call(
+      agentMessage('offer.accept', { assignmentId: offer.payload.assignmentId, execMode: 'AUTO' }),
+    );
+    for (const url of ['/api/pool', `/api/pool?projectId=${p.id}`]) {
+      const pool = PoolResponseSchema.parse((await api(app, owner)('GET', url)).json());
+      const row = pool.members.find((x) => x.userId === m.user.userId)!;
+      expect(row.runningTasks).toEqual([]);
+    }
+    // the other project's owner still sees it
+    const theirs = PoolResponseSchema.parse(
+      (await api(app, other.owner)('GET', `/api/pool?projectId=${other.project.id}`)).json(),
+    );
+    expect(
+      theirs.members.find((x) => x.userId === m.user.userId)!.runningTasks.map((r) => r.taskId),
+    ).toEqual([secret.id]);
+  });
+});
+
+describe('participation sync (config.update) and not_participating backoff', () => {
+  const hasAuto = (projectId: string) => (c: Extract<ServerMessage, { type: 'config.update' }>) =>
+    c.payload.participations.some((x) => x.projectId === projectId && x.mode === 'AUTO');
+
+  it('joined (and approved) after the agent connected: config.update, then the AUTO offer is accepted', async () => {
+    const { owner, project: p, repo } = await project();
+    const u = await loginAs(app, gh);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${u.login}`, 'READ');
+    const m = await onlineAgent(u);
+    await report(m, { projectId: p.id });
+    expect(m.client.find('welcome')[0]?.payload.participations).toEqual([]);
+
+    const put = await api(app, u)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    expect(put.json()).toMatchObject({ status: 'pending' });
+    // pending: pushed, but not in the list yet
+    await m.client.next('config.update', (c) => c.payload.participations.length === 0);
+    const ok = await api(app, owner)(
+      'POST',
+      `/api/projects/${p.id}/participants/${u.userId}/approve`,
+    );
+    expect(ok.statusCode, ok.body).toBe(200);
+    const upd = await m.client.next('config.update', hasAuto(p.id));
+    expect(upd.payload.participations[0]).toMatchObject({ fullName: p.fullName, mode: 'AUTO' });
+
+    const t = await createTask(owner, p.id);
+    const o = await m.client.next('task.offer', (x) => x.payload.task.taskId === t.id);
+    expect(m.client.msgs.indexOf(upd)).toBeLessThan(m.client.msgs.indexOf(o));
+    const ack = await m.client.call(
+      agentMessage('offer.accept', { assignmentId: o.payload.assignmentId, execMode: 'AUTO' }),
+    );
+    expect(ack.ok).toBe(true);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe(
+      'IN_PROGRESS',
+    );
+  });
+
+  it('participation removed or no longer approved: config.update drops it; config.request answers', async () => {
+    const { owner, project: p, repo } = await project();
+    await prisma.project.update({
+      where: { id: p.id },
+      data: { requireParticipantApproval: false },
+    });
+    const m = await member(p.id, { approvedAt: null });
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    expect(m.client.find('welcome')[0]?.payload.participations.map((x) => x.projectId)).toEqual([
+      p.id,
+    ]);
+
+    // the owner turns approval on: the unapproved member drops out
+    const patch = await api(app, owner)('PATCH', `/api/projects/${p.id}`, {
+      requireParticipantApproval: true,
+    });
+    expect(patch.statusCode, patch.body).toBe(200);
+    await m.client.next('config.update', (c) => c.payload.participations.length === 0);
+
+    // config.request -> config.update with replyTo
+    const req = agentMessage('config.request', {});
+    m.client.send(req);
+    const answer = await m.client.next('config.update', (c) => c.replyTo === req.id);
+    expect(answer.payload.participations).toEqual([]);
+
+    // back on, then the member leaves: dropped again
+    await api(app, owner)('PATCH', `/api/projects/${p.id}`, { requireParticipantApproval: false });
+    const back = await m.client.next('config.update', hasAuto(p.id));
+    const leave = await api(app, m.user)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: false,
+      budgetPercent: 50,
+      mode: 'auto',
+    });
+    expect(leave.statusCode, leave.body).toBe(200);
+    await until(() =>
+      m.client.msgs
+        .slice(m.client.msgs.indexOf(back) + 1)
+        .some((x) => x.type === 'config.update' && x.payload.participations.length === 0),
+    );
+  });
+
+  it('a not_participating rejection is re-offered after an exponential backoff, never at once', async () => {
+    const { owner, project: p, repo } = await project();
+    const m = await member(p.id);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    const t = await createTask(owner, p.id);
+    const rejectLast = async (n: number) => {
+      await until(() => autoOffers(m, t.id).length === n);
+      const o = autoOffers(m, t.id)[n - 1]!;
+      const before = m.client.find('config.update').length;
+      const r = await m.client.call(
+        agentMessage('offer.reject', {
+          assignmentId: o.payload.assignmentId,
+          reason: 'not_participating',
+          detail: `No participation in ${p.fullName}`,
+        }),
+      );
+      expect(r.ok).toBe(true);
+      // the server resyncs the agent that disagreed
+      await until(() => m.client.find('config.update').length > before);
+      await settle();
+    };
+    await rejectLast(1);
+    await tickAt();
+    await tickAt(30_000);
+    expect(autoOffers(m, t.id)).toHaveLength(1); // no immediate re-offer
+    await tickAt(61_000);
+    await rejectLast(2); // re-offered after 1 min
+    await tickAt(61_000);
+    expect(autoOffers(m, t.id)).toHaveLength(2); // second backoff is 2 min
+    await tickAt(121_000);
+    await until(() => autoOffers(m, t.id).length === 3);
+    await rejectLast(3);
+
+    // a participation change after the rejection lifts the backoff at once
+    const put = await api(app, m.user)('PUT', `/api/projects/${p.id}/participation`, {
+      participating: true,
+      budgetPercent: 40,
+      mode: 'auto',
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    await settle();
+    await until(() => autoOffers(m, t.id).length === 4);
+
+    // other rejections still shut the member out for the day
+    const last = autoOffers(m, t.id)[3]!;
+    await m.client.call(
+      agentMessage('offer.reject', { assignmentId: last.payload.assignmentId, reason: 'budget' }),
+    );
+    await settle();
+    await tickAt(10 * 60_000); // past every backoff, usage still fresh
+    expect(autoOffers(m, t.id)).toHaveLength(4);
+  });
+
+  it('a failed run sends the task back to TODO and it is re-offered after a short backoff', async () => {
+    const { owner, project: p, repo } = await project();
+    const m = await member(p.id);
+    gh.roles.set(`${repo.installationId}:${repo.fullName}:${m.user.login}`, 'READ');
+    const t = await createTask(owner, p.id);
+    const failOffer = async (n: number) => {
+      await until(() => autoOffers(m, t.id).length === n);
+      const o = autoOffers(m, t.id)[n - 1]!;
+      expect(
+        (
+          await m.client.call(
+            agentMessage('offer.accept', {
+              assignmentId: o.payload.assignmentId,
+              execMode: 'AUTO',
+            }),
+          )
+        ).ok,
+      ).toBe(true);
+      const fin = await m.client.call(
+        agentMessage('task.finished', {
+          assignmentId: o.payload.assignmentId,
+          seq: 1,
+          outcome: 'failed',
+          usage: { weighted: 0, input: 0, output: 0 },
+          error: 'docker compose failed (exit 1): env file .env not found',
+        }),
+      );
+      expect(fin.ok).toBe(true);
+      expect((await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).status).toBe('TODO');
+      await settle();
+    };
+    await failOffer(1);
+    await tickAt(30_000);
+    expect(autoOffers(m, t.id)).toHaveLength(1); // no immediate re-offer
+    await tickAt(61_000);
+    await until(() => autoOffers(m, t.id).length === 2); // re-offered after 1 min, not 24 h
+    await failOffer(2);
+    await tickAt(61_000);
+    expect(autoOffers(m, t.id)).toHaveLength(2); // second backoff is 2 min
+    await tickAt(121_000);
+    await until(() => autoOffers(m, t.id).length === 3);
   });
 });

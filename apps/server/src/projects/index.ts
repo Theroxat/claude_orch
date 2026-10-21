@@ -7,13 +7,26 @@ import {
   type DiscoverItem,
 } from '@orch/shared';
 import { audit } from '../audit';
+import type { AgentGateway } from '../agents/gateway';
 import { getUserAccessToken, requireUser, type AuthDeps } from '../auth';
+import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError, parseBody } from '../http/errors';
 import { canParticipate, canSee, toOrchRole } from './roles';
 import { getRoleInfo, isCurrentOwner, toParticipationView, toProjectView } from './service';
 
-export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
+export function registerProjects(
+  app: FastifyInstance,
+  deps: AuthDeps & {
+    dispatcher?: Pick<Dispatcher, 'onParticipationChanged'>;
+    gateway?: Pick<AgentGateway, 'pushConfigToUsers'>;
+  },
+): void {
   const { prisma, config } = deps;
+
+  const participantIds = async (projectId: string) =>
+    (await prisma.participation.findMany({ where: { projectId }, select: { userId: true } })).map(
+      (p) => p.userId,
+    );
 
   const needGithub = () => {
     if (!deps.github) {
@@ -144,6 +157,15 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
       data: body,
       ip: req.ip,
     });
+    // Approval or policy changes can turn participations on or off: resync the members' agents
+    // (config.update) and withdraw what they no longer consent to.
+    const members = await participantIds(project.id);
+    if (deps.dispatcher) {
+      for (const userId of members)
+        await deps.dispatcher.onParticipationChanged(userId, project.id);
+    } else {
+      await deps.gateway?.pushConfigToUsers(members);
+    }
     return toProjectView(updated);
   });
 
@@ -151,6 +173,7 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
     const user = requireUser(req);
     const { id } = req.params as { id: string };
     const project = await ownedProject(id, user);
+    const members = await participantIds(project.id);
     await prisma.project.delete({ where: { id: project.id } });
     await audit(prisma, {
       actorUserId: user.id,
@@ -159,6 +182,7 @@ export function registerProjects(app: FastifyInstance, deps: AuthDeps): void {
       data: { fullName: project.fullName },
       ip: req.ip,
     });
+    await deps.gateway?.pushConfigToUsers(members);
     return reply.status(204).send();
   });
 

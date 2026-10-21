@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { serverMessage, type ServerMessage } from '@orch/shared';
+import { TaskFinishedPayloadSchema, serverMessage, type ServerMessage } from '@orch/shared';
 import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
 import { silentLogger } from '../../src/log';
 import { tempDir } from '../helpers/util';
@@ -226,6 +226,21 @@ describe('ManualExecutor take -> done', () => {
     expect(t.git.calls.some((c) => c[0] === 'push')).toBe(false);
     expect(t.of('task.pushed')).toEqual([]);
     expect(t.of('task.finished')[0]?.payload.outcome).toBe('no_changes');
+  });
+
+  it('sends integer token counts even when the task wrote fractional ones', async () => {
+    const t = setup();
+    t.git.ahead = 0;
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    // The task can write its own Claude logs: a fractional count must not break the schema.
+    t.docker.usageJsonl = JSON.stringify({
+      timestamp: '2026-10-21T10:00:00Z',
+      message: { id: 'm1', usage: { input_tokens: 1.5, output_tokens: 2.4 } },
+    });
+    await t.ex.done(42);
+    const finished = t.of('task.finished')[0]!;
+    expect(TaskFinishedPayloadSchema.safeParse(finished.payload).success).toBe(true);
   });
 
   it('keeps the task running when the push fails', async () => {
@@ -454,6 +469,24 @@ describe('ManualExecutor cleanup and restart', () => {
       'orch.task': 'asg_1',
     });
     expect(rec.warnings.join(' ')).toContain('published ports');
+  });
+
+  it('a missing env_file in the clone is dropped with a warning; compose gets an override', async () => {
+    const t = setup({
+      files: { 'compose.yaml': 'services:\n  db:\n    image: x\n    env_file: .env\n' },
+    });
+    t.docker.composeModel = { name: 'p', services: { db: { image: 'x' } } };
+    t.ex.handle(offerMsg());
+    await t.ex.idle();
+    const rec = t.ex.store.get('asg_1')!;
+    expect(rec.state).toBe('running');
+    expect(rec.warnings.join(' ')).toContain('env file .env not found in the repository');
+    const cfg = t.docker.calls.find((c) => c[0] === 'composeConfig')!;
+    expect((cfg[2] as string[]).map((f) => f.split('/').pop())).toEqual([
+      'compose.yaml',
+      'compose.orch.envfix.yaml',
+    ]);
+    expect(existsSync(join(t.cfg.workDir, 'asg_1', 'src', '.env'))).toBe(false);
   });
 
   it('after a restart: fails tasks whose container vanished or whose preparation was cut', async () => {
