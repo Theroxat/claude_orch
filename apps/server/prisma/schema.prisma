@@ -333,6 +333,8 @@ model AgentMessageSeen {
   agentId   String
   messageId String
   seenAt    DateTime @default(now())
+  /// Ack sent for the first delivery, replayed on duplicates. Null while it is processed.
+  ack       Json?
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

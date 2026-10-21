@@ -386,6 +386,30 @@ describe('dispatcher: eligibility and ranking', () => {
 });
 
 describe('offers: accept, reject, timeout', () => {
+  it('a replayed refused offer.accept is answered with the original refusal', async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id);
+    const t = await createTask(owner, p.id);
+    const offer = await m.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    await prisma.agent.update({ where: { id: m.agentId }, data: { paused: true } });
+    const msg = agentMessage('offer.accept', {
+      assignmentId: offer.payload.assignmentId,
+      execMode: 'AUTO',
+    });
+    const first = await m.client.call(msg);
+    expect(first).toMatchObject({ ok: false, error: { code: 'paused' } });
+    // The reply was lost (reconnect): the outbox resends the same id.
+    await prisma.agent.update({ where: { id: m.agentId }, data: { paused: false } });
+    m.client.send(msg);
+    await until(() => m.client.find('ack', (a) => a.replyTo === msg.id).length === 2);
+    const replay = m.client.find('ack', (a) => a.replyTo === msg.id)[1]!.payload;
+    expect(replay).toEqual({ ok: false, duplicate: true, error: first.error });
+    const row = await prisma.assignment.findUniqueOrThrow({
+      where: { id: offer.payload.assignmentId },
+    });
+    expect(row.status).not.toBe('ACCEPTED');
+  });
+
   it('auto offer accepted by the agent runs to a draft PR', async () => {
     const { owner, project: p, repo } = await project();
     const m = await member(p.id);

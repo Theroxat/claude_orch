@@ -62,39 +62,44 @@ export function registerParticipation(
       }
     }
 
-    const others = await prisma.participation.aggregate({
-      where: { userId: user.id, active: true, projectId: { not: project.id } },
-      _sum: { percent: true },
-    });
-    const total = (others._sum.percent ?? 0) + (body.participating ? body.budgetPercent : 0);
-    if (total > 100) {
-      throw new HttpError(
-        409,
-        'budget_exceeded',
-        `Active budgets would total ${total}%, the maximum is 100%`,
-      );
-    }
-
     const mode = body.mode === 'auto' ? 'AUTO' : 'APPROVAL';
     const approvedAt = isOwner ? new Date() : undefined;
-    const part = await prisma.participation.upsert({
-      where: { userId_projectId: { userId: user.id, projectId: project.id } },
-      create: {
-        userId: user.id,
-        projectId: project.id,
-        active: body.participating,
-        percent: body.budgetPercent,
-        mode,
-        approvedAt,
-      },
-      update: {
-        active: body.participating,
-        percent: body.budgetPercent,
-        mode,
-        // Asking again after a rejection puts the request back to pending.
-        ...(body.participating ? { rejectedAt: null } : {}),
-        ...(approvedAt ? { approvedAt } : {}),
-      },
+    // The budget check and the write run in one transaction that locks the member's user row,
+    // so concurrent PUTs on different projects cannot each see the old total and overshoot 100%.
+    const part = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
+      const others = await tx.participation.aggregate({
+        where: { userId: user.id, active: true, projectId: { not: project.id } },
+        _sum: { percent: true },
+      });
+      const total = (others._sum.percent ?? 0) + (body.participating ? body.budgetPercent : 0);
+      if (total > 100) {
+        throw new HttpError(
+          409,
+          'budget_exceeded',
+          `Active budgets would total ${total}%, the maximum is 100%`,
+        );
+      }
+
+      return tx.participation.upsert({
+        where: { userId_projectId: { userId: user.id, projectId: project.id } },
+        create: {
+          userId: user.id,
+          projectId: project.id,
+          active: body.participating,
+          percent: body.budgetPercent,
+          mode,
+          approvedAt,
+        },
+        update: {
+          active: body.participating,
+          percent: body.budgetPercent,
+          mode,
+          // Asking again after a rejection puts the request back to pending.
+          ...(body.participating ? { rejectedAt: null } : {}),
+          ...(approvedAt ? { approvedAt } : {}),
+        },
+      });
     });
     await audit(prisma, {
       actorUserId: user.id,

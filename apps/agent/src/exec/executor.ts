@@ -326,7 +326,8 @@ export class ManualExecutor {
 
   /** Called for every `ack` the agent receives. */
   onAck(replyTo: string, ack: AckPayload): void {
-    const okAck = ack.ok || ack.duplicate === true;
+    // A duplicate ack replays the server's first answer: trust `ok`, not `duplicate`.
+    const okAck = ack.ok;
     const waiting = this.store.all().find((r) => r.pendingAcceptId === replyTo);
     if (waiting) {
       const id = waiting.assignmentId;
@@ -349,7 +350,7 @@ export class ManualExecutor {
     }
     for (const [key, w] of this.claims) {
       if (w.entryId !== replyTo) continue;
-      if (!ack.ok && !ack.duplicate) {
+      if (!ack.ok) {
         clearTimeout(w.timer);
         this.claims.delete(key);
         const code = ack.error?.code ?? 'claim_refused';
@@ -651,7 +652,7 @@ export class ManualExecutor {
         resolve(a);
       });
     });
-    if (ack && !ack.ok && !ack.duplicate) {
+    if (ack && !ack.ok) {
       this.requests.delete(id);
       throw new ExecError(
         ack.error?.code ?? 'refused',
@@ -939,7 +940,6 @@ export class ManualExecutor {
     this.log.error('task failed', { assignmentId: id, error: message });
     this.runs.get(id)?.kill();
     const rec = this.store.update(id, { state: 'failed', error: message, prompt: null });
-    await this.teardown(rec);
     const failureClass = classifyFailure(message);
     if (failureClass === 'claude_auth') this.claudeAuth.markInvalid(message.slice(0, 200));
     let rateLimitedUntil: string | undefined;
@@ -947,6 +947,8 @@ export class ManualExecutor {
       const reset = parseResetTime(message, this.now());
       if (reset !== null) rateLimitedUntil = new Date(reset).toISOString();
     }
+    // Report first: the outbox persists at once, so a stop during the teardown cannot lose it
+    // (the record is no longer active, a restart would not report it again).
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
@@ -956,6 +958,7 @@ export class ManualExecutor {
       failureClass,
       ...(rateLimitedUntil ? { rateLimitedUntil } : {}),
     });
+    await this.teardown(rec);
   }
 
   // ---------- auto mode: headless run ----------
@@ -1361,13 +1364,13 @@ export class ManualExecutor {
       prompt: null,
     });
     this.runs.get(id)?.kill();
-    await this.teardown(after);
     this.deps.enqueue('task.finished', {
       assignmentId: id,
       seq: this.nextSeq(id),
       outcome: 'cancelled',
       usage: { weighted: 0, input: 0, output: 0 },
     });
+    await this.teardown(after);
   }
 
   /** Stops the session, the task container, the sidecars and the network. Keeps the clone. */
@@ -1490,6 +1493,7 @@ export class ManualExecutor {
     }
   }
 
+  /** Kills the runs; their jobs then report and tear down (await `idle()` for that). */
   close(): void {
     for (const p of this.runs.values()) p.kill();
     for (const resolve of this.userAccepts.values()) {

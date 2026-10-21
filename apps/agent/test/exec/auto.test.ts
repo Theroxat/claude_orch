@@ -172,6 +172,23 @@ describe('auto mode: local consent guard', () => {
     expect(t.ex.store.all()).toEqual([]);
   });
 
+  it('a replayed refusal (duplicate ack) starts nothing', async () => {
+    const t = setup();
+    t.ex.handle(msg(autoOffer()));
+    await t.ex.idle();
+    const accept = t.of('offer.accept')[0]!;
+    // First reply lost on reconnect: the server replays its refusal for the resent id.
+    t.ex.onAck(accept.id, {
+      ok: false,
+      duplicate: true,
+      error: { code: 'paused', message: 'The agent is paused' },
+    });
+    await t.ex.idle();
+    expect(t.ex.store.get('asg_1')).toBeUndefined();
+    expect(t.git.calls).toEqual([]);
+    expect(t.ex.running()).toEqual([]);
+  });
+
   it('starts nothing until the server acks the accept, and drops a late accept', async () => {
     const t = setup();
     t.ex.handle(msg(autoOffer()));
