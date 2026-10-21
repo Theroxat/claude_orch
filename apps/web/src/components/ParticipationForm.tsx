@@ -2,6 +2,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { ApiParticipationMode, DiscoverItem } from '@orch/shared';
 import { putParticipation } from '../api/endpoints';
+import { useChangeCount } from '../ui/presence';
+import { useToast } from '../ui/Toast';
 
 export function validateBudget(raw: string): number | null {
   if (!/^\d+$/.test(raw.trim())) return null;
@@ -33,7 +35,9 @@ export function ParticipationForm({ item }: { item: DiscoverItem }) {
 
 function ParticipationFields({ item }: { item: DiscoverItem }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const p = item.myParticipation;
+  const statusChanges = useChangeCount(p?.status);
   const id = item.project.id;
   const [participating, setParticipating] = useState(p?.participating ?? false);
   const [budget, setBudget] = useState(String(p?.budgetPercent ?? 20));
@@ -45,7 +49,10 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
       budgetPercent: number;
       mode: ApiParticipationMode;
     }) => putParticipation(id, v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects', 'discover'] }),
+    onSuccess: () => {
+      toast(`Participation in ${item.project.fullName} saved`);
+      return qc.invalidateQueries({ queryKey: ['projects', 'discover'] });
+    },
   });
   const parsed = validateBudget(budget);
   const invalid = parsed === null;
@@ -59,22 +66,24 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
       }}
     >
       <div className="row">
-        <label>
+        <label className="check-line">
           <input
             type="checkbox"
             checked={participating}
             onChange={(e) => setParticipating(e.target.checked)}
-          />{' '}
+          />
           Participate
         </label>
-        {p?.status === 'pending' && <span className="badge pending">Pending owner approval</span>}
-        {p?.status === 'active' && <span className="badge ok">Active</span>}
-        {p?.status === 'rejected' && <span className="badge">Rejected by owner</span>}
+        <span key={statusChanges} className="row" data-changed={statusChanges > 0 || undefined}>
+          {p?.status === 'pending' && <span className="badge pending">Pending owner approval</span>}
+          {p?.status === 'active' && <span className="badge ok">Active</span>}
+          {p?.status === 'rejected' && <span className="badge stop">Rejected by owner</span>}
+        </span>
       </div>
       <div className="grid">
         <div className="field">
           <label htmlFor={`budget-${id}`}>Budget (% of my Claude capacity)</label>
-          <div className="row">
+          <div className="budget">
             <input
               type="range"
               aria-label="Budget slider"
@@ -91,7 +100,6 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
               step={1}
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
-              style={{ width: 80 }}
             />
           </div>
           {(touched || invalid) && invalid && (
@@ -100,7 +108,7 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
             </span>
           )}
         </div>
-        <fieldset className="field" style={{ border: 0, padding: 0, margin: 0 }}>
+        <fieldset className="field">
           <legend>Mode</legend>
           <label className="radio">
             <input
@@ -127,9 +135,11 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
         </fieldset>
       </div>
       {save.error && <p className="error">{save.error.message}</p>}
-      <button className="primary" type="submit" disabled={save.isPending || invalid}>
-        Save
-      </button>
+      <div className="card-foot">
+        <button className="primary" type="submit" disabled={save.isPending || invalid}>
+          Save
+        </button>
+      </div>
     </form>
   );
 }

@@ -5,11 +5,15 @@ import { AGENTS_KEY } from '../components/AgentUpdate';
 import { fetchMyAgents, pauseAgent, resumeAgent, revokeAgent } from '../api/endpoints';
 import { AgentCard } from '../components/AgentCard';
 import { InstallAgentCard } from '../components/InstallAgentCard';
+import { Modal, closeModal } from '../ui/Modal';
+import { usePresence } from '../ui/presence';
+import { useToast } from '../ui/Toast';
 
 const KEY = AGENTS_KEY;
 
 export function MyServer() {
   const qc = useQueryClient();
+  const toast = useToast();
   const [toRevoke, setToRevoke] = useState<AgentView | null>(null);
   const agents = useQuery({ queryKey: KEY, queryFn: fetchMyAgents, refetchInterval: 15_000 });
 
@@ -25,33 +29,48 @@ export function MyServer() {
       return { previous };
     },
     onError: (_e, _a, ctx) => qc.setQueryData(KEY, ctx?.previous),
+    onSuccess: (_r, a) =>
+      toast(a.paused ? `${a.machineName} resumed` : `${a.machineName} paused`, 'info'),
     onSettled: () => qc.invalidateQueries({ queryKey: KEY }),
   });
 
   const revoke = useMutation({
     mutationFn: (a: AgentView) => revokeAgent(a.id),
-    onSuccess: async () => {
-      setToRevoke(null);
+    onSuccess: async (_r, a) => {
+      toast(`${a.machineName} revoked`);
+      closeModal(() => setToRevoke(null));
       await qc.invalidateQueries({ queryKey: KEY });
     },
   });
 
-  const list = (agents.data ?? []).filter((a) => !a.revokedAt);
+  const live = agents.data?.filter((a) => !a.revokedAt);
+  const list = usePresence(live, (a) => a.id);
 
   return (
     <div>
-      <h1>My server</h1>
+      <header className="page-head">
+        <div>
+          <h1>My server</h1>
+          <p className="lede">
+            The machines that run tasks with your Claude subscription. Pause one to stop new tasks
+            from starting there.
+          </p>
+        </div>
+      </header>
       <InstallAgentCard />
-      <h2>My machines</h2>
+      <div className="section-title">
+        <h2>My machines</h2>
+      </div>
       {agents.isPending && <p className="hint">Loading machines...</p>}
       {agents.error && <p className="error">{agents.error.message}</p>}
       {toggle.error && <p className="error">{toggle.error.message}</p>}
-      {agents.isSuccess && list.length === 0 && (
-        <p className="hint">No machine yet. Generate an install command above.</p>
+      {agents.isSuccess && live?.length === 0 && (
+        <p className="empty">No machine yet. Generate an install command above.</p>
       )}
-      {list.map((a) => (
+      {list.map(({ key, item: a, phase }) => (
         <AgentCard
-          key={a.id}
+          key={key}
+          phase={phase}
           agent={a}
           busy={false}
           onTogglePause={(x) => toggle.mutate(x)}
@@ -59,26 +78,29 @@ export function MyServer() {
         />
       ))}
       {toRevoke && (
-        <div className="modal-backdrop">
-          <div className="modal" role="dialog" aria-label="Revoke machine">
-            <h2>Revoke {toRevoke.machineName}?</h2>
-            <p>
-              The agent will be disconnected and its credentials invalidated. To use this machine
-              again you must install the agent again.
-            </p>
-            {revoke.error && <p className="error">{revoke.error.message}</p>}
-            <div className="row">
-              <button onClick={() => setToRevoke(null)}>Cancel</button>
-              <button
-                className="danger"
-                disabled={revoke.isPending}
-                onClick={() => revoke.mutate(toRevoke)}
-              >
-                Confirm revoke
-              </button>
-            </div>
+        <Modal
+          label="Revoke machine"
+          title={`Revoke ${toRevoke.machineName}?`}
+          onClose={() => setToRevoke(null)}
+          closeButton={false}
+          tone="danger"
+        >
+          <p>
+            The agent will be disconnected and its credentials invalidated. To use this machine
+            again you must install the agent again.
+          </p>
+          {revoke.error && <p className="error">{revoke.error.message}</p>}
+          <div className="modal-actions">
+            <button onClick={() => closeModal(() => setToRevoke(null))}>Cancel</button>
+            <button
+              className="danger solid"
+              disabled={revoke.isPending}
+              onClick={() => revoke.mutate(toRevoke)}
+            >
+              Confirm revoke
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

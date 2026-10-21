@@ -1,6 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { OnboardingStepId } from '@orch/shared';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  ViewTransition,
+  addTransitionType,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { Link, useNavigate } from 'react-router';
 import {
   completeOnboarding,
@@ -17,6 +27,15 @@ import { InstallCommandBlock, LOGIN_COMMAND } from '../components/InstallAgentCa
 import { McpCommand } from '../components/McpCommand';
 import { ParticipationForm } from '../components/ParticipationForm';
 import { VersionFooter } from '../components/VersionFooter';
+import { Brand } from '../ui/Brand';
+
+/** Step changes slide in the direction of travel (a view transition when supported). */
+function go(direction: 'forward' | 'back', update: () => void) {
+  startTransition(() => {
+    addTransitionType(direction);
+    update();
+  });
+}
 
 /** Server state is polled this often while a step is waiting for the user. */
 export const POLL_MS = 3000;
@@ -266,7 +285,7 @@ export function Welcome() {
     if (screen === 'welcome' || screen === 'done') return;
     if (!prev || prev.screen !== screen || prev.done || !done) return;
     const t = setTimeout(
-      () => setIndex((i) => Math.min(i + 1, order.length - 1)),
+      () => go('forward', () => setIndex((i) => Math.min(i + 1, order.length - 1))),
       ADVANCE_DELAY_MS,
     );
     return () => clearTimeout(t);
@@ -293,12 +312,13 @@ export function Welcome() {
     if (screen === 'done' && me && !completedAt) completeNow();
   }, [screen, me, completedAt, completeNow]);
 
-  const next = () => setIndex((i) => Math.min(i + 1, order.length - 1));
-  const back = () => setIndex((i) => Math.max(i - 1, 0));
-  const choose = (p: Path) => {
-    setPath(p);
-    setIndex(1);
-  };
+  const next = () => go('forward', () => setIndex((i) => Math.min(i + 1, order.length - 1)));
+  const back = () => go('back', () => setIndex((i) => Math.max(i - 1, 0)));
+  const choose = (p: Path) =>
+    go('forward', () => {
+      setPath(p);
+      setIndex(1);
+    });
   const last = index === order.length - 1;
 
   const explain: Record<ScreenId, string> = {
@@ -316,8 +336,8 @@ export function Welcome() {
   return (
     <div className="wizard">
       <header className="wizard-top">
-        <strong>orch</strong>
-        <button onClick={() => exit.mutate()} disabled={exit.isPending}>
+        <Brand />
+        <button className="ghost" onClick={() => exit.mutate()} disabled={exit.isPending}>
           Exit setup
         </button>
       </header>
@@ -330,46 +350,57 @@ export function Welcome() {
           aria-valuemax={order.length}
           aria-valuenow={index + 1}
           aria-valuetext={`Step ${index + 1} of ${order.length}`}
+          style={{ '--steps': order.length } as CSSProperties}
         >
           <div style={{ width: `${((index + 1) / order.length) * 100}%` }} />
         </div>
-        <p className="hint">
+        <p className="wizard-step">
           Step {index + 1} of {order.length}
         </p>
-        <h1 ref={title} tabIndex={-1}>
-          {TITLES[screen]}
-        </h1>
-        <p>{explain[screen]}</p>
-        {screen === 'join' && done && (
-          <p className="wizard-status ok" role="status">
-            <span aria-hidden="true">✓</span> Already done. You can continue.
-          </p>
-        )}
+        <ViewTransition
+          key={screen}
+          enter={{ forward: 'step-in-forward', back: 'step-in-back', default: 'none' }}
+          exit={{ forward: 'step-out-forward', back: 'step-out-back', default: 'none' }}
+          default="none"
+        >
+          <div className="wizard-screen">
+            <h1 ref={title} tabIndex={-1}>
+              {TITLES[screen]}
+            </h1>
+            <p className="wizard-explain">{explain[screen]}</p>
+            {screen === 'join' && done && (
+              <p className="wizard-status ok" role="status">
+                <span aria-hidden="true">✓</span> Already done. You can continue.
+              </p>
+            )}
 
-        {screen === 'welcome' && (
-          <div className="wizard-choice">
-            <button className="primary big" onClick={() => choose('own')}>
-              I want to add my own repository
-            </button>
-            <button className="big" onClick={() => choose('join')}>
-              I&apos;m joining a teammate&apos;s project
-            </button>
-            <p className="hint">You can do both later.</p>
+            {screen === 'welcome' && (
+              <div className="wizard-choice">
+                <button className="primary big" onClick={() => choose('own')}>
+                  I want to add my own repository
+                </button>
+                <button className="big" onClick={() => choose('join')}>
+                  I&apos;m joining a teammate&apos;s project
+                </button>
+                <p className="hint">You can do both later.</p>
+              </div>
+            )}
+            {screen === 'repo' && <RepoScreen done={done} />}
+            {screen === 'join' && <JoinScreen />}
+            {screen === 'machine' && <MachineScreen done={done} />}
+            {screen === 'claude' && (
+              <ClaudeScreen done={done} machineUp={states.get('agent_connected') === true} />
+            )}
+            {screen === 'mcp' && <McpScreen done={done} />}
+            {screen === 'done' && <DoneScreen states={states} />}
           </div>
-        )}
-        {screen === 'repo' && <RepoScreen done={done} />}
-        {screen === 'join' && <JoinScreen />}
-        {screen === 'machine' && <MachineScreen done={done} />}
-        {screen === 'claude' && (
-          <ClaudeScreen done={done} machineUp={states.get('agent_connected') === true} />
-        )}
-        {screen === 'mcp' && <McpScreen done={done} />}
-        {screen === 'done' && <DoneScreen states={states} />}
+        </ViewTransition>
 
         <nav className="wizard-nav" aria-label="Wizard navigation">
           <button onClick={back} disabled={index === 0}>
             Back
           </button>
+          <span className="spacer" />
           {screen !== 'welcome' && !last && (
             <>
               <button onClick={next}>Skip for now</button>

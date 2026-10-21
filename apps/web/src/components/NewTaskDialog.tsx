@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DispatchRequest, ProjectTaskAccess, TaskSize, TaskView } from '@orch/shared';
 import { useState } from 'react';
 import { createTask, fetchPool } from '../api/endpoints';
+import { Modal, closeModal } from '../ui/Modal';
+import { useToast } from '../ui/Toast';
 
 export type BoardProject = {
   id: string;
@@ -22,6 +24,7 @@ export function NewTaskDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [projectId, setProjectId] = useState(initialProjectId);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -69,9 +72,10 @@ export function NewTaskDialog({
             ? { dispatch: { mode } }
             : {}),
       }),
-    onSuccess: async () => {
+    onSuccess: async (t) => {
+      toast(`#${t.issueNumber} created`);
       await qc.invalidateQueries({ queryKey: ['tasks'] });
-      onClose();
+      closeModal(onClose);
     },
   });
   const submit = () => {
@@ -87,77 +91,73 @@ export function NewTaskDialog({
     create.mutate();
   };
   return (
-    <div className="modal-backdrop">
-      <div className="modal" role="dialog" aria-label="New task">
-        <div className="row between">
-          <h2>New task</h2>
-          <button onClick={onClose}>Close</button>
-        </div>
+    <Modal label="New task" title="New task" onClose={onClose} wide>
+      <label className="field">
+        Project
+        <select
+          value={projectId}
+          onChange={(e) => {
+            setProjectId(e.target.value);
+            setDeps([]);
+            setMemberIds([]);
+          }}
+        >
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.fullName}
+            </option>
+          ))}
+        </select>
+      </label>
+      {projectAccess && !projectAccess.canSubmit && projectAccess.canPropose && (
+        <p className="hint">
+          This task will be created as Proposed until a maintainer approves it.
+        </p>
+      )}
+      <label className="field">
+        Title
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+      <label className="field">
+        Description
+        <textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
+      </label>
+      <label className="field">
+        Acceptance criteria (one per line)
+        <textarea rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
+      </label>
+      <div className="form-grid">
         <label className="field">
-          Project
-          <select
-            value={projectId}
-            onChange={(e) => {
-              setProjectId(e.target.value);
-              setDeps([]);
-              setMemberIds([]);
-            }}
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.fullName}
-              </option>
-            ))}
+          Size
+          <select value={size} onChange={(e) => setSize(e.target.value as TaskSize)}>
+            <option value="S">S</option>
+            <option value="M">M</option>
+            <option value="L">L</option>
           </select>
         </label>
-        {projectAccess && !projectAccess.canSubmit && projectAccess.canPropose && (
-          <p className="hint">
-            This task will be created as Proposed until a maintainer approves it.
-          </p>
-        )}
         <label className="field">
-          Title
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label className="field">
-          Description
-          <textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
-        </label>
-        <label className="field">
-          Acceptance criteria (one per line)
-          <textarea rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
-        </label>
-        <div className="grid">
-          <label className="field">
-            Size
-            <select value={size} onChange={(e) => setSize(e.target.value as TaskSize)}>
-              <option value="S">S</option>
-              <option value="M">M</option>
-              <option value="L">L</option>
-            </select>
-          </label>
-          <label className="field">
-            Model
-            <select value={model} onChange={(e) => setModel(e.target.value as 'SONNET' | 'OPUS')}>
-              <option value="SONNET">sonnet</option>
-              <option value="OPUS">opus</option>
-            </select>
-          </label>
-        </div>
-        <label className="field">
-          Dependencies
-          <select
-            multiple
-            value={deps}
-            onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))}
-          >
-            {projectTasks.map((t) => (
-              <option key={t.id} value={t.id}>
-                #{t.issueNumber} {t.title}
-              </option>
-            ))}
+          Model
+          <select value={model} onChange={(e) => setModel(e.target.value as 'SONNET' | 'OPUS')}>
+            <option value="SONNET">sonnet</option>
+            <option value="OPUS">opus</option>
           </select>
         </label>
+      </div>
+      <label className="field">
+        Dependencies
+        <select
+          multiple
+          value={deps}
+          onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))}
+        >
+          {projectTasks.map((t) => (
+            <option key={t.id} value={t.id}>
+              #{t.issueNumber} {t.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="form-grid">
         <label className="field">
           Integration branch (optional)
           <input value={branch} onChange={(e) => setBranch(e.target.value)} />
@@ -173,40 +173,46 @@ export function NewTaskDialog({
             {isOwner && <option value="broadcast">Everyone</option>}
           </select>
         </label>
-        {mode === 'pool' && (
-          <p className="hint">The best available member in the pool gets the task.</p>
-        )}
-        {mode === 'members' && (
-          <div className="checks" role="group" aria-label="Members">
-            {pool.isLoading && <span className="hint">Loading members...</span>}
-            {poolMembers.map((m) => (
-              <label key={m.userId}>
-                <input
-                  type="checkbox"
-                  checked={memberIds.includes(m.userId)}
-                  onChange={(e) =>
-                    setMemberIds((ids) =>
-                      e.target.checked ? [...ids, m.userId] : ids.filter((i) => i !== m.userId),
-                    )
-                  }
-                />{' '}
-                {m.login}
-              </label>
-            ))}
-          </div>
-        )}
-        {mode === 'broadcast' && (
-          <p className="hint">
-            Everyone: starts automatically for auto-mode members and sends a request to the others.
-            The first acceptance wins.
-          </p>
-        )}
-        {invalid && <p className="error">{invalid}</p>}
-        {create.error && <p className="error">{create.error.message}</p>}
+      </div>
+      {mode === 'pool' && (
+        <p className="hint">The best available member in the pool gets the task.</p>
+      )}
+      {mode === 'members' && (
+        <div className="checks" role="group" aria-label="Members">
+          {pool.isLoading && <span className="hint">Loading members...</span>}
+          {poolMembers.map((m) => (
+            <label key={m.userId}>
+              <input
+                type="checkbox"
+                checked={memberIds.includes(m.userId)}
+                onChange={(e) =>
+                  setMemberIds((ids) =>
+                    e.target.checked ? [...ids, m.userId] : ids.filter((i) => i !== m.userId),
+                  )
+                }
+              />
+              {m.login}
+            </label>
+          ))}
+        </div>
+      )}
+      {mode === 'broadcast' && (
+        <p className="hint">
+          Everyone: starts automatically for auto-mode members and sends a request to the others.
+          The first acceptance wins.
+        </p>
+      )}
+      {invalid && (
+        <p className="error" role="alert">
+          {invalid}
+        </p>
+      )}
+      {create.error && <p className="error">{create.error.message}</p>}
+      <div className="modal-actions">
         <button className="primary" disabled={create.isPending} onClick={submit}>
           Create task
         </button>
       </div>
-    </div>
+    </Modal>
   );
 }

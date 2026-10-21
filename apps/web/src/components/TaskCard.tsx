@@ -81,14 +81,14 @@ export function TaskCard({
   return (
     <article className="task-card" aria-label={`Task #${task.issueNumber}`}>
       <div className="row between">
-        <a href={task.issueUrl} target="_blank" rel="noreferrer">
+        <a className="issue" href={task.issueUrl} target="_blank" rel="noreferrer">
           #{task.issueNumber}
         </a>
         <span className="row">
-          <span className="badge" title="Size">
+          <span className="tag" title="Size">
             {task.size}
           </span>
-          <span className="badge" title="Model">
+          <span className="tag" title="Model">
             {task.model.toLowerCase()}
           </span>
         </span>
@@ -105,6 +105,7 @@ export function TaskCard({
         ) : (
           <span
             className="avatar small"
+            data-initial={task.createdBy.githubLogin.slice(0, 1)}
             role="img"
             aria-label={`Created by ${task.createdBy.githubLogin}`}
           />
@@ -118,7 +119,7 @@ export function TaskCard({
         </a>
       )}
       {unmet.length > 0 && (
-        <span className="badge pending">
+        <span className="badge stop">
           blocked by {unmet.map((d) => `#${d.issueNumber}`).join(', ')}
         </span>
       )}
@@ -146,7 +147,7 @@ export function TaskCard({
       )}
       {(task.status === 'TODO' || task.status === 'BLOCKED') && <WhyNotRunning taskId={task.id} />}
       {task.status === 'TODO' && (
-        <p className="hint">
+        <p className="hint task-take">
           Take it: <code>orch take {task.issueNumber}</code>
         </p>
       )}

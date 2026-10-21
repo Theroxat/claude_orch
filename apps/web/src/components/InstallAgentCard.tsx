@@ -45,7 +45,7 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
       </button>
       {gen.error && <p className="error">{gen.error.message}</p>}
       {data && (
-        <div className="install-result">
+        <div className="install-result reveal" key={data.installCommand}>
           <div className="warning" role="alert">
             Shown once: this command contains a single-use token. Copy it now, it cannot be
             displayed again.
@@ -79,11 +79,13 @@ export function InstallAgentCard() {
         Run one command on the machine that has your Claude subscription. Docker is required.
       </p>
       <InstallCommandBlock />
-      <h3>Afterwards</h3>
-      <p className="hint">
-        Use <code>orch status</code> to check the agent, <code>orch take &lt;n&gt;</code> to take a
-        task, and <code>{LOGIN_COMMAND}</code> if you need to sign in to Claude again.
-      </p>
+      <div className="subpanel">
+        <h3>Afterwards</h3>
+        <p className="hint">
+          Use <code>orch status</code> to check the agent, <code>orch take &lt;n&gt;</code> to take
+          a task, and <code>{LOGIN_COMMAND}</code> if you need to sign in to Claude again.
+        </p>
+      </div>
     </section>
   );
 }

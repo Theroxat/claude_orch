@@ -4,24 +4,38 @@ import { useState } from 'react';
 import { fetchDiscover, fetchMyAgents, fetchMyProjects, fetchPool } from '../api/endpoints';
 import { claudeCheckLine, claudeRejectedText } from '../components/AgentCard';
 import { POLL_MS, relative } from '../time';
+import { presenceProps, useChangeCount, usePresence, type Phase } from '../ui/presence';
 
-function MemberCard({ m }: { m: PoolMember }) {
+function level(fraction: number): 'low' | 'mid' | 'high' {
+  return fraction < 0.2 ? 'low' : fraction < 0.5 ? 'mid' : 'high';
+}
+
+function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
+  const onlineChanges = useChangeCount(m.online);
   // Display-only freshness check; re-evaluated on every refetch.
   // eslint-disable-next-line react-hooks/purity
   const limited = m.rateLimitedUntil && new Date(m.rateLimitedUntil).getTime() > Date.now();
   return (
-    <article className="card pool-member" aria-label={`Member ${m.login}`}>
-      <div className="row between">
-        <div className="row">
-          {m.avatarUrl ? (
-            <img className="avatar" src={m.avatarUrl} alt={m.login} />
-          ) : (
-            <span className="avatar" />
-          )}
-          <strong>{m.login}</strong>
-        </div>
-        <div className="row">
-          <span className={`badge ${m.online ? 'ok' : ''}`}>{m.online ? 'Online' : 'Offline'}</span>
+    <article
+      className="card pool-member"
+      aria-label={`Member ${m.login}`}
+      {...presenceProps(phase)}
+    >
+      <div className="member-head">
+        {m.avatarUrl ? (
+          <img className="avatar large" src={m.avatarUrl} alt={m.login} />
+        ) : (
+          <span className="avatar large" data-initial={m.login.slice(0, 1)} />
+        )}
+        <strong>{m.login}</strong>
+        <div className="states">
+          <span
+            key={onlineChanges}
+            className={`badge ${m.online ? 'ok' : 'off'}`}
+            data-changed={onlineChanges > 0 || undefined}
+          >
+            {m.online ? 'Online' : 'Offline'}
+          </span>
           {m.paused && <span className="badge pending">Paused</span>}
         </div>
       </div>
@@ -35,14 +49,15 @@ function MemberCard({ m }: { m: PoolMember }) {
       {m.projects.map((p) => (
         <div key={p.projectId} className="pool-project">
           <div className="row between">
-            <span>{p.fullName}</span>
+            <span className="name">{p.fullName}</span>
             <span className={`badge ${p.mode === 'AUTO' ? 'ok' : 'pending'}`}>
               {p.mode === 'AUTO' ? 'Auto' : 'Approval'}
             </span>
           </div>
           {p.marginFraction !== null ? (
-            <div className="row">
+            <div className="gauge">
               <progress
+                data-level={level(p.marginFraction)}
                 max={100}
                 value={Math.round(Math.min(1, Math.max(0, p.marginFraction)) * 100)}
                 aria-label={`Estimate margin ${p.fullName}`}
@@ -57,7 +72,7 @@ function MemberCard({ m }: { m: PoolMember }) {
         </div>
       ))}
       {m.runningTasks.length > 0 && (
-        <div>
+        <div className="running">
           <strong>Running</strong>
           <ul className="plain">
             {m.runningTasks.map((t) => (
@@ -72,7 +87,7 @@ function MemberCard({ m }: { m: PoolMember }) {
                     #{t.issueNumber} {t.title}
                   </a>
                 )}{' '}
-                <span className="badge">{t.status}</span>
+                <span className="badge ok">{t.status}</span>
               </li>
             ))}
           </ul>
@@ -102,11 +117,18 @@ export function Pool() {
   for (const d of discover.data ?? []) {
     if (d.myRole !== 'none') names.set(d.project.id, d.project.fullName);
   }
+  const members = usePresence(pool.data?.members, (m) => m.userId);
   return (
     <section>
-      <div className="row between">
-        <h1>Pool</h1>
-        <label className="field">
+      <header className="page-head">
+        <div>
+          <h1>Pool</h1>
+          <p className="lede">
+            Who is lending capacity right now, how much margin they have left, and what is running
+            on their machines. All usage figures are estimates.
+          </p>
+        </div>
+        <label className="field inline">
           Project
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="">All my projects</option>
@@ -117,7 +139,7 @@ export function Pool() {
             ))}
           </select>
         </label>
-      </div>
+      </header>
       {expired.map((a) => (
         <p key={a.id} className="warning" role="alert">
           {claudeRejectedText(a, <> on {a.machineName}</>)}. No task is offered to that machine
@@ -131,13 +153,14 @@ export function Pool() {
             {a.machineName}: {claudeCheckLine(a)}
           </p>
         ))}
-      <p className="hint">All usage figures are estimates.</p>
-      {pool.isLoading && <p>Loading...</p>}
+      {pool.isLoading && <p className="hint">Loading...</p>}
       {pool.error && <p className="error">{pool.error.message}</p>}
-      {pool.data && pool.data.members.length === 0 && <p>No members in the pool yet.</p>}
-      <div className="grid">
-        {pool.data?.members.map((m) => (
-          <MemberCard key={m.userId} m={m} />
+      {pool.data && pool.data.members.length === 0 && (
+        <p className="empty">No members in the pool yet.</p>
+      )}
+      <div className="pool-grid">
+        {members.map(({ key, item, phase }) => (
+          <MemberCard key={key} m={item} phase={phase} />
         ))}
       </div>
     </section>

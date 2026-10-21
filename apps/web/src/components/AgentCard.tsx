@@ -1,6 +1,7 @@
 import type { AgentView } from '@orch/shared';
 import type { ReactNode } from 'react';
 import { AgentUpdateState } from './AgentUpdate';
+import { presenceProps, useChangeCount, type Phase } from '../ui/presence';
 
 export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return 'never';
@@ -81,16 +82,10 @@ export function UsageEstimate({ usage }: { usage: AgentView['lastUsage'] }) {
   const margin = usage.usedFraction == null ? null : Math.round((1 - usage.usedFraction) * 100);
   return (
     <div className="usage">
-      <span className="badge">Estimate</span>{' '}
+      <span className="badge">Estimate</span>
       <span>≈ {Math.round(usage.weighted).toLocaleString('en-US')} tokens in the 5h window</span>
-      {' · '}
       <span>{margin == null ? 'margin unknown' : `margin ≈ ${Math.max(0, margin)}%`}</span>
-      {usage.windowResetAt && (
-        <>
-          {' · '}
-          <span>resets at {hhmm(usage.windowResetAt)}</span>
-        </>
-      )}
+      {usage.windowResetAt && <span>resets at {hhmm(usage.windowResetAt)}</span>}
       {usage.rateLimitedUntil && (
         <p className="hint">Rate limited until {hhmm(usage.rateLimitedUntil)}</p>
       )}
@@ -103,25 +98,34 @@ export function AgentCard({
   busy,
   onTogglePause,
   onRevoke,
+  phase = 'idle',
 }: {
   agent: AgentView;
+  phase?: Phase;
   busy: boolean;
   onTogglePause: (agent: AgentView) => void;
   onRevoke: (agent: AgentView) => void;
 }) {
+  const connectedChanges = useChangeCount(agent.connected);
   return (
     <article
       className={`card agent${agent.paused ? ' paused' : ''}`}
       aria-label={agent.machineName}
+      {...presenceProps(phase)}
     >
-      <div className="row between">
+      <div className="card-head">
         <h3>{agent.machineName}</h3>
-        <span className={`badge ${agent.connected ? 'ok' : ''}`}>
+        <span
+          key={connectedChanges}
+          className={`badge ${agent.connected ? 'ok' : 'off'}`}
+          data-changed={connectedChanges > 0 || undefined}
+        >
           {agent.connected ? 'Online' : 'Offline'}
         </span>
       </div>
-      <p className="hint">
-        Version {agent.version ?? 'unknown'} · Last seen {relativeTime(agent.lastSeenAt)}
+      <p className="agent-meta">
+        <span>Version {agent.version ?? 'unknown'}</span>
+        <span>Last seen {relativeTime(agent.lastSeenAt)}</span>
       </p>
       <AgentUpdateState agent={agent} />
       {agent.claudeAuthValid === false && (
@@ -136,7 +140,7 @@ export function AgentCard({
           Paused: no new tasks will start on this machine
         </div>
       )}
-      <div className="row">
+      <div className="card-foot">
         <button
           className={`pause-toggle ${agent.paused ? 'primary' : ''}`}
           role="switch"

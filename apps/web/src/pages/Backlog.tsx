@@ -12,6 +12,51 @@ import {
 import { NewTaskDialog, type BoardProject } from '../components/NewTaskDialog';
 import { POLL_MS } from '../time';
 import { TaskCard } from '../components/TaskCard';
+import { presenceProps, usePresence } from '../ui/presence';
+import { useToast } from '../ui/Toast';
+
+function Column({
+  status,
+  label,
+  tasks,
+  access,
+  approving,
+  onApprove,
+  retrying,
+  onRetry,
+}: {
+  status: TaskStatus;
+  label: string;
+  tasks: TaskView[] | undefined;
+  access: Record<string, ProjectTaskAccess>;
+  approving: boolean;
+  onApprove: (id: string) => void;
+  retrying: boolean;
+  onRetry: (id: string) => void;
+}) {
+  const cards = usePresence(tasks, (t) => t.id);
+  return (
+    <div className="kanban-col" data-status={status} role="region" aria-label={label}>
+      <h2>
+        <span className="lamp" aria-hidden="true" />
+        {label} <span className="badge">{tasks?.length ?? 0}</span>
+      </h2>
+      {tasks?.length === 0 && <p className="col-empty">Nothing here</p>}
+      {cards.map(({ key, item: t, phase }) => (
+        <div key={key} className="task-slot" {...presenceProps(phase)}>
+          <TaskCard
+            task={t}
+            canApprove={access[t.projectId]?.canApprove ?? false}
+            approving={approving}
+            onApprove={onApprove}
+            retrying={retrying}
+            onRetry={onRetry}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: 'PROPOSED', label: 'Proposed' },
@@ -26,6 +71,7 @@ const canCreateIn = (a: ProjectTaskAccess | undefined) => !!a && (a.canSubmit ||
 
 export function Backlog() {
   const qc = useQueryClient();
+  const toast = useToast();
   const [filter, setFilter] = useState('');
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,7 +86,10 @@ export function Backlog() {
   const access = board.data?.access ?? {};
   const approve = useMutation({
     mutationFn: approveTask,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+    onSuccess: (t) => {
+      toast(`#${t.issueNumber} approved and moved to To do`);
+      return qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
   });
   const retry = useMutation({
     mutationFn: retryTask,
@@ -69,10 +118,16 @@ export function Backlog() {
 
   return (
     <section>
-      <div className="row between">
-        <h1>Backlog</h1>
-        <div className="row">
-          <label className="field">
+      <header className="page-head">
+        <div>
+          <h1>Backlog</h1>
+          <p className="lede">
+            Tasks are GitHub issues. Each one runs in its own container on a teammate&apos;s
+            machine, then orch opens a pull request.
+          </p>
+        </div>
+        <div className="page-actions">
+          <label className="field inline">
             Project
             <select value={filter} onChange={(e) => setFilter(e.target.value)}>
               <option value="">All my projects</option>
@@ -87,15 +142,19 @@ export function Backlog() {
             New task
           </button>
         </div>
-      </div>
-      <div className="row">
+      </header>
+      <div className="board-tools">
         {importTargets.map((p) => (
           <button key={p.id} disabled={imp.isPending} onClick={() => imp.mutate(p.id)}>
-            Import issues labeled `pool` ({p.fullName})
+            Import issues labeled <code>`pool`</code> ({p.fullName})
           </button>
         ))}
       </div>
-      {notice && <p className="hint">{notice}</p>}
+      {notice && (
+        <p className="notice reveal" key={notice} role="status">
+          {notice}
+        </p>
+      )}
       {imp.error && <p className="error">{imp.error.message}</p>}
       {approve.error && <p className="error">{approve.error.message}</p>}
       {retry.error && <p className="error">{retry.error.message}</p>}
@@ -104,22 +163,17 @@ export function Backlog() {
       {board.data && (
         <div className="kanban">
           {COLUMNS.map((c) => (
-            <div className="kanban-col" key={c.status} role="region" aria-label={c.label}>
-              <h2>
-                {c.label} <span className="badge">{board.data[c.status].length}</span>
-              </h2>
-              {board.data[c.status].map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  canApprove={access[t.projectId]?.canApprove ?? false}
-                  approving={approve.isPending}
-                  onApprove={(id) => approve.mutate(id)}
-                  retrying={retry.isPending}
-                  onRetry={(id) => retry.mutate(id)}
-                />
-              ))}
-            </div>
+            <Column
+              key={c.status}
+              status={c.status}
+              label={c.label}
+              tasks={board.data[c.status]}
+              access={access}
+              approving={approve.isPending}
+              onApprove={(id) => approve.mutate(id)}
+              retrying={retry.isPending}
+              onRetry={(id) => retry.mutate(id)}
+            />
           ))}
         </div>
       )}
