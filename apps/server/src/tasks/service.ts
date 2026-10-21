@@ -1371,10 +1371,9 @@ export class TaskService {
     const t = await this.progressTarget(agent, p.assignmentId, p.seq);
     if (t.a === null) return t.err;
     const a = t.a;
-    const delivered = a.task.status === 'IN_REVIEW' && a.task.prNumber !== null;
     const status =
       p.outcome === 'succeeded' ? 'SUCCEEDED' : p.outcome === 'cancelled' ? 'CANCELLED' : 'FAILED';
-    await this.prisma.$transaction([
+    const [, returned] = await this.prisma.$transaction([
       this.prisma.assignment.update({
         where: { id: a.id },
         data: {
@@ -1385,21 +1384,18 @@ export class TaskService {
           usageWeighted: BigInt(Math.round(p.usage.weighted)),
         },
       }),
-      // Without a PR nothing was delivered: the task goes back to the pool.
-      ...(delivered
-        ? []
-        : [
-            this.prisma.task.update({
-              where: { id: a.taskId },
-              data: { status: 'TODO', assigneeId: null, assigneeAgentId: null },
-            }),
-          ]),
+      // Without a PR nothing was delivered: the task goes back to the pool. Only while this run
+      // still holds it: a task already IN_REVIEW or DONE (PR opened or merged meanwhile) stays.
+      this.prisma.task.updateMany({
+        where: { id: a.taskId, status: 'IN_PROGRESS', assigneeAgentId: agent.id },
+        data: { status: 'TODO', assigneeId: null, assigneeAgentId: null },
+      }),
     ]);
     await this.agentAudit(agent, 'task.finished', a, {
       outcome: p.outcome,
       weighted: p.usage.weighted,
       ...(p.error ? { error: p.error.slice(0, 500) } : {}),
-      returnedToPool: !delivered,
+      returnedToPool: returned.count === 1,
     });
     return { ok: true };
   }
