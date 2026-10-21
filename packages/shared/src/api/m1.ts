@@ -42,7 +42,7 @@ export const ApiUserSchema = z.object({
 });
 export type ApiUser = z.infer<typeof ApiUserSchema>;
 
-export const InstallUrlResponseSchema = z.object({ url: z.string().url() });
+export const InstallUrlResponseSchema = z.object({ url: z.url() });
 export type InstallUrlResponse = z.infer<typeof InstallUrlResponseSchema>;
 
 export const AvailableRepoSchema = z.object({

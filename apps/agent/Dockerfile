@@ -5,7 +5,7 @@
 # /run/orch.sock and the /data and /secrets volumes. Task containers are non-root (PLAN 5.3).
 FROM docker:27-cli AS docker-cli
 
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git screen ca-certificates curl tini \
@@ -30,7 +30,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     CI=true
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@12.14.0 --activate
 
 WORKDIR /app
 # Manifests first for layer caching, then sources.

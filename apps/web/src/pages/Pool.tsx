@@ -6,6 +6,8 @@ import { claudeCheckLine, claudeRejectedText } from '../components/AgentCard';
 import { POLL_MS, relative } from '../time';
 
 function MemberCard({ m }: { m: PoolMember }) {
+  // Display-only freshness check; re-evaluated on every refetch.
+  // eslint-disable-next-line react-hooks/purity
   const limited = m.rateLimitedUntil && new Date(m.rateLimitedUntil).getTime() > Date.now();
   return (
     <article className="card pool-member" aria-label={`Member ${m.login}`}>

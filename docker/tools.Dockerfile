@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates git curl postgresql-client \
@@ -11,7 +11,8 @@ ENV COREPACK_HOME=/opt/corepack \
     CI=true
 
 RUN corepack enable \
- && corepack prepare pnpm@9.15.9 --activate \
+ && corepack prepare pnpm@12.14.0 --activate \
+ && pnpm --version \
  && chmod -R a+rX /opt/corepack \
  && mkdir -p /tmp/home && chmod 1777 /tmp/home
 

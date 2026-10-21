@@ -9,17 +9,17 @@
     "dev": "tsx src/main.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
-    "@types/ws": "^8.5.13",
-    "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.2",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "@orch/shared": "workspace:*",
     "@xterm/headless": "5.5.0",
-    "tsx": "^4.19.2",
-    "ws": "^8.18.0",
-    "yaml": "^2.8.1",
-    "zod": "^3.24.1"
+    "tsx": "^4.23.15",
+    "ws": "^8.22.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   }
 }

@@ -5,7 +5,7 @@ export const UserSchema = z.object({
   githubId: z.coerce.bigint(),
   login: z.string().min(1),
   name: z.string().nullable(),
-  avatarUrl: z.string().url().nullable(),
+  avatarUrl: z.url().nullable(),
   paused: z.boolean(),
   maxConcurrent: z.number().int().min(1),
   maxPendingTasks: z.number().int().min(0),
