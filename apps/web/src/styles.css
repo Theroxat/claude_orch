@@ -450,3 +450,34 @@ button.big {
     flex: 1 1 100%;
   }
 }
+.update-banner {
+  background: var(--card);
+  border-bottom: 2px solid var(--warn);
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+.update-banner p {
+  margin: 4px 0;
+}
+.update-banner details {
+  margin-top: 4px;
+}
+.agent-update .row {
+  margin: 4px 0;
+}
+
+.version-footer {
+  max-width: 960px;
+  margin: 24px auto 0;
+  padding: 8px 16px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.version-footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.version-footer a:hover {
+  text-decoration: underline;
+}

@@ -60,3 +60,25 @@ describe('public URL and proxy trust', () => {
     );
   });
 });
+
+describe('agent update settings', () => {
+  const base = { DATABASE_URL: 'postgresql://x' };
+
+  it('normalises ORCH_VERSION and defaults the image repository', () => {
+    expect(loadConfig(base).ORCH_VERSION).toBe('dev');
+    expect(loadConfig({ ...base, ORCH_VERSION: ' v0.4.3 ' }).ORCH_VERSION).toBe('0.4.3');
+    expect(loadConfig({ ...base, ORCH_VERSION: '' }).ORCH_VERSION).toBe('dev');
+    expect(loadConfig(base).ORCH_AGENT_IMAGE_REPO).toBe('ghcr.io/theroxat/orch-agent');
+  });
+
+  it('rejects an invalid ORCH_AGENT_IMAGE_REPO', () => {
+    for (const bad of ['evil/x:1', 'UPPER/case', 'nohost', 'a b/c', 'x/y@sha256:abc']) {
+      expect(() => loadConfig({ ...base, ORCH_AGENT_IMAGE_REPO: bad })).toThrow(
+        /ORCH_AGENT_IMAGE_REPO/,
+      );
+    }
+    expect(
+      loadConfig({ ...base, ORCH_AGENT_IMAGE_REPO: 'reg.example:5000/o/agent' }),
+    ).toMatchObject({ ORCH_AGENT_IMAGE_REPO: 'reg.example:5000/o/agent' });
+  });
+});

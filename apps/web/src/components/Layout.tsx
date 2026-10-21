@@ -5,7 +5,9 @@ import { api } from '../api/client';
 import { dismissOnboarding, fetchPendingCount } from '../api/endpoints';
 import { useOffers } from '../pages/Requests';
 import { useMe, useResetSession } from '../auth';
+import { AgentUpdateBanner } from './AgentUpdateBanner';
 import { useOnboarding } from './GettingStarted';
+import { VersionFooter } from './VersionFooter';
 
 const links = [
   { to: '/projects', label: 'Projects' },
@@ -99,9 +101,11 @@ export function Layout() {
           </div>
         )}
       </header>
+      <AgentUpdateBanner />
       <main>
         <Outlet />
       </main>
+      <VersionFooter />
     </div>
   );
 }

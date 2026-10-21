@@ -31,6 +31,9 @@ Commands:
   reject <id>       Decline an approval request
   pause             Pause this machine (applied locally first, works offline)
   resume            Resume this machine
+  update            Update this agent to the version the server runs, then restart it
+                      --when-idle      wait for the running tasks to finish first
+                      --version=<x.y.z> a specific release instead
   login             Store your Claude token (wraps \`claude setup-token\`)
                       --token-stdin  read the token from stdin
                       --no-setup     do not run \`claude setup-token\` first
@@ -43,6 +46,8 @@ export interface CliDeps {
   sleep: (ms: number) => Promise<void>;
   /** How long `take` waits for the sandbox to be ready. */
   takeWaitMs: number;
+  /** How long `update` follows the pull before returning. */
+  updateWaitMs: number;
 }
 
 const defaultDeps: CliDeps = {
@@ -55,6 +60,7 @@ const defaultDeps: CliDeps = {
     }),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   takeWaitMs: 60 * 60_000,
+  updateWaitMs: 30 * 60_000,
 };
 
 export function formatStatus(s: StatusInfo): string {
@@ -65,6 +71,14 @@ export function formatStatus(s: StatusInfo): string {
     `Paused:       ${s.paused ? 'yes' : 'no'}`,
     `Last usage:   ${s.lastUsageReportAt ?? 'never'}`,
     `Outbox:       ${s.outboxPending} pending`,
+    ...(s.latestAgentVersion && s.latestAgentVersion !== s.version
+      ? [`Latest:       v${s.latestAgentVersion} (run "orch update")`]
+      : []),
+    ...(s.update
+      ? [
+          `Update:       ${s.update.status} v${s.update.targetVersion}${s.update.detail ? ` (${s.update.detail})` : ''}`,
+        ]
+      : []),
   ].join('\n');
 }
 
@@ -243,6 +257,24 @@ export async function runCli(
         out(res.message ?? (cmd === 'accept' ? 'Accepted.' : 'Rejected.'));
         return 0;
       }
+      case 'update': {
+        const known = ['--when-idle'];
+        const bad = args.find((a) => !known.includes(a) && !a.startsWith('--version='));
+        if (bad) {
+          err(`unknown option ${bad}. Usage: orch update [--when-idle] [--version=<x.y.z>]`);
+          return 2;
+        }
+        const v = args.find((a) => a.startsWith('--version='))?.slice('--version='.length);
+        const res = await call({
+          cmd,
+          whenIdle: args.includes('--when-idle'),
+          ...(v ? { version: v } : {}),
+        });
+        if (!res) return 1;
+        out(res.message ?? 'Update requested.');
+        if (!res.update || res.update.status === 'deferred') return 0;
+        return await followUpdate(res.update.updateId, call, d, out, err);
+      }
       case 'login': {
         const unknown = args.filter((a) => a !== '--token-stdin' && a !== '--no-setup');
         if (unknown.length > 0) {
@@ -269,6 +301,42 @@ export async function runCli(
     err(errorMessage(e));
     return 1;
   }
+}
+
+/** Follows the update until it is handed to the restart helper (or fails). */
+async function followUpdate(
+  updateId: string,
+  call: (req: ControlRequest, timeoutMs?: number) => Promise<ControlResult | null>,
+  d: CliDeps,
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
+  const end = Date.now() + d.updateWaitMs;
+  let last = '';
+  while (Date.now() < end) {
+    const u = (await call({ cmd: 'status' }))?.status?.update;
+    if (!u || u.updateId !== updateId) {
+      err('lost track of the update; check "orch status"');
+      return 1;
+    }
+    if (u.status !== last) {
+      last = u.status;
+      if (u.status === 'pulling') out('Pulling the new image...');
+    }
+    if (u.status === 'restarting' || u.status === 'done') {
+      out(
+        `${u.detail ?? 'Restarting.'}\nThe agent restarts in a few seconds; check with "orch status".`,
+      );
+      return 0;
+    }
+    if (u.status === 'failed') {
+      err(`update failed: ${u.detail ?? u.code ?? 'unknown error'}`);
+      return 1;
+    }
+    await d.sleep(1_000);
+  }
+  out('Still updating. Check "orch status" later.');
+  return 0;
 }
 
 /** Polls `status` until the claimed task is running (prints the attach command) or failed. */

@@ -178,6 +178,33 @@ F
   grep -q "docker compose -f $HOME/orch/compose.yaml exec -T agent orch status --x" "$CALLS"
 }
 
+@test "wrapper: orch update runs inside the agent when it is running" {
+  sh "$S" --token t --server https://o.example.com
+  cat >"$T/bin/docker" <<'F'
+#!/bin/sh
+echo "docker $*" >>"$CALLS"
+case "$*" in *" ps -q agent"*) echo abc123 ;; esac
+exit 0
+F
+  : >"$CALLS"
+  run "$HOME/.local/bin/orch" update --when-idle
+  [ "$status" -eq 0 ]
+  grep -q "exec -T agent orch update --when-idle" "$CALLS"
+  run grep -q " pull agent" "$CALLS"
+  [ "$status" -ne 0 ]
+}
+
+@test "wrapper: orch update falls back to compose pull + up when the agent is stopped" {
+  sh "$S" --token t --server https://o.example.com
+  : >"$CALLS"
+  run "$HOME/.local/bin/orch" update
+  [ "$status" -eq 0 ]
+  grep -q "docker compose -f $HOME/orch/compose.yaml pull agent" "$CALLS"
+  grep -q "docker compose -f $HOME/orch/compose.yaml up -d agent" "$CALLS"
+  run grep -q "exec" "$CALLS"
+  [ "$status" -ne 0 ]
+}
+
 @test "rerun is idempotent: same wrapper, no duplicate" {
   sh "$S" --token t --server https://o.example.com
   cp "$HOME/.local/bin/orch" "$T/first"

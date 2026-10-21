@@ -3,10 +3,13 @@
  * heartbeat and control socket. All collaborators are injectable for tests.
  */
 import { freemem, loadavg } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import {
   SERVER_ACKED_TYPES,
   agentMessage,
+  compareVersions,
+  normalizeVersion,
   type AckPayload,
   type AgentConfigPayload,
   type ServerMessage,
@@ -21,6 +24,7 @@ import { errorMessage, type Logger } from './log';
 import { Outbox } from './outbox';
 import { PauseState } from './pause';
 import { UsageLoop, type UsageSource } from './usage-loop';
+import { Updater, type UpdaterOptions } from './update/updater';
 import { AGENT_VERSION } from './version';
 import type { BackoffOptions } from './ws/backoff';
 import { WsClient } from './ws/client';
@@ -50,6 +54,11 @@ export interface AgentOptions {
   listTimeoutMs?: number;
   /** How long to wait for the answer to `config.request` (default 5 s). */
   configRequestTimeoutMs?: number;
+  /** Self-update (`agent.update`, `orch update`). Without it the agent does not offer it. */
+  update?: Pick<
+    UpdaterOptions,
+    'runner' | 'selfId' | 'imageRepo' | 'dockerBin' | 'helperDelaySec' | 'idlePollMs'
+  > & { currentVersion?: string };
 }
 
 interface ConfigWaiter {
@@ -73,6 +82,9 @@ export class Agent {
   readonly usage: UsageLoop;
   readonly tokens: TokenBroker;
   readonly executor: ManualExecutor | undefined;
+  readonly updater: Updater | undefined;
+  /** Version the server recommends (from `welcome`). */
+  private latestAgentVersion: string | null = null;
   private participations: AgentConfigPayload['participations'] = [];
   private readonly listWaiters = new Map<string, ListWaiter>();
   /** In-flight `config.request` (concurrent refreshes share it). */
@@ -113,6 +125,7 @@ export class Agent {
         maxConcurrent: this.executor?.maxConcurrent ?? 1,
         running: this.executor?.running() ?? [],
         ...this.tokenFlag(),
+        ...(this.updater ? { selfUpdate: true } : {}),
       }),
     });
     this.outbox.setSender((m) => this.client.ready && this.client.send(m));
@@ -128,6 +141,16 @@ export class Agent {
           isPaused: () => this.pause.isPaused(),
           participations: () => this.participations,
           refreshConfig: () => this.refreshConfig(),
+          logger: this.log,
+        })
+      : undefined;
+    this.updater = opts.update
+      ? new Updater({
+          ...opts.update,
+          currentVersion: opts.update.currentVersion ?? AGENT_VERSION,
+          dataDir: opts.dataDir,
+          runningTasks: () => this.executor?.running().length ?? 0,
+          report: (p) => this.outbox.enqueue('update.status', p),
           logger: this.log,
         })
       : undefined;
@@ -148,6 +171,7 @@ export class Agent {
 
     this.client.on('welcome', (w) => {
       this.agentId = w.agentId;
+      this.latestAgentVersion = normalizeVersion(w.latestAgentVersion);
       this.log.info('connected', { agentId: w.agentId, paused: w.paused });
       this.applyConfig(w);
       this.startHeartbeat(w.heartbeatSec);
@@ -183,6 +207,7 @@ export class Agent {
         requests: () => ({ requests: this.exec().requestViews() }),
         accept: async (r) => ({ message: (await this.exec().acceptRequest(r.id)).message }),
         reject: (r) => ({ message: this.exec().rejectRequest(r.id).message }),
+        update: (r) => this.localUpdate(r.version, r.whenIdle ?? false),
       },
       this.log,
     );
@@ -193,7 +218,51 @@ export class Agent {
           this.log.warn('task reconciliation failed', { error: errorMessage(err) }),
         );
     }
+    this.updater?.resumeAfterRestart();
     this.client.start();
+  }
+
+  /**
+   * `orch update [--version X] [--when-idle]`: same path as `agent.update`, with the version the
+   * server announced (or the explicit one) and the configured repository.
+   */
+  private localUpdate(version: string | undefined, whenIdle: boolean): ControlResult {
+    const updater = this.updater;
+    if (!updater) {
+      const err = new Error(
+        'Self-update is not available here (no docker socket or not running in a container).',
+      );
+      throw Object.assign(err, { code: 'unsupported' });
+    }
+    const explicit = version !== undefined;
+    const target = explicit ? normalizeVersion(version) : this.latestAgentVersion;
+    if (!target) {
+      const err = new Error(
+        explicit
+          ? `"${version}" is not a release version (e.g. 0.4.3).`
+          : 'The server has not announced a version (not connected yet, or it runs a dev build). Pass --version <x.y.z>.',
+      );
+      throw Object.assign(err, { code: 'no_target' });
+    }
+    const cmp = compareVersions(AGENT_VERSION, target);
+    if (cmp === 0 || (!explicit && cmp !== null && cmp > 0)) {
+      return { message: `Already up to date (v${AGENT_VERSION}).` };
+    }
+    const state = updater.request({
+      updateId: `local-${randomBytes(8).toString('hex')}`,
+      targetVersion: target,
+      image: `${this.opts.update!.imageRepo}:${target}`,
+      whenIdle,
+    });
+    if (state.status === 'failed') {
+      const err = new Error(state.detail ?? 'The update failed.');
+      throw Object.assign(err, { code: state.code ?? 'failed' });
+    }
+    const message =
+      state.status === 'deferred'
+        ? `Update to v${target} deferred: ${state.detail ?? 'waiting for the running tasks'}`
+        : `Updating to v${target}: pulling the image, then the agent restarts.`;
+    return { message, update: state };
   }
 
   private exec(): ManualExecutor {
@@ -257,6 +326,7 @@ export class Agent {
       this.configWaiter = undefined;
     }
     this.tokens.close();
+    this.updater?.close();
     this.executor?.close();
     for (const w of this.listWaiters.values()) clearTimeout(w.timer);
     this.listWaiters.clear();
@@ -277,6 +347,8 @@ export class Agent {
       lastUsageReportAt: this.lastUsageReportAt,
       outboxPending: this.outbox.pending().length,
       maxConcurrent: this.executor?.maxConcurrent ?? 1,
+      latestAgentVersion: this.latestAgentVersion,
+      update: this.updater?.current() ?? null,
     };
   }
 
@@ -316,6 +388,7 @@ export class Agent {
         this.log.warn('server refused a message', { replyTo: m.replyTo, error: m.payload.error });
       }
       this.executor?.onAck(m.replyTo, m.payload);
+      this.updater?.checkIdle();
       this.outbox.ack(m.replyTo);
       return;
     }
@@ -368,7 +441,30 @@ export class Agent {
         });
         if (this.client.ready) this.startHeartbeat(m.payload.heartbeatSec);
         return;
+      case 'agent.update':
+        if (!this.updater) {
+          this.outbox.enqueue('update.status', {
+            updateId: m.payload.updateId,
+            targetVersion: m.payload.targetVersion,
+            status: 'failed',
+            code: 'unsupported',
+            detail: 'Self-update is not available on this machine; update it manually.',
+          });
+          return;
+        }
+        this.updater.request(m.payload);
+        return;
       case 'task.offer':
+        // A deferred update waits for idleness: take no new automatic work meanwhile.
+        if (m.payload.kind === 'AUTO_OFFER' && !m.payload.accepted && this.updater?.isDeferred()) {
+          this.outbox.enqueue('offer.reject', {
+            assignmentId: m.payload.assignmentId,
+            reason: 'concurrency',
+            detail: 'An agent update is waiting for the running tasks to finish.',
+          });
+          return;
+        }
+      // falls through
       case 'task.cancel':
       case 'pr.opened':
       case 'cleanup':

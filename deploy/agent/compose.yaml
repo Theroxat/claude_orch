@@ -13,8 +13,11 @@ services:
       ORCH_WORK_DIR: ${ORCH_WORK_DIR:?set ORCH_WORK_DIR in .env}
       ORCH_CLAUDE_USAGE_ROOT: /host-claude
       ORCH_PLAN: ${ORCH_PLAN:-pro}
+      # One-click update only ever pulls <this repository>:<release version>.
+      ORCH_AGENT_IMAGE_REPO: ${ORCH_AGENT_IMAGE:-ghcr.io/theroxat/orch-agent}
     volumes:
-      # The agent starts task containers through the host Docker daemon.
+      # The agent starts task containers through the host Docker daemon (and, for `orch update`,
+      # a short-lived helper that runs `docker compose up -d agent` in this directory).
       - /var/run/docker.sock:/var/run/docker.sock
       # Agent state (outbox, pause state, mirrors) and the agent credential.
       - orch-data:/data

@@ -22,9 +22,24 @@ export const ControlRequestSchema = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('requests') }),
   z.object({ cmd: z.literal('accept'), id: z.string().min(1).max(200) }),
   z.object({ cmd: z.literal('reject'), id: z.string().min(1).max(200) }),
+  z.object({
+    cmd: z.literal('update'),
+    /** Target release; default: the version the server announced in `welcome`. */
+    version: z.string().min(1).max(64).optional(),
+    whenIdle: z.boolean().optional(),
+  }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
 export type ControlCommand = ControlRequest['cmd'];
+
+export const UpdateStateSchema = z.object({
+  updateId: z.string(),
+  targetVersion: z.string(),
+  status: z.enum(['pending', 'deferred', 'pulling', 'restarting', 'failed', 'done']),
+  code: z.string().optional(),
+  detail: z.string().optional(),
+});
+export type UpdateStateInfo = z.infer<typeof UpdateStateSchema>;
 
 export const StatusInfoSchema = z.object({
   agentId: z.string().nullable(),
@@ -36,6 +51,10 @@ export const StatusInfoSchema = z.object({
   lastUsageReportAt: z.string().nullable(),
   outboxPending: z.number().int().nonnegative(),
   maxConcurrent: z.number().int().positive().optional(),
+  /** Version the server recommends (from `welcome`), null when unknown. */
+  latestAgentVersion: z.string().nullable().optional(),
+  /** Last self-update of this agent process, if any. */
+  update: UpdateStateSchema.nullable().optional(),
 });
 export type StatusInfo = z.infer<typeof StatusInfoSchema>;
 
@@ -89,8 +108,10 @@ export const ControlResultSchema = z.object({
   exec: z.array(z.string()).optional(),
   /** Pending approval requests (`orch requests`). */
   requests: z.array(RequestViewSchema).optional(),
-  /** Human-readable outcome (accept, reject). */
+  /** Human-readable outcome (accept, reject, update). */
   message: z.string().optional(),
+  /** `update`: the resulting update state. */
+  update: UpdateStateSchema.optional(),
 });
 export type ControlResult = z.infer<typeof ControlResultSchema>;
 

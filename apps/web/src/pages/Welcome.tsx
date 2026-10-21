@@ -16,6 +16,7 @@ import { useOnboarding } from '../components/GettingStarted';
 import { InstallCommandBlock, LOGIN_COMMAND } from '../components/InstallAgentCard';
 import { McpCommand } from '../components/McpCommand';
 import { ParticipationForm } from '../components/ParticipationForm';
+import { VersionFooter } from '../components/VersionFooter';
 
 /** Server state is polled this often while a step is waiting for the user. */
 export const POLL_MS = 3000;
@@ -386,6 +387,7 @@ export function Welcome() {
           )}
         </nav>
       </main>
+      <VersionFooter />
     </div>
   );
 }

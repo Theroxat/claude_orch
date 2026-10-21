@@ -4,6 +4,7 @@ import {
   AvailableRepoSchema,
   CreateEnrollmentTokenResponseSchema,
   CreatePersonalTokenResponseSchema,
+  OutdatedCountResponseSchema,
   PersonalTokenListResponseSchema,
   DiscoverItemSchema,
   ImportTasksResponseSchema,
@@ -56,6 +57,10 @@ export const pauseAgent = (id: string) =>
   api('POST', `/agents/${id}/pause`, { schema: AgentViewSchema });
 export const resumeAgent = (id: string) =>
   api('POST', `/agents/${id}/resume`, { schema: AgentViewSchema });
+export const fetchOutdatedCount = () =>
+  api('GET', '/agents/outdated-count', { schema: OutdatedCountResponseSchema });
+export const updateAgent = (id: string, whenIdle = false) =>
+  api('POST', `/agents/${id}/update`, { body: { whenIdle }, schema: AgentViewSchema });
 export const revokeAgent = (id: string) => api<unknown>('DELETE', `/agents/${id}`);
 
 export const fetchTaskBoard = (projectId?: string) =>

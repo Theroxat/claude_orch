@@ -76,6 +76,21 @@ function execOptions(cfg: AgentConfig, log: Logger, agentId: string): AgentOptio
   };
 }
 
+/** Self-update needs the host docker socket and the own container id (HOSTNAME). */
+function updateOptions(cfg: AgentConfig, log: Logger): AgentOptions['update'] {
+  let socket = false;
+  try {
+    socket = statSync('/var/run/docker.sock').isSocket();
+  } catch {
+    socket = false;
+  }
+  if (!socket || !cfg.selfContainerId) {
+    log.info('self-update disabled (no docker socket or container id)');
+    return undefined;
+  }
+  return { runner: spawnRunner, selfId: cfg.selfContainerId, imageRepo: cfg.imageRepo };
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const log = createLogger(cfg.logLevel);
@@ -105,6 +120,7 @@ async function main(): Promise<void> {
     }),
     logger: log,
     exec: execOptions(cfg, log, cred.agentId),
+    update: updateOptions(cfg, log),
   });
   agent.client.on('fatal', () => {
     log.error('the agent stays up for `orch status` but will not reconnect');

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_AGENT_IMAGE_REPO, IMAGE_REPO_RE } from '@orch/shared';
 
 const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v);
 
@@ -37,6 +38,19 @@ const ConfigSchema = z.object({
     .string()
     .default('loopback,linklocal,uniquelocal')
     .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+  /** Release version of this server (set at image build). `dev` for local builds. */
+  ORCH_VERSION: z
+    .string()
+    .default('dev')
+    .transform((v) => v.trim().replace(/^v/, '') || 'dev'),
+  /** Image repository agents are updated from (tag = server version). */
+  ORCH_AGENT_IMAGE_REPO: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(IMAGE_REPO_RE, 'must be an image repository without tag, e.g. ghcr.io/org/orch-agent')
+      .default(DEFAULT_AGENT_IMAGE_REPO),
+  ),
   DATABASE_URL: z.string().min(1),
   // GitHub App settings are optional until the OAuth phase; they must be set in production then.
   GITHUB_APP_ID: z.preprocess(emptyToUndefined, z.string().optional()),
