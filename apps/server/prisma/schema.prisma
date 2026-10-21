@@ -127,6 +127,8 @@ model User {
   assignedTasks    Task[]              @relation("TaskAssignee")
   assignments      Assignment[]
   personalTokens   PersonalToken[]
+  oauthGrants      OAuthGrant[]
+  oauthCodes       OAuthCode[]
 }
 
 model Session {
@@ -453,4 +455,78 @@ model PersonalToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// MCP OAuth client from dynamic client registration (RFC 7591). Public clients only (PKCE, no
+/// secret). The client_id is stored hashed (SHA-256), like every other credential.
+model OAuthClient {
+  id           String   @id @default(cuid())
+  clientIdHash String   @unique // sha256 hex of the client_id
+  name         String
+  redirectUris String[]
+  createdAt    DateTime @default(now())
+
+  grants OAuthGrant[]
+  codes  OAuthCode[]
+}
+
+/// Single-use authorization code (about 60 s). Only the SHA-256 is stored.
+model OAuthCode {
+  codeHash      String    @id // sha256 hex of the code
+  clientId      String
+  userId        String
+  redirectUri   String
+  codeChallenge String // PKCE S256
+  resource      String // audience the tokens are bound to
+  scope         String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  /// The grant created by exchanging this code: revoked if the code is presented again.
+  grantId       String?
+  createdAt     DateTime  @default(now())
+
+  client OAuthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+/// One user approval of one client: the family of its access and refresh tokens. Revoking it
+/// (by the user, by refresh token reuse or by removal from the allowlist) kills every token.
+model OAuthGrant {
+  id         String    @id @default(cuid())
+  userId     String
+  clientId   String
+  resource   String
+  scope      String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client OAuthClient  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  tokens OAuthToken[]
+
+  @@index([userId])
+}
+
+enum OAuthTokenKind {
+  ACCESS
+  REFRESH
+}
+
+/// Access (`orch_oat_`, about 1 h) and refresh (`orch_ort_`, rotated on use) tokens. Only the
+/// SHA-256 is stored. A refresh token with usedAt set that is presented again revokes the grant.
+model OAuthToken {
+  tokenHash String         @id // sha256 hex of the token
+  grantId   String
+  kind      OAuthTokenKind
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime       @default(now())
+
+  grant OAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  @@index([grantId])
+  @@index([expiresAt])
 }

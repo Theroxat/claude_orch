@@ -1,7 +1,9 @@
 /**
  * M5 MCP server (PLAN section 7): Streamable HTTP at `/mcp`, stateless (one MCP server and
- * transport per HTTP request), JSON responses. Auth: `Authorization: Bearer orch_pat_...` (401
- * otherwise); the actor is the token's user.
+ * transport per HTTP request), JSON responses. Auth: `Authorization: Bearer <token>` with an OAuth
+ * access token (`orch_oat_...`, see ../oauth) or a personal access token (`orch_pat_...`); 401
+ * with `WWW-Authenticate: Bearer resource_metadata="..."` otherwise, which starts the OAuth flow
+ * in Claude Code. The actor is the token's user.
  *
  * Every tool goes through the same service functions as the REST API (TaskService, buildPool,
  * the agent gateway's claim path), so permission and consent rules are identical. Nothing here
@@ -24,7 +26,7 @@ import {
   type TaskView,
 } from '@orch/shared';
 import type { AgentGateway } from '../agents/gateway';
-import type { AuthDeps } from '../auth';
+import { revokeUserAccess, type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
 import { buildPool } from '../offers';
@@ -35,6 +37,7 @@ import {
   taskInclude,
   type TaskRow,
 } from '../tasks/service';
+import { authenticateOAuthAccessToken, bearerOf, oauthUrls } from '../oauth';
 import { authenticatePat } from '../tokens';
 
 export interface McpDeps extends AuthDeps {
@@ -357,21 +360,42 @@ function rpcError(reply: FastifyReply, status: number, message: string) {
 }
 
 export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
-  const authenticate = async (authorization: string | undefined, reply: FastifyReply) => {
-    const auth = await authenticatePat(deps.prisma, authorization);
-    if (!auth) {
-      reply.header('WWW-Authenticate', 'Bearer realm="orch", error="invalid_token"');
-      throw new HttpError(
-        401,
-        'unauthorized',
-        'A valid personal access token is required (Authorization: Bearer orch_pat_...)',
+  const urls = oauthUrls(deps.config);
+  const authenticate = async (
+    authorization: string | undefined,
+    reply: FastifyReply,
+    ip: string,
+  ) => {
+    const raw = bearerOf(authorization);
+    const unauthorized = (message: string) => {
+      // RFC 9728: points Claude Code at the protected resource metadata (OAuth discovery).
+      const params = [
+        `resource_metadata="${urls.resourceMetadata}"`,
+        ...(raw ? ['error="invalid_token"'] : []),
+      ];
+      reply.header('WWW-Authenticate', `Bearer ${params.join(', ')}`);
+      return new HttpError(401, 'unauthorized', message);
+    };
+    const oauth = raw ? await authenticateOAuthAccessToken(deps.prisma, raw, urls.resource) : null;
+    const user = oauth?.user ?? (await authenticatePat(deps.prisma, authorization))?.user;
+    if (!user) {
+      throw unauthorized(
+        'Authorization required: connect with OAuth (claude mcp add, then /mcp -> Authenticate) or send a personal access token (Authorization: Bearer orch_pat_...)',
       );
     }
-    return auth.user;
+    // The sign-in allowlist applies to tokens too.
+    const decision = await app.allowlist.check(user);
+    if (decision === 'refused') {
+      await revokeUserAccess(deps.prisma, user.id, ip);
+      throw unauthorized('This account is no longer allowed on this server');
+    }
+    // GitHub token gone: OAuth clients re-authenticate (and are re-checked); PATs keep working.
+    if (decision === 'reauth' && oauth) throw unauthorized('Sign in with GitHub again');
+    return user;
   };
 
   app.post('/mcp', async (req, reply) => {
-    const user = await authenticate(req.headers.authorization, reply);
+    const user = await authenticate(req.headers.authorization, reply, req.ip);
     const server = buildMcpServer(deps, user, req.ip);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -406,7 +430,7 @@ export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
       method,
       url: '/mcp',
       handler: async (req, reply) => {
-        await authenticate(req.headers.authorization, reply);
+        await authenticate(req.headers.authorization, reply, req.ip);
         reply.header('Allow', 'POST');
         return rpcError(reply, 405, 'Method not allowed: this MCP server is stateless (POST only)');
       },

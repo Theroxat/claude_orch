@@ -8,6 +8,7 @@ import {
   CreatePersonalTokenRequestSchema,
   PAT_PREFIX,
   mcpAddCommand,
+  mcpAddCommandOAuth,
   type CreatePersonalTokenResponse,
   type PersonalTokenScope,
   type PersonalTokenView,
@@ -102,6 +103,7 @@ export function registerTokens(app: FastifyInstance, deps: AuthDeps): void {
       ...toTokenView(row),
       token,
       mcpAddCommand: mcpAddCommand(new URL(config.ORCH_BASE_URL).origin, token),
+      mcpAddCommandOAuth: mcpAddCommandOAuth(new URL(config.ORCH_BASE_URL).origin),
     });
   });
 

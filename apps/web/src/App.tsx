@@ -5,6 +5,7 @@ import { Backlog } from './pages/Backlog';
 import { ClaudeCode } from './pages/ClaudeCode';
 import { Discover } from './pages/Discover';
 import { Login } from './pages/Login';
+import { OAuthConsent } from './pages/OAuthConsent';
 import { MyServer } from './pages/MyServer';
 import { Pool } from './pages/Pool';
 import { Projects } from './pages/Projects';
@@ -14,6 +15,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/oauth/consent" element={<OAuthConsent />} />
       <Route element={<AuthGate />}>
         <Route element={<Layout />}>
           <Route index element={<Navigate to="/projects" replace />} />

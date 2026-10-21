@@ -14,7 +14,72 @@ const view = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+const cmdOAuth = 'claude mcp add --transport http --scope user orch http://x/mcp';
+const setupRoute = {
+  'GET /mcp/setup': () => ({ json: { mcpUrl: 'http://x/mcp', mcpAddCommandOAuth: cmdOAuth } }),
+  'GET /oauth/grants': () => ({ json: [] }),
+};
+
 describe('Claude Code page', () => {
+  it('shows the OAuth command and copies it', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /offers/mine': () => ({ json: [] }),
+      ...setupRoute,
+      'GET /tokens': () => ({ json: [] }),
+      ...setupRoute,
+    });
+    renderApp('/claude-code');
+    expect((await screen.findByTestId('mcp-oauth-command')).textContent).toBe(cmdOAuth);
+    expect(await screen.findByText('No connected app yet.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(cmdOAuth));
+    expect(await screen.findByRole('button', { name: 'Command copied' })).toBeTruthy();
+  });
+
+  it('lists a connected app and revokes it after confirmation', async () => {
+    let revoked = false;
+    const calls = mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /offers/mine': () => ({ json: [] }),
+      ...setupRoute,
+      'GET /tokens': () => ({ json: [] }),
+      ...setupRoute,
+      'GET /oauth/grants': () => ({
+        json: revoked
+          ? []
+          : [
+              {
+                id: 'g1',
+                clientName: 'Claude Code',
+                redirectHost: 'localhost',
+                createdAt: new Date(Date.now() - 3600_000).toISOString(),
+                lastUsedAt: null,
+              },
+            ],
+      }),
+      'DELETE /oauth/grants/g1': () => {
+        revoked = true;
+        return { status: 204 };
+      },
+    });
+    renderApp('/claude-code');
+    const row = await screen.findByRole('article', { name: 'App Claude Code' });
+    expect(within(row).getByText('localhost')).toBeTruthy();
+    expect(within(row).getByText(/Last used never/)).toBeTruthy();
+    fireEvent.click(within(row).getByRole('button', { name: 'Revoke' }));
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+    fireEvent.click(
+      within(await screen.findByRole('dialog', { name: 'Revoke access' })).getByRole('button', {
+        name: 'Confirm revoke',
+      }),
+    );
+    await waitFor(() => expect(calls.some((c) => c.path === '/oauth/grants/g1')).toBe(true));
+    expect(await screen.findByText('No connected app yet.')).toBeTruthy();
+  });
+
   it('creates a token, shows the command once and copies it', async () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
@@ -23,6 +88,7 @@ describe('Claude Code page', () => {
     const calls = mockApi({
       'GET /me': () => ({ json: me }),
       'GET /offers/mine': () => ({ json: [] }),
+      ...setupRoute,
       'GET /tokens': () => ({ json: listed ? [view()] : [] }),
       'POST /tokens': () => {
         listed = true;
@@ -61,6 +127,7 @@ describe('Claude Code page', () => {
     const calls = mockApi({
       'GET /me': () => ({ json: me }),
       'GET /offers/mine': () => ({ json: [] }),
+      ...setupRoute,
       'GET /tokens': () => ({
         json: [
           view({ revokedAt: revoked ? new Date().toISOString() : null }),

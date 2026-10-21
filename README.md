@@ -157,7 +157,7 @@ If `cloudflared` runs in Docker on the same Compose network, use `service: http:
 Notes:
 
 - WebSockets are enabled by default in Tunnel, which `/agent/ws` needs. Cloudflare closes idle WebSockets after about 100 s; the agent heartbeat is 30 s, so the link stays up.
-- Do not put Cloudflare Access in front of `/api/github/webhook`, `/agent/ws`, `/mcp` or `/install.sh`: they authenticate themselves (HMAC, agent credential, personal token, public script) and Access would block GitHub and the agents.
+- Do not put Cloudflare Access in front of `/api/github/webhook`, `/agent/ws`, `/mcp`, `/.well-known/oauth-*`, `/api/oauth/*` or `/install.sh`: they authenticate themselves (HMAC, agent credential, OAuth or personal token, public script) and Access would block GitHub, Claude Code and the agents.
 - "Always Use HTTPS" is fine.
 - Update the GitHub App URLs as in the next section; they use your public `https` domain.
 
@@ -292,13 +292,23 @@ Branches are named `orch/issue-<n>-*`. The project owner merges the PRs.
 
 orch exposes an MCP server so Claude Code can see the pool and submit work (the server needs no LLM key: your own Claude Code does the planning).
 
-1. In the web UI, open the **Claude Code** page and create a token. It is shown once, hashed in the database, and revocable.
-2. Add the server to Claude Code, replacing the placeholders:
+1. Add the server to Claude Code (no token to copy):
 
    ```sh
-   claude mcp add --transport http --scope user orch https://<domain>/mcp \
-     --header "Authorization: Bearer <token>"
+   claude mcp add --transport http --scope user orch https://<domain>/mcp
    ```
+
+2. In Claude Code, run `/mcp`, choose **orch**, then **Authenticate**.
+3. Your browser opens: sign in with GitHub (the same orch login and allowlist) and approve. Done.
+
+The **Claude Code** page of the web UI shows the command pre-filled with your domain and lists the connected apps, each with a **Revoke** button. Under the hood this is MCP OAuth 2.1: discovery (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`), dynamic client registration, the authorization code flow with PKCE (S256), access tokens (`orch_oat_…`, 1 hour) bound to `https://<domain>/mcp`, and rotating refresh tokens. Everything is stored hashed and audited. A member removed from the allowlist loses every token.
+
+**Advanced / scripts: personal access tokens.** For scripts and CI, create a personal access token on the **Claude Code** page (shown once, hashed, revocable) and send it as a header:
+
+```sh
+claude mcp add --transport http --scope user orch https://<domain>/mcp \
+  --header "Authorization: Bearer <orch_pat_token>"
+```
 
 Tools: `view_pool`, `list_tasks`, `submit_task` (atomic batch with dependencies; supports dry runs), `take_task`, `task_status`.
 

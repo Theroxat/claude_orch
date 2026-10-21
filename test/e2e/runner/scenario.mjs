@@ -847,6 +847,97 @@ async function main() {
   );
 
   await step(
+    'g. MCP OAuth: SDK client discovers, registers, signs in with GitHub, approves (PKCE), calls a tool',
+    async () => {
+      // The MCP SDK installed for the server (same one Claude Code's flow is modeled on).
+      const sdk = `${REPO}/apps/server/node_modules/@modelcontextprotocol/sdk/dist/esm`;
+      const { auth } = await import(`${sdk}/client/auth.js`);
+      const { Client } = await import(`${sdk}/client/index.js`);
+      const { StreamableHTTPClientTransport } = await import(`${sdk}/client/streamableHttp.js`);
+      const redirect = 'http://127.0.0.1:33418/callback';
+      const store = { client: undefined, tokens: undefined, verifier: '', authUrl: undefined };
+      const provider = {
+        get redirectUrl() {
+          return redirect;
+        },
+        get clientMetadata() {
+          return {
+            client_name: 'orch-e2e (Claude Code)',
+            redirect_uris: [redirect],
+            grant_types: ['authorization_code', 'refresh_token'],
+            response_types: ['code'],
+            token_endpoint_auth_method: 'none',
+          };
+        },
+        state: () => 'e2e-state',
+        clientInformation: () => store.client,
+        saveClientInformation: (c) => (store.client = c),
+        tokens: () => store.tokens,
+        saveTokens: (t) => (store.tokens = t),
+        redirectToAuthorization: (u) => (store.authUrl = u),
+        saveCodeVerifier: (v) => (store.verifier = v),
+        codeVerifier: () => store.verifier,
+      };
+      const serverUrl = new URL(`${SERVER}/mcp`);
+      const first = await auth(provider, { serverUrl });
+      assert(first === 'REDIRECT' && store.authUrl, 'SDK starts the authorization', first);
+      assert(store.client?.client_id?.startsWith('orch_cli_'), 'client registered', store.client);
+
+      // A fresh browser (no orch session): authorize -> GitHub sign-in -> back -> consent.
+      const browser = new Session('olivia');
+      const loc = (r) => new URL(r.headers.get('location'), SERVER);
+      let r = await browser.raw('GET', `${store.authUrl.pathname}${store.authUrl.search}`);
+      assert(r.status === 302 && loc(r).pathname === '/api/auth/github/login', 'sent to sign-in');
+      r = await browser.raw('GET', `${loc(r).pathname}${loc(r).search}`);
+      const ghAuthorize = new URL(r.headers.get('location'));
+      ghAuthorize.searchParams.set('login', 'olivia');
+      const r2 = await fetch(ghAuthorize, { redirect: 'manual' });
+      const cb = new URL(r2.headers.get('location'));
+      r = await browser.raw('GET', `${cb.pathname}${cb.search}`);
+      assert(r.status === 302 && loc(r).pathname === '/api/oauth/authorize', 'back to authorize');
+      r = await browser.raw('GET', `${loc(r).pathname}${loc(r).search}`);
+      const consentUrl = loc(r);
+      assert(consentUrl.pathname === '/oauth/consent', 'consent page', consentUrl.href);
+      const info = await browser.get(`/api/oauth/consent${consentUrl.search}`);
+      assert(info.clientName === 'orch-e2e (Claude Code)' && info.login === 'olivia', 'info', info);
+      const params = Object.fromEntries(consentUrl.searchParams);
+      const res = await browser.raw(
+        'POST',
+        '/api/oauth/consent',
+        { ...params, approve: true },
+        { origin: SERVER },
+      );
+      assert(res.status === 200, 'consent approved', res.status);
+      const back = new URL((await res.json()).redirectTo);
+      assert(back.searchParams.get('state') === 'e2e-state', 'state passed through', back.href);
+      const done = await auth(provider, {
+        serverUrl,
+        authorizationCode: back.searchParams.get('code'),
+      });
+      assert(done === 'AUTHORIZED', 'tokens issued', done);
+      assert(store.tokens.access_token.startsWith('orch_oat_'), 'OAuth access token', '');
+
+      const client = new Client({ name: 'orch-e2e', version: '0' });
+      await client.connect(
+        new StreamableHTTPClientTransport(serverUrl, { authProvider: provider }),
+      );
+      const out = await client.callTool({
+        name: 'list_tasks',
+        arguments: { projectFullName: PROJECT },
+      });
+      assert(!out.isError, 'list_tasks over OAuth', out);
+      log(`  list_tasks via OAuth -> ${out.content?.[0]?.text?.slice(0, 120)}`);
+      await client.close();
+      const grants = await browser.get('/api/oauth/grants');
+      assert(
+        grants.some((g) => g.clientName === 'orch-e2e (Claude Code)'),
+        'grant listed',
+        grants,
+      );
+    },
+  );
+
+  await step(
     'invariants: no auto offer ever went to bob; no task container left; work merged',
     async () => {
       const main = await gh('/_e2e/files?ref=main');

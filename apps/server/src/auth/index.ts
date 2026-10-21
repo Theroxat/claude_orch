@@ -12,10 +12,55 @@ export const SESSION_COOKIE = 'orch_session';
 const STATE_COOKIE = 'orch_oauth_state';
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 
+const NEXT_COOKIE = 'orch_login_next';
+
 declare module 'fastify' {
   interface FastifyRequest {
     user: User | null;
   }
+  interface FastifyInstance {
+    /** Sign-in allowlist, also applied to bearer tokens (PATs, OAuth access tokens). */
+    allowlist: Allowlist;
+  }
+}
+
+export interface Allowlist {
+  /**
+   * Whether the user may still use orch. `reauth` when the decision needs the user's GitHub
+   * token and it can no longer be refreshed (treated as signed out, nothing is revoked).
+   */
+  check(user: User): Promise<'allowed' | 'refused' | 'reauth'>;
+  isAllowed(login: string, accessToken: () => Promise<string>, cacheKey?: string): Promise<boolean>;
+}
+
+/**
+ * Called when a user is no longer on the allowlist: every credential goes (sessions, OAuth
+ * grants and their tokens, personal access tokens).
+ */
+export async function revokeUserAccess(
+  prisma: PrismaClient,
+  userId: string,
+  ip?: string,
+): Promise<void> {
+  const now = new Date();
+  await prisma.session.deleteMany({ where: { userId } });
+  await prisma.oAuthGrant.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: now },
+  });
+  await prisma.personalToken.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: now },
+  });
+  await audit(prisma, { actorUserId: userId, action: 'auth.revoked', ip });
+}
+
+/** A relative in-app path that is safe to redirect to after sign-in, or null. */
+export function safeNextPath(next: unknown): string | null {
+  if (typeof next !== 'string' || next.length > 4000) return null;
+  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return null;
+  for (const ch of next) if (ch.charCodeAt(0) < 0x20 || ch === '\\') return null;
+  return next;
 }
 
 export interface AuthDeps {
@@ -76,6 +121,14 @@ export async function getUserAccessToken(deps: AuthDeps, user: User): Promise<st
   }
 }
 
+const BEARER_ONLY = ['/mcp', '/api/oauth/token', '/api/oauth/register', '/api/oauth/revoke'];
+
+/** Paths authenticated by bearer token or OAuth client parameters only, never by cookie. */
+export function isBearerOnlyPath(url: string): boolean {
+  const path = url.split('?')[0]!;
+  return BEARER_ONLY.includes(path);
+}
+
 export function requireUser(req: FastifyRequest): User {
   if (!req.user) throw new HttpError(401, 'unauthorized', 'Sign in required');
   return req.user;
@@ -104,14 +157,9 @@ function refusedPage(login: string, config: Config): string {
 </body></html>`;
 }
 
-export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
-  const { config, prisma } = deps;
+export function createAllowlist(deps: AuthDeps): Allowlist {
+  const { config } = deps;
   const restricted = signInIsRestricted(config);
-  if (!restricted) {
-    app.log.warn(
-      'No sign-in allowlist: any GitHub account can sign in. Set ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS.',
-    );
-  }
   // Org-membership results of signed-in users, so removing someone takes effect within the TTL.
   const orgCache = new Map<string, { ok: boolean; at: number }>();
 
@@ -139,6 +187,28 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     if (cacheKey) orgCache.set(cacheKey, { ok, at: Date.now() });
     return ok;
   }
+
+  async function check(user: User): Promise<'allowed' | 'refused' | 'reauth'> {
+    try {
+      const ok = await isAllowed(user.login, () => getUserAccessToken(deps, user), user.id);
+      return ok ? 'allowed' : 'refused';
+    } catch (err) {
+      if (err instanceof HttpError) return 'reauth';
+      throw err;
+    }
+  }
+  return { isAllowed, check };
+}
+
+export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
+  const { config, prisma } = deps;
+  if (!signInIsRestricted(config)) {
+    app.log.warn(
+      'No sign-in allowlist: any GitHub account can sign in. Set ORCH_ALLOWED_GITHUB_LOGINS and/or ORCH_ALLOWED_GITHUB_ORGS.',
+    );
+  }
+  const allowlist = createAllowlist(deps);
+  app.decorate('allowlist', allowlist);
   const base = new URL(config.ORCH_BASE_URL);
   const secure = base.protocol === 'https:';
   const redirectUri = `${base.origin}/api/auth/github/callback`;
@@ -148,8 +218,9 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
   // CSRF: SameSite=Lax plus a same-origin check on state-changing requests.
   app.addHook('onRequest', async (req) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return;
-    // The MCP endpoint ignores cookies and requires a bearer token: no CSRF exposure.
-    if (req.url === '/mcp' || req.url.startsWith('/mcp?')) return;
+    // The MCP endpoint and the OAuth protocol endpoints ignore cookies (bearer token, PKCE,
+    // client_id): no CSRF exposure. The consent approval is NOT exempt.
+    if (isBearerOnlyPath(req.url)) return;
     const origin = req.headers.origin;
     if (origin && origin !== base.origin) {
       throw new HttpError(403, 'csrf', 'Cross-origin request rejected');
@@ -158,7 +229,7 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
 
   // Session lookup.
   app.addHook('onRequest', async (req) => {
-    if (req.url === '/mcp' || req.url.startsWith('/mcp?')) return; // bearer token only
+    if (isBearerOnlyPath(req.url)) return; // bearer token only
     const raw = parseCookies(req.headers.cookie)[SESSION_COOKIE];
     if (!raw) return;
     const session = await prisma.session.findUnique({
@@ -167,27 +238,22 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     });
     if (!session || session.expiresAt.getTime() <= Date.now()) return;
     // Existing sessions are re-checked against the allowlist (org checks are cached).
-    let allowed = true;
+    let decision: 'allowed' | 'refused' | 'reauth' = 'allowed';
     try {
-      allowed = await isAllowed(
-        session.user.login,
-        () => getUserAccessToken(deps, session.user),
-        session.userId,
-      );
+      decision = await allowlist.check(session.user);
     } catch (err) {
-      // Token expired or revoked: treated as signed out, the user signs in again (and is checked).
-      if (err instanceof HttpError) return;
       req.log.warn({ err }, 'Allowlist re-check failed; keeping the session');
     }
-    if (!allowed) {
-      await prisma.session.deleteMany({ where: { userId: session.userId } });
-      await audit(prisma, { actorUserId: session.userId, action: 'auth.revoked', ip: req.ip });
+    // Token expired or revoked: treated as signed out, the user signs in again (and is checked).
+    if (decision === 'reauth') return;
+    if (decision === 'refused') {
+      await revokeUserAccess(prisma, session.userId, req.ip);
       return;
     }
     req.user = session.user;
   });
 
-  app.get('/api/auth/github/login', async (_req, reply) => {
+  app.get('/api/auth/github/login', async (req, reply) => {
     if (!config.GITHUB_CLIENT_ID) {
       throw new HttpError(503, 'github_not_configured', 'GitHub App is not configured');
     }
@@ -196,7 +262,12 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     url.searchParams.set('client_id', config.GITHUB_CLIENT_ID);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('state', state);
-    reply.header('Set-Cookie', cookie(STATE_COOKIE, state, secure, 600));
+    // Optional return path (e.g. the OAuth consent page), restricted to this origin.
+    const next = safeNextPath((req.query as { next?: unknown }).next);
+    reply.header('Set-Cookie', [
+      cookie(STATE_COOKIE, state, secure, 600),
+      cookie(NEXT_COOKIE, next ?? '', secure, next ? 600 : 0),
+    ]);
     return reply.redirect(url.toString(), 302);
   });
 
@@ -220,7 +291,7 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
     }
     let allowed: boolean;
     try {
-      allowed = await isAllowed(gh.login, async () => tokens.accessToken);
+      allowed = await allowlist.isAllowed(gh.login, async () => tokens.accessToken);
     } catch (err) {
       req.log.warn({ err }, 'GitHub allowlist check failed');
       throw new HttpError(502, 'github_error', 'GitHub sign-in failed');
@@ -260,11 +331,13 @@ export function registerAuth(app: FastifyInstance, deps: AuthDeps): void {
       },
     });
     await audit(prisma, { actorUserId: user.id, action: 'auth.login', ip: req.ip });
+    const next = safeNextPath(parseCookies(req.headers.cookie)[NEXT_COOKIE]);
     reply.header('Set-Cookie', [
       cookie(SESSION_COOKIE, sessionValue, secure, SESSION_TTL_MS / 1000),
       cookie(STATE_COOKIE, '', secure, 0),
+      cookie(NEXT_COOKIE, '', secure, 0),
     ]);
-    return reply.redirect('/', 302);
+    return reply.redirect(next ?? '/', 302);
   });
 
   app.post('/api/auth/logout', async (req, reply) => {

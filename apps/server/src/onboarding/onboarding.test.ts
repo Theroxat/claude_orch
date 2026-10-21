@@ -130,4 +130,28 @@ describe('GET /api/onboarding', () => {
     await mk(new Date());
     expect((await steps(u)).mcp_connected.done).toBe(true);
   });
+
+  it('mcp_connected counts a live, non-revoked OAuth grant', async () => {
+    const u = await loginAs(app, gh);
+    const client = await prisma.oAuthClient.create({
+      data: {
+        clientIdHash: uid() + uid(),
+        name: 'Claude Code',
+        redirectUris: ['http://localhost:1/cb'],
+      },
+    });
+    const grant = await prisma.oAuthGrant.create({
+      data: { userId: u.userId, clientId: client.id, resource: 'http://x/mcp', scope: 'mcp' },
+    });
+    const refresh = (expiresAt: Date) =>
+      prisma.oAuthToken.create({
+        data: { tokenHash: uid() + uid(), grantId: grant.id, kind: 'REFRESH', expiresAt },
+      });
+    await refresh(new Date(Date.now() - 1000));
+    expect((await steps(u)).mcp_connected.done).toBe(false);
+    await refresh(new Date(Date.now() + 3600_000));
+    expect((await steps(u)).mcp_connected.done).toBe(true);
+    await prisma.oAuthGrant.update({ where: { id: grant.id }, data: { revokedAt: new Date() } });
+    expect((await steps(u)).mcp_connected.done).toBe(false);
+  });
 });

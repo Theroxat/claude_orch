@@ -50,6 +50,8 @@ export const CreatePersonalTokenResponseSchema = PersonalTokenViewSchema.extend(
   token: z.string().startsWith(PAT_PREFIX),
   /** `claude mcp add --transport http --scope user orch <url>/mcp --header "Authorization: Bearer <token>"` */
   mcpAddCommand: z.string(),
+  /** The OAuth alternative without a token: `claude mcp add ... <url>/mcp`, then `/mcp` -> Authenticate. */
+  mcpAddCommandOAuth: z.string().optional(),
 });
 export type CreatePersonalTokenResponse = z.infer<typeof CreatePersonalTokenResponseSchema>;
 

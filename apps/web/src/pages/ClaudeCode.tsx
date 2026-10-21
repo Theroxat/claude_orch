@@ -1,10 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PersonalTokenView } from '@orch/shared';
+import {
+  McpSetupViewSchema,
+  OAuthGrantListResponseSchema,
+  type OAuthGrantView,
+  type PersonalTokenView,
+} from '@orch/shared';
 import { useState } from 'react';
+import { api } from '../api/client';
 import { createToken, fetchTokens, revokeToken } from '../api/endpoints';
 import { relative } from '../time';
 
 const KEY = ['tokens'];
+const GRANTS_KEY = ['oauth-grants'];
+const SETUP_KEY = ['mcp-setup'];
 
 const TOOLS: [string, string][] = [
   ['view_pool', 'See who is in the pool, their availability and estimated margin.'],
@@ -47,7 +55,7 @@ function CreateTokenCard() {
   };
   return (
     <section className="card" aria-label="Create a token">
-      <h2>Connect Claude Code</h2>
+      <h3>Create a personal access token</h3>
       <p className="hint">
         Create a personal token, then run the generated <code>claude mcp add</code> command.
       </p>
@@ -90,6 +98,120 @@ function CreateTokenCard() {
         </div>
       )}
     </section>
+  );
+}
+
+function ConnectCard() {
+  const setup = useQuery({
+    queryKey: SETUP_KEY,
+    queryFn: () => api('GET', '/mcp/setup', { schema: McpSetupViewSchema }),
+  });
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const cmd = setup.data?.mcpAddCommandOAuth;
+  const copy = async () => {
+    if (!cmd) return;
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopied(true);
+      setCopyError(false);
+    } catch {
+      setCopyError(true);
+    }
+  };
+  return (
+    <section className="card" aria-label="Connect Claude Code">
+      <h2>Connect Claude Code</h2>
+      <ol>
+        <li>
+          Run this command in your terminal:
+          {setup.isPending && <p className="hint">Loading...</p>}
+          {setup.error && <p className="error">{setup.error.message}</p>}
+          {cmd && (
+            <>
+              <pre className="code" data-testid="mcp-oauth-command">
+                {cmd}
+              </pre>
+              <div className="row">
+                <button onClick={() => void copy()}>
+                  {copied ? 'Command copied' : 'Copy command'}
+                </button>
+              </div>
+              {copyError && (
+                <p className="error">Copy failed. Select the command and copy it by hand.</p>
+              )}
+            </>
+          )}
+        </li>
+        <li>
+          In Claude Code, run <code>/mcp</code>, choose <code>orch</code>, then Authenticate.
+        </li>
+        <li>Your browser opens: sign in with GitHub and approve. Done.</li>
+      </ol>
+      <p className="hint">No token to copy: access is granted through your GitHub sign-in.</p>
+    </section>
+  );
+}
+
+function ConnectedApps() {
+  const qc = useQueryClient();
+  const [toRevoke, setToRevoke] = useState<OAuthGrantView | null>(null);
+  const grants = useQuery({
+    queryKey: GRANTS_KEY,
+    queryFn: () => api('GET', '/oauth/grants', { schema: OAuthGrantListResponseSchema }),
+  });
+  const revoke = useMutation({
+    mutationFn: (g: OAuthGrantView) => api<unknown>('DELETE', `/oauth/grants/${g.id}`),
+    onSuccess: async () => {
+      setToRevoke(null);
+      await qc.invalidateQueries({ queryKey: GRANTS_KEY });
+    },
+  });
+  return (
+    <>
+      <h2>Connected apps</h2>
+      {grants.isPending && <p className="hint">Loading apps...</p>}
+      {grants.error && <p className="error">{grants.error.message}</p>}
+      {grants.isSuccess && grants.data.length === 0 && (
+        <p className="hint">No connected app yet.</p>
+      )}
+      {grants.data?.map((g) => (
+        <article key={g.id} className="card" aria-label={`App ${g.clientName}`}>
+          <div className="row between">
+            <strong>{g.clientName}</strong>
+            <span className="hint">{g.redirectHost}</span>
+          </div>
+          <div className="row">
+            <span className="hint">Authorized {relative(g.createdAt)}</span>
+            <span className="hint">Last used {when(g.lastUsedAt, 'never')}</span>
+          </div>
+          <div className="row">
+            <button className="danger" onClick={() => setToRevoke(g)}>
+              Revoke
+            </button>
+          </div>
+        </article>
+      ))}
+      {toRevoke && (
+        <div className="modal-backdrop">
+          <div className="modal" role="dialog" aria-label="Revoke access">
+            <h2>Revoke {toRevoke.clientName}?</h2>
+            <p>This app will lose access immediately and must be authorized again.</p>
+            {revoke.error && <p className="error">{revoke.error.message}</p>}
+            <div className="row">
+              <button onClick={() => setToRevoke(null)}>Cancel</button>
+              <button
+                className="danger"
+                disabled={revoke.isPending}
+                onClick={() => revoke.mutate(toRevoke)}
+              >
+                Confirm revoke
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -148,12 +270,12 @@ export function ClaudeCode() {
   return (
     <div>
       <h1>Claude Code</h1>
-      <CreateTokenCard />
+      <ConnectCard />
       <section className="card" aria-label="How to use">
         <h2>How to use</h2>
         <p>
-          After <code>claude mcp add</code>, ask Claude Code things like: &quot;split this feature
-          into tasks and send them to the orch pool&quot;.
+          Once connected, ask Claude Code things like: &quot;split this feature into tasks and send
+          them to the orch pool&quot;.
         </p>
         <ul className="plain">
           {TOOLS.map(([n, d]) => (
@@ -163,7 +285,14 @@ export function ClaudeCode() {
           ))}
         </ul>
       </section>
-      <h2>My tokens</h2>
+      <ConnectedApps />
+      <h2>Advanced / scripts: personal access tokens</h2>
+      <p className="hint">
+        For scripts and CI, use a personal access token (<code>orch_pat_...</code>) with the{' '}
+        <code>--header &quot;Authorization: Bearer ...&quot;</code> form of the command.
+      </p>
+      <CreateTokenCard />
+      <h3>My tokens</h3>
       {tokens.isPending && <p className="hint">Loading tokens...</p>}
       {tokens.error && <p className="error">{tokens.error.message}</p>}
       {tokens.isSuccess && tokens.data.length === 0 && <p className="hint">No token yet.</p>}

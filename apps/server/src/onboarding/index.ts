@@ -18,14 +18,16 @@ const step = (id: OnboardingStepId, state: OnboardingStep['state']): OnboardingS
 });
 const flag = (id: OnboardingStepId, ok: boolean) => step(id, ok ? 'done' : 'todo');
 
-/**
- * TODO(mcp-oauth): once the MCP OAuth grant table exists, count a non-revoked grant of the user
- * here. Until then PATs are the only signal.
- */
+/** A non-revoked MCP OAuth grant with a live refresh token means Claude Code is connected. */
 async function hasOauthGrant(prisma: PrismaClient, userId: string): Promise<boolean> {
-  void prisma;
-  void userId;
-  return false;
+  const n = await prisma.oAuthGrant.count({
+    where: {
+      userId,
+      revokedAt: null,
+      tokens: { some: { kind: 'REFRESH', usedAt: null, expiresAt: { gt: new Date() } } },
+    },
+  });
+  return n > 0;
 }
 
 export async function computeOnboarding(
