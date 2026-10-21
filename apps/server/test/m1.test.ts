@@ -117,6 +117,7 @@ describe('auth', () => {
       ['GET', '/api/projects/x/participants'],
       ['POST', '/api/projects/x/participants/y/approve'],
       ['POST', '/api/projects/x/participants/y/reject'],
+      ['POST', '/api/projects/x/participants/y/undo-rejection'],
     ] as const) {
       const res = await call(m, url, m === 'GET' ? undefined : {});
       expect(res.statusCode, `${m} ${url}`).toBe(401);
@@ -247,6 +248,11 @@ describe('projects', () => {
       ['GET', `/api/projects/${project.id}/participants`, undefined],
       ['POST', `/api/projects/${project.id}/participants/${victim.userId}/approve`, {}],
       ['POST', `/api/projects/${project.id}/participants/${victim.userId}/reject`, {}],
+      [
+        'POST',
+        `/api/projects/${project.id}/participants/${victim.userId}/undo-rejection`,
+        { to: 'approved' },
+      ],
     ] as const) {
       const res = await call(m, url, body);
       expect(res.statusCode, `${m} ${url}`).toBe(403);
@@ -437,6 +443,123 @@ describe('participation', () => {
     });
     const again = await put(member, { participating: true, budgetPercent: 20, mode: 'auto' });
     expect(again.json().status).toBe('pending');
+  });
+
+  it('the owner joins their own pool through the same PUT and is active at once', async () => {
+    const { owner, project, put } = await setup();
+    const res = await put(owner, { participating: true, budgetPercent: 40, mode: 'auto' });
+    expect(res.statusCode).toBe(200);
+    expect(ParticipationViewSchema.parse(res.json())).toMatchObject({
+      participating: true,
+      status: 'active',
+      rejectionReason: null,
+      previouslyRejectedAt: null,
+    });
+    const log = await prisma.auditLog.findFirstOrThrow({
+      where: { projectId: project.id, action: 'participation.updated', actorUserId: owner.userId },
+    });
+    expect(log.data).toMatchObject({ active: true, ownerAutoApproved: true, reapplied: false });
+    // The owner cannot be rejected from their own pool.
+    const rej = await api(app, owner)(
+      'POST',
+      `/api/projects/${project.id}/participants/${owner.userId}/reject`,
+      { reason: 'no' },
+    );
+    expect(rej.statusCode).toBe(400);
+    expect(rej.json().error.code).toBe('cannot_reject_owner');
+    const off = await put(owner, { participating: false, budgetPercent: 40, mode: 'auto' });
+    expect(off.json().status).toBe('inactive');
+  });
+
+  it('stores a rejection reason, shows it to the member and keeps it on re-application', async () => {
+    const { owner, member, project, put } = await setup();
+    const path = `/api/projects/${project.id}/participants/${member.userId}`;
+    await put(member, { participating: true, budgetPercent: 20, mode: 'auto' });
+    const tooLong = await api(app, owner)('POST', `${path}/reject`, { reason: 'x'.repeat(501) });
+    expect(tooLong.statusCode).toBe(400);
+    const rej = await api(app, owner)('POST', `${path}/reject`, { reason: '  Not now  ' });
+    expect(rej.json()).toMatchObject({ status: 'rejected', rejectionReason: 'Not now' });
+    expect(rej.json().previouslyRejectedAt).toBeNull();
+
+    const disc = await api(app, member)('GET', '/api/projects/discover');
+    const item = (disc.json() as DiscoverItem[]).find((i) => i.project.id === project.id);
+    expect(item?.myParticipation).toMatchObject({ status: 'rejected', rejectionReason: 'Not now' });
+
+    const again = await put(member, { participating: true, budgetPercent: 20, mode: 'auto' });
+    expect(again.json()).toMatchObject({ status: 'pending', rejectionReason: 'Not now' });
+    expect(again.json().previouslyRejectedAt).toBeTruthy();
+    const list = await api(app, owner)('GET', `/api/projects/${project.id}/participants`);
+    expect(list.json()[0].participation).toMatchObject({
+      status: 'pending',
+      rejectionReason: 'Not now',
+    });
+    expect(list.json()[0].participation.previouslyRejectedAt).toBeTruthy();
+
+    const actions = await prisma.auditLog.findMany({
+      where: { projectId: project.id, action: { startsWith: 'participation.' } },
+      orderBy: { id: 'asc' },
+    });
+    expect(actions.map((a) => a.action)).toEqual([
+      'participation.updated',
+      'participation.rejected',
+      'participation.updated',
+    ]);
+    expect(actions[1]!.data).toEqual({ reason: 'Not now' });
+    expect(actions[2]!.data).toMatchObject({ reapplied: true, ownerAutoApproved: false });
+
+    // Approving clears the rejection history.
+    const ok = await api(app, owner)('POST', `${path}/approve`);
+    expect(ok.json()).toMatchObject({
+      status: 'active',
+      rejectionReason: null,
+      previouslyRejectedAt: null,
+    });
+  });
+
+  it('a reject without a body stores no reason', async () => {
+    const { owner, member, project, put } = await setup();
+    await put(member, { participating: true, budgetPercent: 20, mode: 'auto' });
+    const rej = await api(app, owner)(
+      'POST',
+      `/api/projects/${project.id}/participants/${member.userId}/reject`,
+    );
+    expect(rej.json()).toMatchObject({ status: 'rejected', rejectionReason: null });
+  });
+
+  it('the owner can undo a rejection, back to pending or approved', async () => {
+    const { owner, member, project, put } = await setup();
+    const path = `/api/projects/${project.id}/participants/${member.userId}`;
+    await put(member, { participating: true, budgetPercent: 20, mode: 'auto' });
+
+    const notRejected = await api(app, owner)('POST', `${path}/undo-rejection`, { to: 'pending' });
+    expect(notRejected.statusCode).toBe(409);
+    expect(notRejected.json().error.code).toBe('not_rejected');
+    const bad = await api(app, owner)('POST', `${path}/undo-rejection`, { to: 'active' });
+    expect(bad.statusCode).toBe(400);
+
+    await api(app, owner)('POST', `${path}/reject`, { reason: 'later' });
+    const pending = await api(app, owner)('POST', `${path}/undo-rejection`, { to: 'pending' });
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json()).toMatchObject({
+      status: 'pending',
+      participating: true,
+      budgetPercent: 20,
+      rejectionReason: null,
+      previouslyRejectedAt: null,
+    });
+
+    await api(app, owner)('POST', `${path}/reject`);
+    const approved = await api(app, owner)('POST', `${path}/undo-rejection`, { to: 'approved' });
+    expect(approved.json()).toMatchObject({ status: 'active', mode: 'auto' });
+
+    const undone = await prisma.auditLog.findMany({
+      where: { projectId: project.id, action: 'participation.rejection_undone' },
+      orderBy: { id: 'asc' },
+    });
+    expect(undone.map((a) => [a.targetUserId, a.data])).toEqual([
+      [member.userId, { to: 'pending' }],
+      [member.userId, { to: 'approved' }],
+    ]);
   });
 
   it('is active at once when the project does not require approval', async () => {

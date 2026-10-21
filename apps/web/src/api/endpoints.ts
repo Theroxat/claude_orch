@@ -23,6 +23,7 @@ import {
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
   type UpdateProjectRequest,
+  type UndoRejectionRequest,
   type UpsertParticipationRequest,
 } from '@orch/shared';
 import { z } from 'zod';
@@ -46,8 +47,19 @@ export const putParticipation = (id: string, body: UpsertParticipationRequest) =
   api('PUT', `/projects/${id}/participation`, { body, schema: ParticipationViewSchema });
 export const fetchParticipants = (id: string) =>
   api('GET', `/projects/${id}/participants`, { schema: z.array(ParticipantItemSchema) });
-export const decideParticipant = (id: string, userId: string, decision: 'approve' | 'reject') =>
+export const decideParticipant = (
+  id: string,
+  userId: string,
+  decision: 'approve' | 'reject',
+  reason?: string,
+) =>
   api('POST', `/projects/${id}/participants/${userId}/${decision}`, {
+    ...(decision === 'reject' && reason ? { body: { reason } } : {}),
+    schema: ParticipationViewSchema,
+  });
+export const undoRejection = (id: string, userId: string, body: UndoRejectionRequest) =>
+  api('POST', `/projects/${id}/participants/${userId}/undo-rejection`, {
+    body,
     schema: ParticipationViewSchema,
   });
 

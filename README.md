@@ -378,6 +378,8 @@ Everything goes through Docker; the host needs only `docker` with Compose and `s
 
 The first run copies `.env.example` to `.env`. Ports come from `ORCH_DEV_WEB_PORT` (8470) and `ORCH_DEV_API_PORT` (8471). GitHub sign-in needs a development GitHub App; the dev `.env` variables are the same `GITHUB_*` and `ORCH_ENCRYPTION_KEY` as in production, with callback `http://localhost:8470/api/auth/github/callback`.
 
+Database migrations live in `apps/server/prisma/migrations/`, one folder per migration named `YYYYMMDDHHMMSS_snake_name`, applied in sort order. Create them with `./dev prisma migrate dev --create-only` (or by hand) and give each new one a unique timestamp later than the latest existing folder. Applied migrations are immutable: never edit or rename one. In particular, the two folders sharing the `20261027000000` prefix are already applied in production and must keep their names.
+
 A dev member agent is available with `docker compose -f compose.dev.yaml --profile agent up -d --build agent` after setting `ORCH_DEV_ENROLL_TOKEN` in `.env`.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests, installer tests, production image builds and gitleaks. Pushing a `v*` tag runs `release.yml`, which publishes `orch-server`, `orch-web` and `orch-agent` to `ghcr.io/theroxat`.

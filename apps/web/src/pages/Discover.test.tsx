@@ -57,6 +57,18 @@ describe('Discover', () => {
     expect(calls.some((c) => c.method === 'PUT')).toBe(false);
   });
 
+  it('shows the owner reason next to a rejection', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/discover': () => ({
+        json: [item(part({ status: 'rejected', rejectionReason: 'Team is full' }))],
+      }),
+    });
+    renderApp('/discover');
+    expect(await screen.findByText('Rejected by owner')).toBeTruthy();
+    expect(screen.getByText(/Owner's reason: Team is full/)).toBeTruthy();
+  });
+
   it('shows the pending owner approval state and mode explanations', async () => {
     mockApi({
       'GET /me': () => ({ json: me }),

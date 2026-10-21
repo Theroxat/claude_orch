@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { ApiParticipationMode, DiscoverItem } from '@orch/shared';
+import type { QueryKey } from '@tanstack/react-query';
 import { putParticipation } from '../api/endpoints';
 import { useChangeCount } from '../ui/presence';
 import { useToast } from '../ui/Toast';
@@ -26,14 +27,23 @@ function CannotParticipate({ item }: { item: DiscoverItem }) {
   );
 }
 
-export function ParticipationForm({ item }: { item: DiscoverItem }) {
+interface FormProps {
+  item: DiscoverItem;
+  /** Optional heading shown above the form. */
+  title?: string;
+  /** Extra queries to refresh after a save (Discover is always refreshed). */
+  invalidateKeys?: QueryKey[];
+}
+
+export function ParticipationForm(props: FormProps) {
+  const { item } = props;
   if (!item.canParticipate && !item.myParticipation?.participating) {
     return <CannotParticipate item={item} />;
   }
-  return <ParticipationFields item={item} />;
+  return <ParticipationFields {...props} />;
 }
 
-function ParticipationFields({ item }: { item: DiscoverItem }) {
+function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
   const qc = useQueryClient();
   const toast = useToast();
   const p = item.myParticipation;
@@ -51,7 +61,11 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
     }) => putParticipation(id, v),
     onSuccess: () => {
       toast(`Participation in ${item.project.fullName} saved`);
-      return qc.invalidateQueries({ queryKey: ['projects', 'discover'] });
+      return Promise.all(
+        [['projects', 'discover'], ...invalidateKeys].map((queryKey) =>
+          qc.invalidateQueries({ queryKey }),
+        ),
+      );
     },
   });
   const parsed = validateBudget(budget);
@@ -65,6 +79,7 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
         save.mutate({ participating, budgetPercent: parsed, mode });
       }}
     >
+      {title && <h3>{title}</h3>}
       <div className="row">
         <label className="check-line">
           <input
@@ -80,6 +95,12 @@ function ParticipationFields({ item }: { item: DiscoverItem }) {
           {p?.status === 'rejected' && <span className="badge stop">Rejected by owner</span>}
         </span>
       </div>
+      {p?.status === 'rejected' && (
+        <p className="hint" role="note">
+          {p.rejectionReason ? `Owner's reason: ${p.rejectionReason}` : 'The owner gave no reason.'}{' '}
+          Saving with Participate checked asks again.
+        </p>
+      )}
       <div className="grid">
         <div className="field">
           <label htmlFor={`budget-${id}`}>Budget (% of my Claude capacity)</label>

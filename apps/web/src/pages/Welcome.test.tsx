@@ -108,6 +108,43 @@ describe('setup wizard', () => {
     expect(link.getAttribute('target')).toBe('_blank');
   });
 
+  it('offers the owner an optional participation in their own pool once the repo is added', async () => {
+    const calls = mockApi(
+      routes(() => ['done', 'done', 'todo', 'todo', 'todo', 'todo'], {
+        'GET /projects/mine': () => ({ json: [project] }),
+        'GET /projects/p1/participants': () => ({ json: [] }),
+        'PUT /projects/p1/participation': () => ({
+          json: {
+            id: 'pa1',
+            projectId: 'p1',
+            userId: 'u1',
+            participating: true,
+            budgetPercent: 20,
+            mode: 'approval',
+            status: 'active',
+            approvedAt: 'now',
+          },
+        }),
+      }),
+    );
+    renderApp('/welcome');
+    await title();
+    click('I want to add my own repository');
+    expect((await title()).textContent).toBe('Add your repository');
+    const pool = await screen.findByRole('group', {
+      name: /Optional: lend your own capacity to octo\/repo/,
+    });
+    fireEvent.click(within(pool).getByLabelText('Participate'));
+    fireEvent.click(within(pool).getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: 'PUT',
+        path: '/projects/p1/participation',
+        body: { participating: true, budgetPercent: 20, mode: 'approval' },
+      }),
+    );
+  });
+
   it('moves focus to the step title and supports Back', async () => {
     mockApi(routes(() => ALL_TODO));
     renderApp('/welcome');
