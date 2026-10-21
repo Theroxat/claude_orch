@@ -65,6 +65,8 @@ export function OAuthConsent() {
     );
   }
   const d = info.data;
+  // Still disabled after success: the page is navigating away, a second POST would mint a code.
+  const busy = decide.isPending || decide.isSuccess;
   return (
     <section className="card" aria-label="Authorize application">
       <h2>Authorize {d.clientName}</h2>
@@ -76,10 +78,10 @@ export function OAuthConsent() {
       <p className="hint">Only approve if you just started this from Claude Code.</p>
       {decide.error && <p className="error">{decide.error.message}</p>}
       <div className="row">
-        <button className="primary" disabled={decide.isPending} onClick={() => decide.mutate(true)}>
+        <button className="primary" disabled={busy} onClick={() => decide.mutate(true)}>
           Approve
         </button>
-        <button disabled={decide.isPending} onClick={() => decide.mutate(false)}>
+        <button disabled={busy} onClick={() => decide.mutate(false)}>
           Deny
         </button>
       </div>
