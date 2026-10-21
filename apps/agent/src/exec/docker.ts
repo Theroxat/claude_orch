@@ -32,9 +32,13 @@ export interface DockerOps {
   remove(container: string): Promise<void>;
   removeImage(tag: string): Promise<void>;
   exists(container: string): Promise<boolean>;
-  /** Freezes / resumes every process of a container (best effort, used while committing). */
+  /** Freezes / resumes every process of a container (used while committing). */
   pause(container: string): Promise<void>;
   unpause(container: string): Promise<void>;
+  /** True when the container exists and is running (paused counts as running). */
+  isRunning(container: string): Promise<boolean>;
+  /** Names of the running, not paused containers of a compose project. */
+  composeRunning(project: string): Promise<string[]>;
   /**
    * Names and `label` values of the containers / networks carrying `label` AND
    * `orch.agent=<agentId>` (never another agent's resources on a shared daemon).
@@ -155,6 +159,34 @@ export class CliDocker implements DockerOps {
 
   async unpause(container: string): Promise<void> {
     await this.d(['unpause', container], undefined, 60_000);
+  }
+
+  async isRunning(container: string): Promise<boolean> {
+    const r = await this.runner.run(this.bin, [
+      'container',
+      'inspect',
+      '--format',
+      '{{.State.Running}}',
+      container,
+    ]);
+    return r.code === 0 && r.stdout.trim() === 'true';
+  }
+
+  async composeRunning(project: string): Promise<string[]> {
+    // status=running excludes paused containers.
+    const out = await this.d([
+      'ps',
+      '--filter',
+      `label=${COMPOSE_PROJECT_LABEL}=${project}`,
+      '--filter',
+      'status=running',
+      '--format',
+      '{{.Names}}',
+    ]);
+    return out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '');
   }
 
   async listLabeled(kind: 'container' | 'network', label: string, agentId: string) {

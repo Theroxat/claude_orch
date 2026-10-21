@@ -2,16 +2,21 @@
  * Guard for a task repository's compose file (sidecar services). The agent holds the host docker
  * socket, so a compose file that mounts host paths, joins host namespaces or adds privileges is
  * root on the host. Two layers:
- *  1. `scanComposeSources`: raw-text pre-scan, run BEFORE docker reads anything, that follows
- *     `include` / `extends` / `env_file` references and refuses remote or out-of-root ones
- *     (docker itself would read those files while building the model);
- *  2. `checkComposeModel`: audit of the resolved model from `docker compose config --format json`.
- * `sanitizeComposeModel` then strips published ports and adds our labels, and the sanitized model
- * is what actually gets run. There is no YAML library on purpose: the scan is a small
- * indentation-based extractor that fails closed when it cannot understand a reference block.
+ *  1. `scanComposeSources`: run BEFORE docker reads anything. Every compose file is parsed with a
+ *     real YAML parser (any parse error fails closed) and its `include` / `extends` / `env_file` /
+ *     `label_file` references are followed; remote, interpolated or out-of-root ones are refused,
+ *     and so is an implicit `.env` that resolves outside the root (docker itself would read all
+ *     of those files while building the model);
+ *  2. `checkComposeModel`: audit of the resolved model from `docker compose config --format json`
+ *     with ALLOWLISTS: only known-safe keys are accepted per service, build, deploy, network,
+ *     volume, secret and config, and every other key is refused by name. A key added by a future
+ *     compose version is therefore refused until someone reviews it.
+ * `sanitizeComposeModel` then strips published ports and restart policies and adds our labels,
+ * and the sanitized model is what actually gets run.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { parseAllDocuments } from 'yaml';
 import { isInside, realPathLoose, resolveInside } from './paths.js';
 
 export class ComposeGuardError extends Error {
@@ -31,8 +36,30 @@ function strList(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
+function asList(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [v];
+}
+
+/** null, false, '', [] or {}: a forbidden key may be present with such a value. */
+function isEmpty(v: unknown): boolean {
+  if (v === undefined || v === null || v === false || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (isObj(v)) return Object.keys(v).length === 0;
+  return false;
+}
+
+/** Extension fields (`x-*`) are ignored by compose. */
+const isExtension = (k: string): boolean => k.startsWith('x-');
+
+/** Problems for every key of `obj` outside `allowed` (extension fields excepted). */
+function unknownKeys(where: string, obj: Json, allowed: ReadonlySet<string>, out: string[]): void {
+  for (const k of Object.keys(obj)) {
+    if (!allowed.has(k) && !isExtension(k)) out.push(`${where}: "${k}" is not allowed`);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
-// Raw-text scan
+// Source scan
 // ---------------------------------------------------------------------------------------------
 
 /** What a reference is for: `file` ones are scanned recursively, `dir` / `env` only contained. */
@@ -40,222 +67,93 @@ type RefKind = 'file' | 'dir' | 'env';
 
 interface Ref {
   kind: RefKind;
-  /** The key it came from (`include`, `extends`, `env_file`), for messages. */
+  /** The key it came from (`include`, `extends`, `env_file`, ...), for messages. */
   key: string;
   path: string;
 }
 
 const REMOTE = /:\/\/|^(oci:|git@|http)/i;
 
-function unquote(s: string): string {
-  const t = s.trim();
-  if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t.endsWith(t[0] as string)) {
-    return t.slice(1, -1);
-  }
-  return t;
-}
-
-/** Splits `a, [b, c], {d: e}` at top-level commas. */
-function splitFlow(s: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let quote = '';
-  let cur = '';
-  for (const ch of s) {
-    if (quote) {
-      if (ch === quote) quote = '';
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '[' || ch === '{') depth++;
-    else if (ch === ']' || ch === '}') depth--;
-    if (ch === ',' && depth === 0 && !quote) {
-      out.push(cur);
-      cur = '';
-    } else cur += ch;
-  }
-  if (cur.trim()) out.push(cur);
-  return out.map((x) => x.trim()).filter((x) => x !== '');
-}
-
-/** Maps a reference key to the kind of reference its value is (null = not a path key). */
-type KeyKinds = Record<string, RefKind>;
-
-const INCLUDE_KEYS: KeyKinds = { path: 'file', env_file: 'env', project_directory: 'dir' };
-const EXTENDS_KEYS: KeyKinds = { file: 'file' };
-const ENV_KEYS: KeyKinds = { path: 'env' };
-
 /**
- * Paths found in an inline value: a scalar (when `scalarKind` is set), a flow list, or a flow
- * map whose known keys hold paths. Anything fancier (alias, anchor, tag, block scalar) is a problem.
+ * Parses a compose text (YAML, and so JSON). Fails closed: a syntax error, a duplicate key, an
+ * unknown alias or several documents are problems. Merge keys (`<<`) are applied like compose.
  */
-function inlineRefs(
-  value: string,
-  keys: KeyKinds,
-  scalarKind: RefKind | null,
-  key: string,
-  out: Ref[],
-  problems: string[],
-): void {
-  const v = value.trim();
-  if (v === '') return;
-  if (/^[*&!|>]/.test(v)) {
-    problems.push(`${key}: unsupported YAML construct "${v}"`);
-  } else if (v.startsWith('[') && v.endsWith(']')) {
-    for (const item of splitFlow(v.slice(1, -1)))
-      inlineRefs(item, keys, scalarKind, key, out, problems);
-  } else if (v.startsWith('{') && v.endsWith('}')) {
-    for (const pair of splitFlow(v.slice(1, -1))) {
-      const m = /^(["']?)([\w.<-]+)\1\s*:\s*(.*)$/.exec(pair);
-      if (!m) {
-        problems.push(`${key}: cannot parse "${pair}"`);
-        continue;
-      }
-      const kind = keys[m[2] as string];
-      if (kind) inlineRefs(m[3] ?? '', keys, kind, key, out, problems);
-    }
-  } else if (v.startsWith('[') || v.startsWith('{')) {
-    problems.push(`${key}: cannot parse "${v}"`);
-  } else if (scalarKind) {
-    out.push({ kind: scalarKind, key, path: unquote(v) });
+export function parseComposeText(text: string): { doc: unknown; problems: string[] } {
+  const fail = (m: string) => ({ doc: null, problems: [m] });
+  let docs: ReturnType<typeof parseAllDocuments>;
+  try {
+    docs = parseAllDocuments(text, { merge: true, uniqueKeys: true, prettyErrors: false });
+  } catch (err) {
+    return fail(`invalid YAML: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (docs.length === 0) return { doc: null, problems: [] };
+  if (docs.length > 1) return fail('several YAML documents in one file are not supported');
+  const d = docs[0]!;
+  if (d.errors.length > 0) {
+    return {
+      doc: null,
+      problems: d.errors.map((e) => `invalid YAML: ${e.message.split('\n')[0]}`),
+    };
+  }
+  try {
+    return { doc: d.toJS({ maxAliasCount: 1000 }) as unknown, problems: [] };
+  } catch (err) {
+    return fail(`invalid YAML: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
-interface Line {
-  indent: number;
-  text: string;
-}
-
-/** Non-blank, comment-free lines of a YAML text. */
-function yamlLines(text: string): Line[] {
-  const out: Line[] = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const noComment = /["']/.test(raw) ? raw : raw.replace(/(^|\s)#.*$/, '');
-    const t = noComment.trimEnd();
-    if (t.trim() === '' || t.trim() === '---') continue;
-    out.push({ indent: t.length - t.trimStart().length, text: t.trim() });
-  }
-  return out;
-}
-
-/**
- * Extracts the references of the block opened by `key:` at line `i`. Returns the index of the
- * first line after the block.
- */
-function blockRefs(
-  lines: Line[],
-  i: number,
-  key: string,
-  keys: KeyKinds,
-  scalarKind: RefKind | null,
-  out: Ref[],
-  problems: string[],
-): number {
-  const head = lines[i] as Line;
-  const m = /^(?:-\s+)?["']?[\w.-]+["']?\s*:\s*(.*)$/.exec(head.text);
-  const inline = m?.[1] ?? '';
-  const before = out.length + problems.length;
-  if (inline !== '') {
-    inlineRefs(inline, keys, scalarKind, key, out, problems);
-    return i + 1;
-  }
-  // Block form: deeper lines, or `- item` lines at the key's own indent.
-  let j = i + 1;
-  let nested: RefKind | null = null;
-  while (j < lines.length) {
-    const l = lines[j] as Line;
-    const sameIndentItem = l.indent === head.indent && l.text.startsWith('-');
-    if (l.indent <= head.indent && !sameIndentItem) break;
-    j++;
-    const content = l.text.replace(/^-\s*/, '');
-    const isItem = l.text.startsWith('-');
-    const kv = /^["']?([\w.<-]+)["']?\s*:(?:\s+(.*))?$/.exec(content);
-    if (kv) {
-      const kind = keys[kv[1] as string];
-      if (kv[1] === '<<') problems.push(`${key}: unsupported YAML merge key`);
-      else if (kind) {
-        const val = kv[2] ?? '';
-        if (val === '') nested = kind;
-        else inlineRefs(val, keys, kind, key, out, problems);
-      }
-    } else if (/^[*&!|>]/.test(content)) {
-      problems.push(`${key}: unsupported YAML construct "${content}"`);
-    } else if (isItem) {
-      // A plain `- value` item: a path, unless it is a service-name style scalar we ignore.
-      inlineRefs(content, keys, nested ?? scalarKind, key, out, problems);
-    } else if (nested) {
-      inlineRefs(content, keys, nested, key, out, problems);
-    }
-  }
-  if (key !== 'extends' && out.length + problems.length === before) {
-    problems.push(`${key}: cannot understand this block (no path found)`);
-  }
-  return j;
-}
-
-/** References (and parse problems) of a YAML compose text. */
-function yamlRefs(text: string): { refs: Ref[]; problems: string[] } {
+/** References of a parsed compose document. Unexpected shapes are problems (fail closed). */
+function docRefs(doc: unknown): { refs: Ref[]; problems: string[]; includeDirs: string[] } {
   const refs: Ref[] = [];
   const problems: string[] = [];
-  const lines = yamlLines(text);
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^(?:-\s+)?["']?(include|extends|env_file)["']?\s*:/.exec((lines[i] as Line).text);
-    if (!m) {
-      // Flow-style top-level map: `{include: [...], services: {...}}`.
-      if (/^\{.*["']?(include|extends|env_file)["']?\s*:/.test((lines[i] as Line).text)) {
-        problems.push('flow-style compose document is not supported');
-      }
-      continue;
-    }
-    const key = m[1] as string;
-    if (key === 'include') {
-      // Top-level only; a service attribute with that name is harmless but scanned anyway.
-      blockRefs(lines, i, key, INCLUDE_KEYS, 'file', refs, problems);
-    } else if (key === 'extends') {
-      const inline = /:\s*(.*)$/.exec((lines[i] as Line).text)?.[1] ?? '';
-      // `extends: web` (service of the same file) has no path to follow.
-      if (inline !== '' && !/^[{[*&!|>]/.test(inline)) continue;
-      blockRefs(lines, i, key, EXTENDS_KEYS, null, refs, problems);
-    } else {
-      blockRefs(lines, i, key, ENV_KEYS, 'env', refs, problems);
-    }
-  }
-  return { refs, problems };
-}
-
-/** References of a JSON compose document (parsed structurally). */
-function jsonRefs(doc: unknown): { refs: Ref[]; problems: string[] } {
-  const refs: Ref[] = [];
-  const problems: string[] = [];
+  const includeDirs: string[] = [];
   const add = (kind: RefKind, key: string, v: unknown): void => {
     if (typeof v === 'string') refs.push({ kind, key, path: v });
-    else problems.push(`${key}: unexpected value`);
+    else problems.push(`${key}: expected a path, got ${JSON.stringify(v) ?? typeof v}`);
   };
-  const envFile = (v: unknown): void => {
-    for (const item of Array.isArray(v) ? v : [v]) {
-      if (isObj(item)) add('env', 'env_file', item.path);
-      else add('env', 'env_file', item);
-    }
+  const envFiles = (key: string, v: unknown): void => {
+    if (v === null || v === undefined) return;
+    for (const item of asList(v)) add('env', key, isObj(item) ? item.path : item);
   };
-  if (!isObj(doc)) return { refs, problems: ['compose file is not a JSON object'] };
-  if (doc.include !== undefined) {
-    for (const item of Array.isArray(doc.include) ? doc.include : [doc.include]) {
+  if (doc === null || doc === undefined) return { refs, problems, includeDirs };
+  if (!isObj(doc)) return { refs, problems: ['compose file is not a mapping'], includeDirs };
+  if (doc.include !== undefined && doc.include !== null) {
+    for (const item of asList(doc.include)) {
       if (typeof item === 'string') add('file', 'include', item);
       else if (isObj(item)) {
-        for (const p of Array.isArray(item.path) ? item.path : [item.path])
-          add('file', 'include', p);
-        if (item.env_file !== undefined) envFile(item.env_file);
-        if (item.project_directory !== undefined) add('dir', 'include', item.project_directory);
-      } else problems.push('include: unexpected value');
+        if (item.path === undefined) problems.push('include: entry without path');
+        for (const p of asList(item.path)) add('file', 'include', p);
+        envFiles('include env_file', item.env_file);
+        if (item.project_directory !== undefined && item.project_directory !== null) {
+          add('dir', 'include project_directory', item.project_directory);
+          if (typeof item.project_directory === 'string') includeDirs.push(item.project_directory);
+        }
+      } else problems.push(`include: unexpected entry ${JSON.stringify(item)}`);
     }
   }
-  if (isObj(doc.services)) {
-    for (const svc of Object.values(doc.services)) {
-      if (!isObj(svc)) continue;
-      if (isObj(svc.extends) && svc.extends.file !== undefined)
-        add('file', 'extends', svc.extends.file);
-      if (svc.env_file !== undefined) envFile(svc.env_file);
+  if (doc.services !== undefined && doc.services !== null) {
+    if (!isObj(doc.services)) problems.push('services: expected a mapping');
+    else {
+      for (const [name, svc] of Object.entries(doc.services)) {
+        if (svc === null) continue;
+        if (!isObj(svc)) {
+          problems.push(`service "${name}": expected a mapping`);
+          continue;
+        }
+        const ext = svc.extends;
+        if (isObj(ext)) {
+          if (ext.file !== undefined && ext.file !== null) add('file', 'extends file', ext.file);
+        } else if (ext !== undefined && ext !== null && typeof ext !== 'string') {
+          problems.push(`service "${name}": unexpected extends`);
+        }
+        envFiles('env_file', svc.env_file);
+        if (svc.label_file !== undefined && svc.label_file !== null) {
+          for (const p of asList(svc.label_file)) add('env', 'label_file', p);
+        }
+      }
     }
   }
-  return { refs, problems };
+  return { refs, problems, includeDirs };
 }
 
 function stripBom(s: string): string {
@@ -264,13 +162,31 @@ function stripBom(s: string): string {
 
 /**
  * Scans `file` and, recursively, the in-root files it includes or extends. Every referenced
- * path (include, extends file, env_file, project_directory) must resolve inside `root`; remote
- * references and references docker could interpolate are refused. Returns the problems.
+ * path (include, extends file, env_file, label_file, project_directory) must resolve inside
+ * `root`; remote references and references docker could interpolate are refused. The `.env`
+ * docker reads implicitly next to each compose file / project directory must also resolve inside
+ * `root` (a `.env` symlink to an agent file would be read for interpolation). Returns the problems.
  */
 export function scanComposeSources(root: string, file: string): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   const shown = (f: string): string => relative(realPathLoose(root), realPathLoose(f)) || f;
+
+  const envDirs = new Set<string>();
+  const dotEnv = (dir: string): void => {
+    if (envDirs.has(realPathLoose(dir))) return;
+    envDirs.add(realPathLoose(dir));
+    const f = join(dir, '.env');
+    let present = false;
+    try {
+      lstatSync(f);
+      present = true;
+    } catch {
+      // absent: nothing to read
+    }
+    if (present && !isInside(root, f))
+      problems.push(`${relative(root, f) || f} resolves outside the repository`);
+  };
 
   const scan = (f: string): void => {
     if (!isInside(root, f)) {
@@ -287,16 +203,11 @@ export function scanComposeSources(root: string, file: string): string[] {
       problems.push(`${shown(f)} cannot be read`);
       return;
     }
-    let found: { refs: Ref[]; problems: string[] };
-    if (/^\s*\{/.test(text)) {
-      try {
-        found = jsonRefs(JSON.parse(text));
-      } catch {
-        found = yamlRefs(text);
-      }
-    } else found = yamlRefs(text);
-    for (const p of found.problems) problems.push(`${shown(f)}: ${p}`);
+    const parsed = parseComposeText(text);
+    const found = docRefs(parsed.doc);
+    for (const p of [...parsed.problems, ...found.problems]) problems.push(`${shown(f)}: ${p}`);
     const base = dirname(real);
+    dotEnv(base);
     for (const ref of found.refs) {
       const where = `${shown(f)}: ${ref.key} "${ref.path}"`;
       if (REMOTE.test(ref.path)) {
@@ -310,23 +221,216 @@ export function scanComposeSources(root: string, file: string): string[] {
         if (target === null) problems.push(`${where} is outside the repository`);
         else if (ref.kind === 'file' && existsSync(target) && statSync(target).isFile())
           scan(target);
+        else if (ref.kind === 'dir') dotEnv(target);
       }
     }
   };
 
+  dotEnv(root);
   scan(isAbsolute(file) ? file : resolve(root, file));
   return problems;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Resolved model
+// Resolved model: allowlists
 // ---------------------------------------------------------------------------------------------
 
+const set = (...k: string[]): ReadonlySet<string> => new Set(k);
+
+/** Service keys accepted with any value (resource limits, metadata, process settings). */
+const SERVICE_FREE = set(
+  'attach',
+  'cap_drop',
+  'command',
+  'configs',
+  'container_name', // removed by sanitize
+  'cpu_count',
+  'cpu_percent',
+  'cpu_period',
+  'cpu_quota',
+  'cpu_shares',
+  'cpus',
+  'cpuset',
+  'depends_on',
+  'develop', // removed by sanitize (only `compose watch` reads it)
+  'dns',
+  'dns_opt',
+  'dns_search',
+  'domainname',
+  'entrypoint',
+  'environment',
+  'expose',
+  'extra_hosts',
+  'group_add',
+  'healthcheck',
+  'hostname',
+  'image',
+  'init',
+  'labels',
+  'links',
+  'mac_address',
+  'mem_limit',
+  'mem_reservation',
+  'mem_swappiness',
+  'memswap_limit',
+  'oom_score_adj',
+  'pids_limit',
+  'platform',
+  'ports', // removed by sanitize
+  'profiles',
+  'pull_policy',
+  'read_only',
+  'restart', // removed by sanitize
+  'scale',
+  'secrets',
+  'shm_size',
+  'stdin_open',
+  'stop_grace_period',
+  'stop_signal',
+  'sysctls',
+  'tmpfs',
+  'tty',
+  'ulimits',
+  'user',
+  'working_dir',
+);
+
 /**
- * Any explicit confinement profile is refused, not only `unconfined`/`disable`: a custom seccomp
- * profile can allow every syscall, and an SELinux label can pick a privileged type (spc_t).
+ * Service keys only accepted when empty / false: each one grants host access or privileges
+ * (devices, capabilities, runtimes, the docker API socket, GPU passthrough, provider plugins run
+ * by the agent's compose CLI, ...).
  */
-const UNSAFE_SECURITY_OPT = /^(apparmor|seccomp|label|systempaths)[=:]/;
+const SERVICE_EMPTY_ONLY = set(
+  'annotations',
+  'blkio_config',
+  'cap_add',
+  'cgroup_parent',
+  'cpu_rt_period',
+  'cpu_rt_runtime',
+  'credential_spec',
+  'device_cgroup_rules',
+  'devices',
+  'external_links',
+  'gpus',
+  'isolation',
+  'models',
+  'oom_kill_disable',
+  'privileged',
+  'provider',
+  'runtime',
+  'storage_opt',
+  'use_api_socket',
+);
+
+/** Service keys with a dedicated check below. */
+const SERVICE_CHECKED = set(
+  'build',
+  'cgroup',
+  'deploy',
+  'env_file',
+  'ipc',
+  'label_file',
+  'logging',
+  'network_mode',
+  'networks',
+  'pid',
+  'post_start',
+  'pre_stop',
+  'security_opt',
+  'userns_mode',
+  'uts',
+  'volumes',
+  'volumes_from',
+);
+
+/** `no-new-privileges` (optionally `:true` / `=true` / `:false`) is the only security_opt. */
+const SAFE_SECURITY_OPT = /^no-new-privileges([:=](true|false))?$/;
+
+const BUILD_FREE = set(
+  'additional_contexts', // checked
+  'args',
+  'cache_from', // checked
+  'context', // checked
+  'dockerfile', // checked
+  'dockerfile_inline',
+  'extra_hosts',
+  'labels',
+  'network', // checked
+  'no_cache',
+  'platforms',
+  'provenance',
+  'pull',
+  'sbom',
+  'shm_size',
+  'target',
+  'ulimits',
+);
+/**
+ * Build keys only accepted when empty: secrets / ssh / entitlements expose agent credentials,
+ * `cache_to` and `tags` write with the member's registry credentials or over their image tags.
+ */
+const BUILD_EMPTY_ONLY = set(
+  'cache_to',
+  'entitlements',
+  'isolation',
+  'privileged',
+  'secrets',
+  'ssh',
+  'tags',
+);
+
+const DEPLOY_KEYS = set(
+  'endpoint_mode',
+  'labels',
+  'mode',
+  'placement',
+  'replicas',
+  'resources',
+  'restart_policy', // removed by sanitize
+  'rollback_config',
+  'update_config',
+);
+const LIMIT_KEYS = set('cpus', 'memory', 'pids');
+const RESERVATION_KEYS = set('cpus', 'memory');
+
+const LOGGING_DRIVERS = set('json-file', 'local', 'none');
+const HOOK_KEYS = set('command', 'environment', 'user', 'working_dir', 'privileged');
+const SERVICE_NETWORK_KEYS = set(
+  'aliases',
+  'gw_priority',
+  'ipv4_address',
+  'ipv6_address',
+  'link_local_ips',
+  'mac_address',
+  'priority',
+);
+const VOLUME_ENTRY_KEYS = set(
+  'bind',
+  'consistency',
+  'image',
+  'read_only',
+  'source',
+  'target',
+  'tmpfs',
+  'type',
+  'volume',
+);
+const TOP_KEYS = set('name', 'networks', 'secrets', 'configs', 'services', 'volumes', 'version');
+const TOP_NETWORK_KEYS = set(
+  'attachable',
+  'driver',
+  'driver_opts',
+  'enable_ipv4',
+  'enable_ipv6',
+  'external',
+  'internal',
+  'ipam',
+  'labels',
+  'name',
+);
+const TOP_VOLUME_KEYS = set('driver', 'driver_opts', 'external', 'labels', 'name');
+const TOP_SECRET_KEYS = set('file', 'labels', 'name');
+const TOP_CONFIG_KEYS = set('content', 'file', 'labels', 'name');
 
 function isLocalPath(p: string): boolean {
   return !/:\/\/|^(git@|github\.com[/:]|service:|docker-image:)/i.test(p);
@@ -336,59 +440,61 @@ function inRoot(root: string, p: string): boolean {
   return isInside(root, isAbsolute(p) ? p : resolve(root, p));
 }
 
-function checkVolume(
-  name: string,
-  v: unknown,
-  root: string,
-  project: string,
-  topVolumes: Json,
-  out: string[],
-): void {
-  const svc = `service "${name}"`;
+interface Ctx {
+  root: string;
+  project: string;
+  topVolumes: Json;
+  services: Set<string>;
+  taskNetwork: string | undefined;
+}
+
+function checkVolume(svc: string, v: unknown, ctx: Ctx, out: string[]): void {
   if (!isObj(v)) {
     out.push(`${svc}: unexpected volume entry`);
     return;
   }
+  unknownKeys(`${svc}: volume`, v, VOLUME_ENTRY_KEYS, out);
   const source = typeof v.source === 'string' ? v.source : '';
   switch (v.type) {
     case 'bind':
-      if (source === '' || !inRoot(root, source)) {
+      if (source === '' || !inRoot(ctx.root, source)) {
         out.push(`${svc}: bind mount of "${source}" is outside the repository`);
       }
       break;
     case 'tmpfs':
     case 'image':
       break;
-    case 'npipe':
-      out.push(`${svc}: npipe mounts are not allowed`);
-      break;
     case 'volume': {
       if (source === '') break; // anonymous volume
-      const def = topVolumes[source];
-      if (!isObj(def)) {
-        out.push(`${svc}: volume "${source}" is not defined`);
-        break;
-      }
-      if (def.external) out.push(`${svc}: external volume "${source}" is not allowed`);
-      if (typeof def.name !== 'string' || !def.name.startsWith(`${project}_`)) {
-        out.push(`${svc}: volume "${source}" must be named ${project}_*`);
-      }
-      const opts = isObj(def.driver_opts) ? def.driver_opts : {};
-      const o = typeof opts.o === 'string' ? opts.o : '';
-      if (opts.device !== undefined || /\bbind\b/.test(o)) {
-        out.push(`${svc}: volume "${source}" binds a host path through driver_opts`);
-      }
+      if (!isObj(ctx.topVolumes[source])) out.push(`${svc}: volume "${source}" is not defined`);
       break;
     }
     default:
-      out.push(`${svc}: unsupported volume type "${String(v.type)}"`);
+      out.push(`${svc}: volume type "${String(v.type)}" is not allowed`);
   }
 }
 
-function checkBuild(name: string, b: unknown, root: string, out: string[]): void {
-  const svc = `service "${name}"`;
+/** A cache source without `type=` is an image reference; otherwise only registry / inline. */
+function safeCacheFrom(c: unknown): boolean {
+  if (typeof c !== 'string') return false;
+  const type = /(?:^|,)\s*type\s*=\s*([^,]*)/i.exec(c)?.[1]?.trim().toLowerCase();
+  if (type === undefined) return !c.includes('=');
+  return type === 'registry' || type === 'inline';
+}
+
+function checkBuild(svc: string, b: unknown, ctx: Ctx, out: string[]): void {
   if (typeof b === 'string') b = { context: b };
-  if (!isObj(b)) return;
+  if (!isObj(b)) {
+    out.push(`${svc}: unexpected build definition`);
+    return;
+  }
+  for (const [k, v] of Object.entries(b)) {
+    if (BUILD_FREE.has(k) || isExtension(k)) continue;
+    if (BUILD_EMPTY_ONLY.has(k)) {
+      if (!isEmpty(v)) out.push(`${svc}: build ${k} is not allowed`);
+    } else out.push(`${svc}: build "${k}" is not allowed`);
+  }
+  const root = ctx.root;
   const context = typeof b.context === 'string' ? b.context : '.';
   const local = isLocalPath(context);
   if (local && !inRoot(root, context))
@@ -407,83 +513,150 @@ function checkBuild(name: string, b: unknown, root: string, out: string[]): void
       out.push(`${svc}: additional build context "${c}" is outside the repository`);
     }
   }
-  const nonEmpty = (x: unknown): boolean =>
-    Array.isArray(x) ? x.length > 0 : isObj(x) ? Object.keys(x).length > 0 : Boolean(x);
-  if (nonEmpty(b.secrets)) out.push(`${svc}: build secrets are not allowed`);
-  if (nonEmpty(b.ssh)) out.push(`${svc}: build ssh forwarding is not allowed`);
-  if (nonEmpty(b.entitlements)) out.push(`${svc}: build entitlements are not allowed`);
-  if (b.privileged === true) out.push(`${svc}: privileged build is not allowed`);
-  if (b.network === 'host') out.push(`${svc}: build network host is not allowed`);
+  for (const c of b.cache_from === undefined || b.cache_from === null ? [] : asList(b.cache_from)) {
+    if (!safeCacheFrom(c)) out.push(`${svc}: build cache_from "${String(c)}" is not allowed`);
+  }
+  if (
+    b.network !== undefined &&
+    b.network !== null &&
+    b.network !== 'default' &&
+    b.network !== 'none'
+  ) {
+    out.push(`${svc}: build network "${String(b.network)}" is not allowed`);
+  }
 }
 
-function checkService(
-  name: string,
-  s: Json,
-  root: string,
-  project: string,
-  topVolumes: Json,
-  out: string[],
-): void {
+function checkDeploy(svc: string, d: unknown, out: string[]): void {
+  if (d === null || d === undefined) return;
+  if (!isObj(d)) {
+    out.push(`${svc}: unexpected deploy definition`);
+    return;
+  }
+  unknownKeys(`${svc}: deploy`, d, DEPLOY_KEYS, out);
+  const r = d.resources;
+  if (r === undefined || r === null) return;
+  if (!isObj(r)) {
+    out.push(`${svc}: unexpected deploy.resources`);
+    return;
+  }
+  unknownKeys(`${svc}: deploy.resources`, r, set('limits', 'reservations'), out);
+  if (isObj(r.limits)) unknownKeys(`${svc}: deploy.resources.limits`, r.limits, LIMIT_KEYS, out);
+  if (isObj(r.reservations)) {
+    unknownKeys(`${svc}: deploy.resources.reservations`, r.reservations, RESERVATION_KEYS, out);
+  }
+}
+
+/** `service:<name>` of a service of this project. */
+function isProjectService(v: string, ctx: Ctx): boolean {
+  return v.startsWith('service:') && ctx.services.has(v.slice('service:'.length));
+}
+
+function checkNamespaces(svc: string, s: Json, ctx: Ctx, out: string[]): void {
+  const str = (k: string): string | undefined =>
+    s[k] === undefined || s[k] === null ? undefined : String(s[k]);
+  const allow = (k: string, ok: (v: string) => boolean): void => {
+    const v = str(k);
+    if (v !== undefined && v !== '' && !ok(v)) out.push(`${svc}: ${k} "${v}" is not allowed`);
+  };
+  // Every other value names a host or foreign namespace (host, container:<id>, a network name).
+  allow('network_mode', (v) => v === 'none' || v === ctx.taskNetwork || isProjectService(v, ctx));
+  allow('pid', (v) => isProjectService(v, ctx));
+  allow('ipc', (v) => ['private', 'shareable', 'none'].includes(v) || isProjectService(v, ctx));
+  allow('uts', () => false);
+  allow('userns_mode', () => false);
+  allow('cgroup', (v) => v === 'private');
+}
+
+function checkServiceNetworks(svc: string, nets: unknown, topNetworks: Json, out: string[]): void {
+  if (nets === undefined || nets === null) return;
+  const entries: [string, unknown][] = Array.isArray(nets)
+    ? nets.map((n) => [String(n), null])
+    : isObj(nets)
+      ? Object.entries(nets)
+      : [];
+  if (!Array.isArray(nets) && !isObj(nets)) out.push(`${svc}: unexpected networks`);
+  for (const [name, def] of entries) {
+    if (name !== 'default' && !isObj(topNetworks[name])) {
+      out.push(`${svc}: network "${name}" is not defined`);
+    }
+    if (def === null || def === undefined) continue;
+    if (!isObj(def)) out.push(`${svc}: unexpected network entry "${name}"`);
+    else unknownKeys(`${svc}: network "${name}"`, def, SERVICE_NETWORK_KEYS, out);
+  }
+}
+
+function checkFileList(svc: string, key: string, v: unknown, root: string, out: string[]): void {
+  if (v === undefined || v === null) return;
+  for (const item of asList(v)) {
+    const p = isObj(item) ? item.path : item;
+    if (typeof p !== 'string' || !inRoot(root, p)) {
+      out.push(`${svc}: ${key} "${String(p)}" is outside the repository`);
+    }
+  }
+}
+
+function checkService(name: string, s: Json, ctx: Ctx, topNetworks: Json, out: string[]): void {
   const svc = `service "${name}"`;
-  if (s.privileged === true) out.push(`${svc}: privileged is not allowed`);
-  if (Array.isArray(s.cap_add) && s.cap_add.length > 0) out.push(`${svc}: cap_add is not allowed`);
-  if (Array.isArray(s.devices) && s.devices.length > 0) out.push(`${svc}: devices are not allowed`);
-  // With the default CAP_MKNOD, a rule like "b *:* rwm" lets root in the sidecar open host disks.
-  if (Array.isArray(s.device_cgroup_rules) && s.device_cgroup_rules.length > 0) {
-    out.push(`${svc}: device_cgroup_rules are not allowed`);
+  for (const [k, v] of Object.entries(s)) {
+    if (SERVICE_FREE.has(k) || SERVICE_CHECKED.has(k) || isExtension(k)) continue;
+    if (SERVICE_EMPTY_ONLY.has(k)) {
+      if (!isEmpty(v)) out.push(`${svc}: ${k} is not allowed`);
+    } else out.push(`${svc}: "${k}" is not allowed (unknown or unsupported compose key)`);
   }
-  for (const key of ['pid', 'ipc'] as const) {
-    const v = s[key];
-    if (v === 'host' || (typeof v === 'string' && v.startsWith('container:'))) {
-      out.push(`${svc}: ${key} "${String(v)}" is not allowed`);
+  checkNamespaces(svc, s, ctx, out);
+  checkServiceNetworks(svc, s.networks, topNetworks, out);
+  for (const opt of s.security_opt === undefined || s.security_opt === null
+    ? []
+    : asList(s.security_opt)) {
+    const o = typeof opt === 'string' ? opt.toLowerCase().replace(/\s+/g, '') : '';
+    if (!SAFE_SECURITY_OPT.test(o))
+      out.push(`${svc}: security_opt "${String(opt)}" is not allowed`);
+  }
+  for (const vf of s.volumes_from === undefined || s.volumes_from === null
+    ? []
+    : asList(s.volumes_from)) {
+    const m = typeof vf === 'string' ? /^(?:service:)?([^:]+)(?::(?:ro|rw))?$/.exec(vf) : null;
+    if (!m || !ctx.services.has(m[1] as string)) {
+      out.push(
+        `${svc}: volumes_from "${String(vf)}" is not allowed (only services of the project)`,
+      );
     }
   }
-  for (const key of ['uts', 'userns_mode', 'cgroup'] as const) {
-    if (s[key] === 'host') out.push(`${svc}: ${key} host is not allowed`);
+  if (s.volumes !== undefined && s.volumes !== null) {
+    if (!Array.isArray(s.volumes)) out.push(`${svc}: unexpected volumes`);
+    else for (const v of s.volumes) checkVolume(svc, v, ctx, out);
   }
-  const nm = s.network_mode;
-  if (typeof nm === 'string' && (nm === 'host' || nm.startsWith('container:'))) {
-    out.push(`${svc}: network_mode "${nm}" is not allowed`);
-  }
-  for (const opt of strList(s.security_opt)) {
-    if (UNSAFE_SECURITY_OPT.test(opt.toLowerCase().replace(/\s+/g, ''))) {
-      out.push(`${svc}: security_opt "${opt}" is not allowed`);
-    }
-  }
-  for (const vf of strList(s.volumes_from)) {
-    if (vf.startsWith('container:')) out.push(`${svc}: volumes_from "${vf}" is not allowed`);
-  }
-  if (s.runtime) out.push(`${svc}: runtime is not allowed`);
-  if (s.cgroup_parent) out.push(`${svc}: cgroup_parent is not allowed`);
-  if (Array.isArray(s.volumes)) {
-    for (const v of s.volumes) checkVolume(name, v, root, project, topVolumes, out);
-  }
-  if (s.env_file !== undefined) {
-    for (const item of Array.isArray(s.env_file) ? s.env_file : [s.env_file]) {
-      const p = isObj(item) ? item.path : item;
-      if (typeof p !== 'string' || !inRoot(root, p)) {
-        out.push(`${svc}: env_file "${String(p)}" is outside the repository`);
+  checkFileList(svc, 'env_file', s.env_file, ctx.root, out);
+  checkFileList(svc, 'label_file', s.label_file, ctx.root, out);
+  if (s.build !== undefined && s.build !== null) checkBuild(svc, s.build, ctx, out);
+  checkDeploy(svc, s.deploy, out);
+  if (s.logging !== undefined && s.logging !== null) {
+    if (!isObj(s.logging)) out.push(`${svc}: unexpected logging`);
+    else {
+      unknownKeys(`${svc}: logging`, s.logging, set('driver', 'options'), out);
+      const d = s.logging.driver;
+      if (d !== undefined && d !== null && !LOGGING_DRIVERS.has(String(d))) {
+        out.push(`${svc}: logging driver "${String(d)}" is not allowed`);
       }
     }
   }
-  if (s.build !== undefined) checkBuild(name, s.build, root, out);
+  for (const hook of ['post_start', 'pre_stop'] as const) {
+    const hooks = s[hook];
+    if (hooks === undefined || hooks === null) continue;
+    for (const h of asList(hooks)) {
+      if (!isObj(h)) {
+        out.push(`${svc}: unexpected ${hook} hook`);
+        continue;
+      }
+      unknownKeys(`${svc}: ${hook}`, h, HOOK_KEYS, out);
+      if (!isEmpty(h.privileged)) out.push(`${svc}: privileged ${hook} hook is not allowed`);
+    }
+  }
 }
 
-/** Audits the resolved compose model; returns the problems (empty = acceptable). */
-export function checkComposeModel(model: unknown, root: string, project: string): string[] {
-  if (!isObj(model)) return ['unexpected compose config output'];
-  const out: string[] = [];
-  const topVolumes = isObj(model.volumes) ? model.volumes : {};
-  if (model.services !== undefined && !isObj(model.services)) {
-    return ['unexpected compose config output (services)'];
-  }
-  for (const [name, s] of Object.entries(isObj(model.services) ? model.services : {})) {
-    if (!isObj(s)) out.push(`service "${name}": unexpected definition`);
-    else checkService(name, s, root, project, topVolumes, out);
-  }
+function checkTopNetworks(networks: Json, project: string, out: string[]): void {
   // Sidecars only join networks of their own project (the default one is replaced by the task
   // network): an external network would reach other tasks or the member's own containers.
-  const networks = isObj(model.networks) ? model.networks : {};
   for (const [name, def] of Object.entries(networks)) {
     if (name === 'default') continue;
     const net = `network "${name}"`;
@@ -491,20 +664,100 @@ export function checkComposeModel(model: unknown, root: string, project: string)
       out.push(`${net}: unexpected definition`);
       continue;
     }
+    unknownKeys(net, def, TOP_NETWORK_KEYS, out);
     if (def.external) out.push(`${net}: external networks are not allowed`);
     else if (typeof def.name !== 'string' || !def.name.startsWith(`${project}_`)) {
       out.push(`${net}: must be named ${project}_*`);
     }
-    if (def.driver !== undefined && def.driver !== 'bridge') {
+    if (def.driver !== undefined && def.driver !== null && def.driver !== 'bridge') {
       out.push(`${net}: driver "${String(def.driver)}" is not allowed`);
     }
+    // e.g. com.docker.network.bridge.name=docker0 attaches to an existing host bridge.
+    if (!isEmpty(def.driver_opts)) out.push(`${net}: driver_opts are not allowed`);
+    const ipam = def.ipam;
+    if (ipam !== undefined && ipam !== null) {
+      const plain =
+        isObj(ipam) &&
+        Object.keys(ipam).every((k) => k === 'driver') &&
+        (ipam.driver === undefined || ipam.driver === 'default');
+      if (!plain) out.push(`${net}: ipam settings are not allowed`);
+    }
   }
+}
+
+function checkTopVolumes(volumes: Json, project: string, out: string[]): void {
+  for (const [name, def] of Object.entries(volumes)) {
+    const vol = `volume "${name}"`;
+    if (!isObj(def)) {
+      if (def !== null) out.push(`${vol}: unexpected definition`);
+      continue;
+    }
+    unknownKeys(vol, def, TOP_VOLUME_KEYS, out);
+    if (def.external) out.push(`${vol}: external volumes are not allowed`);
+    if (typeof def.name !== 'string' || !def.name.startsWith(`${project}_`)) {
+      out.push(`${vol}: must be named ${project}_*`);
+    }
+    if (def.driver !== undefined && def.driver !== null && def.driver !== 'local') {
+      out.push(`${vol}: driver "${String(def.driver)}" is not allowed`);
+    }
+    // The local driver mounts `device` with `o` (bind, nfs, ...): any option is a host mount.
+    if (!isEmpty(def.driver_opts)) out.push(`${vol}: driver_opts are not allowed`);
+  }
+}
+
+/**
+ * Audits the resolved compose model; returns the problems (empty = acceptable). `taskNetwork` is
+ * the network orch creates for the task: a service may name it in `network_mode`.
+ */
+export function checkComposeModel(
+  model: unknown,
+  root: string,
+  project: string,
+  taskNetwork?: string,
+): string[] {
+  if (!isObj(model)) return ['unexpected compose config output'];
+  const out: string[] = [];
+  if (model.services !== undefined && !isObj(model.services)) {
+    return ['unexpected compose config output (services)'];
+  }
+  for (const [k, v] of Object.entries(model)) {
+    if (TOP_KEYS.has(k) || isExtension(k)) continue;
+    if (!isEmpty(v)) out.push(`top-level "${k}" is not allowed`);
+  }
+  const services = isObj(model.services) ? model.services : {};
+  const topVolumes = isObj(model.volumes) ? model.volumes : {};
+  const topNetworks = isObj(model.networks) ? model.networks : {};
+  const ctx: Ctx = {
+    root,
+    project,
+    topVolumes,
+    services: new Set(Object.keys(services)),
+    taskNetwork,
+  };
+  for (const [name, s] of Object.entries(services)) {
+    if (!isObj(s)) out.push(`service "${name}": unexpected definition`);
+    else checkService(name, s, ctx, topNetworks, out);
+  }
+  checkTopNetworks(topNetworks, project, out);
+  checkTopVolumes(topVolumes, project, out);
   for (const kind of ['secrets', 'configs'] as const) {
     const top = model[kind];
     if (!isObj(top)) continue;
+    const label = kind.slice(0, -1);
     for (const [name, def] of Object.entries(top)) {
-      if (isObj(def) && typeof def.file === 'string' && !inRoot(root, def.file)) {
-        out.push(`${kind.slice(0, -1)} "${name}": file "${def.file}" is outside the repository`);
+      if (!isObj(def)) {
+        out.push(`${label} "${name}": unexpected definition`);
+        continue;
+      }
+      // `environment` reads the agent's environment, `external` a swarm object.
+      unknownKeys(
+        `${label} "${name}"`,
+        def,
+        kind === 'secrets' ? TOP_SECRET_KEYS : TOP_CONFIG_KEYS,
+        out,
+      );
+      if (typeof def.file === 'string' && !inRoot(root, def.file)) {
+        out.push(`${label} "${name}": file "${def.file}" is outside the repository`);
       }
     }
   }
@@ -536,8 +789,9 @@ function labelsToObject(l: unknown): Record<string, unknown> {
 }
 
 /**
- * Copy of the model without published ports and fixed container names, with built images tagged
- * per project and `labels` added to every service.
+ * Copy of the model without published ports, fixed container names, restart policies and
+ * `develop` sections, with built images tagged per project and `labels` added to every service.
+ * Restart policies go so that a stopped sidecar cannot come back while the agent commits.
  */
 export function sanitizeComposeModel(
   model: unknown,
@@ -569,6 +823,12 @@ export function sanitizeComposeModel(
         }
       }
       delete s.container_name;
+      const restart = typeof s.restart === 'string' && s.restart !== 'no';
+      const policy = isObj(s.deploy) && s.deploy.restart_policy !== undefined;
+      if (restart || policy) stripped.push(`${name}: restart policy removed`);
+      delete s.restart;
+      if (isObj(s.deploy)) delete s.deploy.restart_policy;
+      delete s.develop;
       s.labels = { ...labelsToObject(s.labels), ...labels };
     }
     // A built service tags its image with `image:`: never overwrite the member's own tag (e.g.
@@ -601,29 +861,15 @@ export function sanitizeComposeModel(
 
 const ENV_EXAMPLES = ['.env.example', '.env.sample', '.env.template'];
 
-/** `env_file` paths per service of a YAML compose text (only what the scanner understands). */
-function serviceEnvFiles(text: string): Map<string, string[]> {
+/** `env_file` paths per service of a parsed compose document (services with odd shapes skipped). */
+function serviceEnvFiles(doc: unknown): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  const lines = yamlLines(text);
-  const top = lines.findIndex((l) => l.indent === 0 && /^services\s*:\s*$/.test(l.text));
-  if (top < 0) return out;
-  const svcIndent = lines[top + 1]?.indent ?? 0;
-  if (svcIndent === 0) return out;
-  let name = '';
-  for (let i = top + 1; i < lines.length; i++) {
-    const l = lines[i] as Line;
-    if (l.indent === 0) break;
-    if (l.indent === svcIndent) {
-      name = /^["']?([\w.-]+)["']?\s*:/.exec(l.text)?.[1] ?? '';
-    } else if (name !== '' && /^env_file["']?\s*:/.test(l.text)) {
-      const refs: Ref[] = [];
-      const problems: string[] = [];
-      blockRefs(lines, i, 'env_file', ENV_KEYS, 'env', refs, problems);
-      if (problems.length === 0 && refs.length > 0)
-        out.set(
-          name,
-          refs.map((r) => r.path),
-        );
+  if (!isObj(doc) || !isObj(doc.services)) return out;
+  for (const [name, svc] of Object.entries(doc.services)) {
+    if (!isObj(svc) || svc.env_file === undefined || svc.env_file === null) continue;
+    const paths = asList(svc.env_file).map((i) => (isObj(i) ? i.path : i));
+    if (paths.length > 0 && paths.every((p): p is string => typeof p === 'string')) {
+      out.set(name, paths);
     }
   }
   return out;
@@ -651,12 +897,13 @@ export function planEnvFileFallbacks(
   } catch {
     return none;
   }
-  if (/^\s*\{/.test(text)) return none;
+  const parsed = parseComposeText(text);
+  if (parsed.problems.length > 0) return none;
   const base = dirname(realPathLoose(f));
   const shown = (p: string): string => relative(realPathLoose(root), p) || p;
   const warnings: string[] = [];
   const blocks: string[] = [];
-  for (const [svc, paths] of serviceEnvFiles(text)) {
+  for (const [svc, paths] of serviceEnvFiles(parsed.doc)) {
     const keep: string[] = [];
     let changed = false;
     for (const p of paths) {

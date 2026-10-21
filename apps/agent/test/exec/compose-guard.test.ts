@@ -52,11 +52,11 @@ describe('checkComposeModel', () => {
           ],
           build: { context: root, dockerfile: 'Dockerfile' },
           security_opt: ['no-new-privileges:true'],
-          network_mode: 'bridge',
+          network_mode: 'none',
         },
       },
       volumes: { data: { name: `${P}_data` } },
-      secrets: { s: { environment: 'X' } },
+      secrets: { s: { file: join(root, 's.txt') } },
     };
     expect(check(m)).toEqual([]);
   });
@@ -128,7 +128,11 @@ describe('checkComposeModel', () => {
   });
 
   it('allows volumes_from another service', () => {
-    expect(check(svc({ volumes_from: ['other:ro'] }))).toEqual([]);
+    const m = {
+      services: { db: { image: 'x', volumes_from: ['other:ro'] }, other: { image: 'y' } },
+    };
+    expect(check(m)).toEqual([]);
+    expect(check(svc({ volumes_from: ['ghost'] }))).toHaveLength(1);
   });
 
   describe('bind mounts', () => {
@@ -233,6 +237,142 @@ describe('checkComposeModel', () => {
     expect(check(top('secrets', '/etc/shadow'))).toHaveLength(1);
     expect(check(top('configs', '/etc/passwd'))).toHaveLength(1);
     expect(check(top('secrets', join(root, 's.txt')))).toEqual([]);
+  });
+
+  describe('allowlists (issue #14, PR #8 review)', () => {
+    const NET = 'orch-net-asg-1';
+    const checkNet = (m: unknown): string[] => checkComposeModel(m, root, P, NET);
+    const two = (db: Record<string, unknown>): unknown => ({
+      services: { db: { image: 'x', ...db }, app: { image: 'y' } },
+    });
+
+    it.each([
+      ['provider (run by the agent compose CLI)', { provider: { type: 'evil', options: {} } }],
+      ['use_api_socket', { use_api_socket: true }],
+      ['gpus', { gpus: 'all' }],
+      ['gpus list', { gpus: [{ driver: 'nvidia', count: 1 }] }],
+      ['models', { models: ['m'] }],
+      ['annotations', { annotations: { a: 'b' } }],
+      ['storage_opt', { storage_opt: { size: '1G' } }],
+      ['external_links', { external_links: ['other_db'] }],
+      ['an unknown key', { future_escape_hatch: true }],
+      ['a privileged post_start hook', { post_start: [{ command: ['id'], privileged: true }] }],
+      ['a privileged pre_stop hook', { pre_stop: [{ command: ['id'], privileged: true }] }],
+      ['an unknown hook key', { post_start: [{ command: ['id'], cap_add: ['ALL'] }] }],
+      [
+        'deploy device reservations',
+        { deploy: { resources: { reservations: { devices: [{ capabilities: ['gpu'] }] } } } },
+      ],
+      [
+        'deploy generic_resources',
+        { deploy: { resources: { reservations: { generic_resources: [], cpus: '1' } } } },
+      ],
+      ['network_mode bridge (docker0)', { network_mode: 'bridge' }],
+      ['network_mode default', { network_mode: 'default' }],
+      ["network_mode of another task's network", { network_mode: 'orch-net-other-task' }],
+      ['network_mode arbitrary network', { network_mode: 'immich_default' }],
+      ['network_mode service outside the project', { network_mode: 'service:ghost' }],
+      ['pid of a foreign service', { pid: 'service:ghost' }],
+      ['ipc of a container', { ipc: 'container:abc' }],
+      ['security_opt unknown option', { security_opt: ['writable-cgroups=true'] }],
+      ['security_opt label user', { security_opt: ['label=user:system_u'] }],
+      [
+        'logging to syslog',
+        { logging: { driver: 'syslog', options: { 'syslog-address': 'unix:///dev/log' } } },
+      ],
+      [
+        'build cache_from local',
+        { build: { context: root, cache_from: ['type=local,src=/root'] } },
+      ],
+      ['build cache_to', { build: { context: root, cache_to: ['type=registry,ref=me/x'] } }],
+      ['build tags', { build: { context: root, tags: ['ghcr.io/acme/app:latest'] } }],
+      ['build network host', { build: { context: root, network: 'host' } }],
+      ['build network of another task', { build: { context: root, network: 'orch-net-x' } }],
+      ['an unknown build key', { build: { context: root, future: 1 } }],
+      [
+        'a volume with an unknown type',
+        { volumes: [{ type: 'cluster', source: 'a', target: '/a' }] },
+      ],
+      ['a network not defined in the project', { networks: { ghost: null } }],
+      ['per-endpoint driver_opts', { networks: { default: { driver_opts: { a: 'b' } } } }],
+    ])('refuses %s', (_n, s) => {
+      const p = checkNet(two(s));
+      expect(p.length).toBeGreaterThan(0);
+      expect(
+        p.every((x) => x.startsWith('service "db": ')),
+        p.join('\n'),
+      ).toBe(true);
+    });
+
+    it('names the refused unknown key', () => {
+      expect(checkNet(two({ future_escape_hatch: 1 }))).toEqual([
+        'service "db": "future_escape_hatch" is not allowed (unknown or unsupported compose key)',
+      ]);
+    });
+
+    it.each([
+      ['network_mode none', { network_mode: 'none' }],
+      ['network_mode of the task network', { network_mode: NET }],
+      ['network_mode of a project service', { network_mode: 'service:app' }],
+      ['pid of a project service', { pid: 'service:app' }],
+      ['ipc private', { ipc: 'private' }],
+      ['no-new-privileges', { security_opt: ['no-new-privileges'] }],
+      ['no-new-privileges=true', { security_opt: ['no-new-privileges=true'] }],
+      [
+        'an unprivileged hook',
+        { post_start: [{ command: ['id'], user: 'root', privileged: false }] },
+      ],
+      ['forbidden keys left empty', { privileged: false, cap_add: [], devices: [], gpus: null }],
+      ['extension fields', { 'x-anything': { privileged: true } }],
+      ['resource limits', { deploy: { resources: { limits: { cpus: '1', memory: '1g' } } } }],
+      ['json-file logging', { logging: { driver: 'json-file', options: { 'max-size': '1m' } } }],
+      [
+        'registry cache_from',
+        { build: { context: root, cache_from: ['img:cache', 'type=registry,ref=img'] } },
+      ],
+      ['build network none', { build: { context: root, network: 'none' } }],
+      ['volumes_from a project service', { volumes_from: ['app:ro'] }],
+    ])('accepts %s', (_n, s) => {
+      expect(checkNet(two(s))).toEqual([]);
+    });
+
+    it('top-level networks: driver_opts and ipam config are refused, plain ipam accepted', () => {
+      const net = (def: Record<string, unknown>) =>
+        checkNet(svc({ networks: { n: null } }, { networks: { n: { name: `${P}_n`, ...def } } }));
+      expect(net({ ipam: {} })).toEqual([]);
+      expect(net({ ipam: { driver: 'default' } })).toEqual([]);
+      expect(net({ driver_opts: { 'com.docker.network.bridge.name': 'docker0' } })).toHaveLength(1);
+      expect(net({ ipam: { config: [{ subnet: '192.168.1.0/24' }] } })).toHaveLength(1);
+      expect(net({ ipam: { driver: 'dhcp' } })).toHaveLength(1);
+      expect(net({ unknown: 1 })).toHaveLength(1);
+    });
+
+    it('top-level volumes: only the local driver without driver_opts', () => {
+      const vol = (def: Record<string, unknown>) =>
+        checkNet(svc({}, { volumes: { v: { name: `${P}_v`, ...def } } }));
+      expect(vol({})).toEqual([]);
+      expect(vol({ driver: 'local' })).toEqual([]);
+      expect(vol({ driver: 'rclone' })).toHaveLength(1);
+      expect(
+        vol({ driver_opts: { type: 'nfs', o: 'addr=10.0.0.1', device: ':/export' } }),
+      ).toHaveLength(1);
+    });
+
+    it('top-level secrets / configs: no environment, no external, no unknown key', () => {
+      const top = (kind: string, def: Record<string, unknown>) =>
+        checkNet({ services: {}, [kind]: { k: def } });
+      expect(top('secrets', { environment: 'HOME' })).toHaveLength(1);
+      expect(top('secrets', { external: true })).toHaveLength(1);
+      expect(top('configs', { content: 'x' })).toEqual([]);
+      expect(top('configs', { environment: 'PATH' })).toHaveLength(1);
+    });
+
+    it('refuses unknown top-level keys', () => {
+      expect(checkNet({ services: {}, models: { m: { model: 'x' } } })).toEqual([
+        'top-level "models" is not allowed',
+      ]);
+      expect(checkNet({ services: {}, 'x-ext': 1, version: '3' })).toEqual([]);
+    });
   });
 
   it('does not flag published ports', () => {
@@ -366,8 +506,51 @@ describe('scanComposeSources', () => {
   it('fails closed on constructs it cannot read', () => {
     const f = write('compose.yaml', 'include:\n  - *anchor\n');
     expect(scanComposeSources(root, f)).not.toEqual([]);
-    const g = write('compose.yaml', 'include:\nservices: {}\n');
-    expect(scanComposeSources(root, g)).not.toEqual([]);
+    for (const body of [
+      'services:\n  a:\n    image: x\n  a:\n    image: y\n', // duplicate key
+      'services: [\n', // syntax error
+      'services: {}\n---\nservices: {}\n', // several documents
+      'include: 3\n',
+      'services:\n  a:\n    env_file: [{required: true}]\n',
+    ]) {
+      const g = write('compose.yaml', body);
+      expect(scanComposeSources(root, g), body).not.toEqual([]);
+    }
+  });
+
+  it('parses YAML for real: flow maps, escaped keys, tags, anchors and merge keys', () => {
+    const forms = [
+      'services:\n  a:\n    env_file: {path: /etc/shadow}\n',
+      'services:\n  a:\n    "env_\\x66ile": /etc/shadow\n',
+      'services:\n  a:\n    env_file: !override [/etc/shadow]\n',
+      'x-e: &e {env_file: /etc/shadow}\nservices:\n  a:\n    <<: *e\n    image: x\n',
+      'x-p: &p /etc/shadow\nservices:\n  a:\n    env_file: *p\n',
+      '{"services": {"a": {"env_file": "/etc/shadow"}}}\n',
+      'services: {a: {image: x, env_file: [/etc/shadow]}}\n',
+      'services:\n  a:\n    label_file: ../labels\n',
+      'services:\n  a:\n    label_file: [ok, /etc/passwd]\n',
+    ];
+    for (const body of forms) {
+      const f = write('compose.yaml', body);
+      const p = scanComposeSources(root, f);
+      expect(p, body).toHaveLength(1);
+      expect(p[0], body).toMatch(/outside the repository/);
+    }
+  });
+
+  it('refuses an implicit .env (project or include directory) that resolves outside', () => {
+    writeFileSync(join(t.dir, 'secret'), 'TOKEN=x\n');
+    const f = write('compose.yaml', 'services: {}\n');
+    symlinkSync(join(t.dir, 'secret'), join(root, '.env'));
+    expect(scanComposeSources(root, f).join('\n')).toMatch(/\.env resolves outside/);
+    write('sub/inc.yaml', 'services: {}\n');
+    const g = write(
+      'sub/compose.yaml',
+      'include:\n  - path: inc.yaml\n    project_directory: ../d\n',
+    );
+    mkdirSync(join(root, 'd'));
+    symlinkSync(join(t.dir, 'secret'), join(root, 'd', '.env'));
+    expect(scanComposeSources(root, g).join('\n')).toMatch(/d\/\.env resolves outside/);
   });
 
   it('handles JSON compose files', () => {
@@ -417,6 +600,25 @@ describe('sanitizeComposeModel', () => {
     expect(s.web?.labels).toEqual({ c: 'd', e: 'f=g', 'orch.task': '1', a: 'new' });
     expect(s.raw?.labels).toEqual({ 'orch.task': '1', a: 'new' });
     expect(stripped).toEqual(['db: published ports 0.0.0.0:5432->5432, 8080->80 removed']);
+  });
+
+  it('removes restart policies (a stopped sidecar must not come back during a commit) and develop', () => {
+    const { model: out, stripped } = sanitizeComposeModel(
+      {
+        services: {
+          a: { image: 'x', restart: 'always', develop: { watch: [] } },
+          b: { image: 'y', deploy: { restart_policy: { condition: 'any' }, replicas: 1 } },
+          c: { image: 'z', restart: 'no' },
+        },
+      },
+      {},
+    );
+    const s = out.services as Record<string, Record<string, unknown>>;
+    expect(s.a).not.toHaveProperty('restart');
+    expect(s.a).not.toHaveProperty('develop');
+    expect(s.b?.deploy).toEqual({ replicas: 1 });
+    expect(s.c).not.toHaveProperty('restart');
+    expect(stripped).toEqual(['a: restart policy removed', 'b: restart policy removed']);
   });
 
   it('does not mutate its input', () => {

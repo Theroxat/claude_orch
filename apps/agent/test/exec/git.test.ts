@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -19,6 +20,7 @@ import {
   GitSafetyError,
   findNestedGit,
   gitAuthEnv,
+  symlinkResolvesInTree,
   symlinkStaysInside,
   type GitRepo,
 } from '../../src/exec/git';
@@ -36,7 +38,7 @@ afterEach(() => tmp.cleanup());
 
 function sh(args: string[], cwd?: string) {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', ...args], {
-    cwd,
+    cwd: cwd ?? tmp.dir,
     encoding: 'utf8',
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
@@ -332,6 +334,58 @@ describe('a hostile task cannot make the agent run anything through git', () => 
     // a chain that stays inside is fine
     symlinkSync('s/x/keep', join(repo.workTree, 'ok'));
     expect(await git.commitAll(repo, 'ok chain', ID)).toBe(true);
+  });
+
+  it('two-commit bypass: a link committed earlier is re-checked when another link changes', async () => {
+    const { git, repo } = await realRepo();
+    // Commit A: s/ is a real directory, so esc -> s/x/../.. resolves to the worktree root.
+    mkdirSync(join(repo.workTree, 's', 'x'), { recursive: true });
+    writeFileSync(join(repo.workTree, 's', 'x', 'keep'), '');
+    symlinkSync('s/x/../..', join(repo.workTree, 'esc'));
+    expect(await git.commitAll(repo, 'A', ID)).toBe(true);
+    // Commit B only turns s into `s -> .`: esc (unchanged) now points at the parent.
+    rmSync(join(repo.workTree, 's'), { recursive: true });
+    symlinkSync('.', join(repo.workTree, 's'));
+    await expect(git.commitAll(repo, 'B', ID)).rejects.toThrow(/esc: symlink/);
+    expect(sh(['--git-dir', repo.gitDir, 'diff', '--cached', '--name-only'])).toBe('');
+  });
+
+  it('refuses absolute, looping and .git symlink targets', async () => {
+    const { git, repo } = await realRepo();
+    const cases: [string, string][] = [
+      ['abs', '/tmp'],
+      ['loop', 'loop'],
+      ['dotgit', '.git/config'],
+      ['dotgit2', 'sub/../.GIT'],
+    ];
+    for (const [name, target] of cases) {
+      symlinkSync(target, join(repo.workTree, name));
+      await expect(git.commitAll(repo, 'bad', ID), name).rejects.toThrow(
+        new RegExp(`${name}: symlink`),
+      );
+      rmSync(join(repo.workTree, name));
+    }
+    // A loop between two links.
+    symlinkSync('b/x', join(repo.workTree, 'a'));
+    symlinkSync('a/y', join(repo.workTree, 'b'));
+    await expect(git.commitAll(repo, 'bad', ID)).rejects.toThrow(/symlink/);
+  });
+
+  it('helpers: tree-based symlink resolution (index, not disk)', () => {
+    const tree = (o: Record<string, string>) => new Map(Object.entries(o));
+    expect(symlinkResolvesInTree(tree({ s: '.', esc: 's/x/../..' }), 'esc')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ esc: 's/x/../..' }), 'esc')).toBe(true);
+    expect(symlinkResolvesInTree(tree({ s: '.', ok: 's/x/keep' }), 'ok')).toBe(true);
+    expect(symlinkResolvesInTree(tree({ a: 'a' }), 'a')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ a: '/etc' }), 'a')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ d: 'x/.git' }), 'd')).toBe(false);
+    // A case-insensitive checkout resolves S through s.
+    expect(symlinkResolvesInTree(tree({ s: '.', esc: 'S/x/../..' }), 'esc')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ s: '.', S: 'x', e: 'S' }), 'e')).toBe(false);
+    // Chains through other links, in subdirectories too.
+    expect(symlinkResolvesInTree(tree({ s: '.', e: 's/s/x/../../..' }), 'e')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ 'a/s': '..', 'a/e': 's/../x' }), 'a/e')).toBe(false);
+    expect(symlinkResolvesInTree(tree({ 'a/s': '..', 'a/e': 's/x' }), 'a/e')).toBe(true);
   });
 
   it('helpers: nested .git detection and symlink containment', () => {
