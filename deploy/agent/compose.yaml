@@ -1,6 +1,6 @@
 # Member-side orch agent stack. install.sh writes this file to ~/orch/compose.yaml.
 # Variables come from ~/orch/.env (see .env.example).
-name: orch
+name: orch-agent
 
 services:
   agent:
@@ -27,4 +27,6 @@ services:
 
 volumes:
   orch-data:
+    name: orch-agent-data
   orch-secrets:
+    name: orch-agent-secrets
