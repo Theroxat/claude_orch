@@ -62,7 +62,8 @@ interface Payload {
     number: number;
     html_url: string;
     merged?: boolean;
-    head: { ref: string; sha: string };
+    /** `head.repo` is the fork for a PR from a fork, null when the fork was deleted. */
+    head: { ref: string; sha: string; repo?: { id: number } | null };
     base: { ref: string };
   };
   repositories_added?: Array<{ id: number; full_name: string }>;
@@ -362,7 +363,10 @@ export function registerWebhooks(
     let task = await prisma.task.findFirst({
       where: { projectId: project.id, prNumber: pr.number },
     });
-    if (!task) {
+    // A branch name alone links a PR to a task only when the branch is in the project's own
+    // repository: anyone can open a PR from a fork whose branch is named like a task branch.
+    const sameRepo = !!p.repository && pr.head.repo?.id === p.repository.id;
+    if (!task && sameRepo) {
       const m = BRANCH_RE.exec(pr.head.ref);
       if (m) {
         const candidate = await prisma.task.findUnique({

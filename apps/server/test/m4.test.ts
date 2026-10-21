@@ -948,7 +948,7 @@ describe('github webhooks', () => {
       number: n,
       html_url: `https://github.com/${repo.fullName}/pull/${n}`,
       merged,
-      head: { ref: branch, sha: `sha${n}` },
+      head: { ref: branch, sha: `sha${n}`, repo: { id: repo.githubRepoId } },
       base: { ref: 'main' },
     });
     // the agent pushed; someone opened the PR by hand on the task branch
@@ -965,7 +965,10 @@ describe('github webhooks', () => {
     // a PR on an unrelated branch is ignored
     const other = await hook('pull_request', {
       action: 'opened',
-      pull_request: { ...pr(901), head: { ref: 'feature/x', sha: 's' } },
+      pull_request: {
+        ...pr(901),
+        head: { ref: 'feature/x', sha: 's', repo: { id: repo.githubRepoId } },
+      },
       repository: repoPayload(repo),
     });
     expect(other.json()).toMatchObject({ result: 'ignored' });
@@ -1031,6 +1034,38 @@ describe('github webhooks', () => {
     );
   });
 
+  it('a PR from a fork on a branch named like a task branch is not linked to the task', async () => {
+    const { owner, repo, project: p } = await project();
+    const a = await member(p.id);
+    const t = await createTask(owner, p.id, { title: 'Forked' });
+    const offer = await a.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    const id = offer.payload.assignmentId;
+    await a.client.call(agentMessage('offer.accept', { assignmentId: id, execMode: 'AUTO' }));
+    const forkPr = (head: object) => ({
+      number: 960,
+      html_url: `https://github.com/${repo.fullName}/pull/960`,
+      merged: false,
+      head: { ref: offer.payload.task.branchName, sha: 'evil', ...head },
+      base: { ref: 'main' },
+    });
+    for (const head of [{ repo: { id: repo.githubRepoId + 1 } }, { repo: null }]) {
+      for (const action of ['opened', 'closed']) {
+        const res = await hook('pull_request', {
+          action,
+          pull_request: forkPr(head),
+          repository: repoPayload(repo),
+        });
+        expect(res.json()).toMatchObject({ result: 'ignored' });
+      }
+    }
+    expect(await prisma.task.findUniqueOrThrow({ where: { id: t.id } })).toMatchObject({
+      status: 'IN_PROGRESS',
+      prNumber: null,
+    });
+    expect((await prisma.assignment.findUniqueOrThrow({ where: { id } })).status).toBe('ACCEPTED');
+    expect(a.client.find('task.cancel', (c) => c.payload.assignmentId === id)).toHaveLength(0);
+  });
+
   it('a run that finishes after its PR was merged by hand leaves the task DONE', async () => {
     const { owner, repo, project: p } = await project();
     const a = await member(p.id);
@@ -1046,7 +1081,7 @@ describe('github webhooks', () => {
       number: 950,
       html_url: `https://github.com/${repo.fullName}/pull/950`,
       merged,
-      head: { ref: offer.payload.task.branchName, sha: 'sha950' },
+      head: { ref: offer.payload.task.branchName, sha: 'sha950', repo: { id: repo.githubRepoId } },
       base: { ref: 'main' },
     });
     await hook('pull_request', {
