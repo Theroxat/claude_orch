@@ -12,6 +12,8 @@ import {
   normalizeVersion,
   type AckPayload,
   type AgentConfigPayload,
+  type ClaudeAuthErrorClass,
+  type ClaudeAuthPayload,
   type ServerMessage,
   type TasksListPayload,
 } from '@orch/shared';
@@ -20,6 +22,7 @@ import { ManualExecutor, type ExecutorConfig, type ExecutorDeps } from './exec/e
 import { TokenBroker } from './exec/tokens';
 import { startControlServer, type ControlServer } from './control/server';
 import { ClaudeAuthState } from './claude-auth';
+import type { ClaudeCheckOutcome } from './claude-check';
 import { InboundDedup } from './dedup';
 import { errorMessage, type Logger } from './log';
 import { Outbox } from './outbox';
@@ -32,6 +35,23 @@ import { WsClient } from './ws/client';
 
 /** How long `stop()` waits for the executor's jobs (killed runs reporting) before going offline. */
 const STOP_DRAIN_MS = 3_000;
+/** Check classes that say nothing about the token: retried after `retryMs`. */
+const INCONCLUSIVE: ReadonlySet<ClaudeAuthErrorClass> = new Set(['timeout', 'network', 'error']);
+
+/** Real Claude login check (`claude-check.ts`), wired by main.ts; injectable for tests. */
+export interface ClaudeCheckOptions {
+  run: () => Promise<ClaudeCheckOutcome>;
+  /** Cheap fingerprint of the token file (mtime + size), null when it is missing. */
+  tokenStat: () => string | null;
+  /** sha256 of the trimmed token file content, null when missing or empty. */
+  tokenHash: () => string | null;
+  /** Removes leftover check containers (startup). */
+  cleanup?: () => Promise<void>;
+  /** Token file watch period (default 30 s). */
+  watchMs?: number;
+  /** Re-check after an inconclusive result (timeout, network, error) after this long (15 min). */
+  retryMs?: number;
+}
 
 export interface AgentOptions {
   serverUrl: string;
@@ -58,6 +78,8 @@ export interface AgentOptions {
   listTimeoutMs?: number;
   /** How long to wait for the answer to `config.request` (default 5 s). */
   configRequestTimeoutMs?: number;
+  /** Real Claude login check. Without it `claude.check` answers "unsupported". */
+  claudeCheck?: ClaudeCheckOptions;
   /** Self-update (`agent.update`, `orch update`). Without it the agent does not offer it. */
   update?: Pick<
     UpdaterOptions,
@@ -99,6 +121,13 @@ export class Agent {
   private lastUsageReportAt: string | null = null;
   private readonly log: Logger;
   private readonly claudeAuth: ClaudeAuthState;
+  private authInflight: { hash: string | null; promise: Promise<ClaudeAuthPayload> } | undefined;
+  private lastTokenStat: string | null | undefined;
+  private tokenWatchTimer: NodeJS.Timeout | undefined;
+  /** Set by `stop()`: a token watch whose startup cleanup settles afterwards does not start. */
+  private stopped = false;
+  /** An old server rejected `claude.auth` (logged once). */
+  private claudeAuthUnsupportedLogged = false;
 
   /** `claudeTokenPresent` (file exists) and `claudeAuthValid` (last task did not fail on auth). */
   private tokenFlag(): { claudeTokenPresent?: boolean; claudeAuthValid: boolean } {
@@ -216,6 +245,9 @@ export class Agent {
         accept: async (r) => ({ message: (await this.exec().acceptRequest(r.id)).message }),
         reject: (r) => ({ message: this.exec().rejectRequest(r.id).message }),
         update: (r) => this.localUpdate(r.version, r.whenIdle ?? false),
+        'claude.check': async (r) => ({
+          claudeAuth: await this.checkClaudeAuth(r.reason ?? 'cli'),
+        }),
       },
       this.log,
     );
@@ -228,6 +260,102 @@ export class Agent {
     }
     this.updater?.resumeAfterRestart();
     this.client.start();
+    this.startTokenWatch();
+  }
+
+  /**
+   * Runs the real Claude check (single-flight per token: a caller arriving while a check of the
+   * same token runs joins it; a check of an older token is awaited, then a new one runs),
+   * records it in ClaudeAuthState and reports `claude.auth` through the outbox.
+   */
+  async checkClaudeAuth(reason: string): Promise<ClaudeAuthPayload> {
+    const c = this.opts.claudeCheck;
+    if (!c) {
+      const err = new Error('The Claude check is not available here (task execution disabled).');
+      throw Object.assign(err, { code: 'unsupported' });
+    }
+    const hash = this.safeTokenHash();
+    const cur = this.authInflight;
+    if (cur) {
+      if (cur.hash === hash) return cur.promise;
+      await cur.promise.catch(() => undefined);
+      return this.checkClaudeAuth(reason);
+    }
+    const promise: Promise<ClaudeAuthPayload> = (async () => {
+      const out = await c.run();
+      this.claudeAuth.recordCheck(out.payload, out.tokenHash);
+      this.outbox.enqueue('claude.auth', out.payload, { replaceSameType: true });
+      const fields = {
+        reason,
+        valid: out.payload.valid,
+        ...(out.payload.errorClass ? { errorClass: out.payload.errorClass } : {}),
+        ...(out.payload.detail ? { detail: out.payload.detail } : {}),
+      };
+      if (out.payload.valid) this.log.info('Claude login check passed', fields);
+      else this.log.warn('Claude login check failed', fields);
+      return out.payload;
+    })().finally(() => {
+      if (this.authInflight?.promise === promise) this.authInflight = undefined;
+    });
+    this.authInflight = { hash, promise };
+    return promise;
+  }
+
+  private safeTokenHash(): string | null {
+    try {
+      return this.opts.claudeCheck?.tokenHash() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private startTokenWatch(): void {
+    const c = this.opts.claudeCheck;
+    if (!c) return;
+    const begin = () => {
+      if (this.stopped) return;
+      this.watchToken();
+      this.tokenWatchTimer = setInterval(() => this.watchToken(), c.watchMs ?? 30_000);
+      this.tokenWatchTimer.unref();
+    };
+    if (!c.cleanup) return begin();
+    // The leftover cleanup removes every check container of this agent: it must settle before
+    // the first check creates a fresh one, or it could remove that one too.
+    void Promise.resolve()
+      .then(() => c.cleanup?.())
+      .catch((err: unknown) =>
+        this.log.debug('check container cleanup failed', { error: errorMessage(err) }),
+      )
+      .finally(begin);
+  }
+
+  /**
+   * Checks the token when its hash differs from the one last checked (cheap: the hash is only
+   * computed when mtime / size changed), and retries an inconclusive check after `retryMs`.
+   */
+  watchToken(): void {
+    const c = this.opts.claudeCheck;
+    if (!c || this.authInflight) return;
+    let stat: string | null;
+    try {
+      stat = c.tokenStat();
+    } catch {
+      stat = null;
+    }
+    const st = this.claudeAuth.read();
+    const retryDue =
+      st.errorClass !== undefined &&
+      INCONCLUSIVE.has(st.errorClass) &&
+      st.checkedAt !== undefined &&
+      Date.now() - Date.parse(st.checkedAt) >= (c.retryMs ?? 15 * 60_000);
+    if (stat === this.lastTokenStat && !retryDue) return;
+    this.lastTokenStat = stat;
+    const hash = this.safeTokenHash();
+    const changed = hash !== (st.tokenHash ?? null);
+    if (!changed && !(retryDue && hash !== null)) return;
+    void this.checkClaudeAuth(changed ? 'token changed' : 'retry').catch((err: unknown) =>
+      this.log.warn('Claude login check crashed', { error: errorMessage(err) }),
+    );
   }
 
   /**
@@ -328,6 +456,7 @@ export class Agent {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.configWaiter) {
       clearTimeout(this.configWaiter.timer);
       this.configWaiter.resolve(false);
@@ -349,6 +478,7 @@ export class Agent {
     for (const w of this.listWaiters.values()) clearTimeout(w.timer);
     this.listWaiters.clear();
     this.usage.stop();
+    clearInterval(this.tokenWatchTimer);
     clearInterval(this.heartbeatTimer);
     this.outbox.close();
     await this.client.stop();
@@ -427,9 +557,24 @@ export class Agent {
       return;
     }
     if (m.type === 'error') {
+      const replyTo = m.payload.replyTo ?? m.replyTo;
+      // A 0.5.1 server does not know `claude.auth`: it answers `error` (invalid_message) and never
+      // acks, so the outbox would resend it forever. Drop it; the server just lacks the feature.
+      if (
+        m.payload.code === 'invalid_message' &&
+        replyTo !== undefined &&
+        this.outbox.pending().some((e) => e.id === replyTo && e.type === 'claude.auth')
+      ) {
+        this.outbox.ack(replyTo);
+        if (!this.claudeAuthUnsupportedLogged) {
+          this.claudeAuthUnsupportedLogged = true;
+          this.log.info('server does not support claude.auth (older version); not reporting it');
+        }
+        return;
+      }
       this.log.warn('server error', { code: m.payload.code, message: m.payload.message });
       // An older server does not know `config.request`: give up at once (guard rejects).
-      this.settleConfigWaiter(m.payload.replyTo ?? m.replyTo, false);
+      this.settleConfigWaiter(replyTo, false);
       return;
     }
     if (!SERVER_ACKED_TYPES.includes(m.type)) {

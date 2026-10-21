@@ -21,11 +21,10 @@ const optionalString = z.string().min(1).optional();
 
 const EnvSchema = z.object({
   ORCH_SERVER_URL: z
-    .string({
+    .url({
       error: (iss) =>
-        iss.input === undefined ? 'is required (e.g. https://orch.example.com)' : undefined,
+        iss.input === undefined ? 'is required (e.g. https://orch.example.com)' : 'must be a URL',
     })
-    .url('must be a URL')
     .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://'),
   ORCH_AGENT_CREDENTIAL: optionalString,
   ORCH_AGENT_ID: optionalString,
@@ -46,7 +45,7 @@ const EnvSchema = z.object({
   ORCH_CLAUDE_BIN: z.string().min(1).default('claude'),
   ORCH_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(1),
   ORCH_DEFAULT_IMAGE: z.string().min(1).default('node:22-bookworm'),
-  ORCH_GIT_BASE_URL: z.string().url().default('https://github.com'),
+  ORCH_GIT_BASE_URL: z.url().default('https://github.com'),
   ORCH_TASK_UID: z.coerce.number().int().min(1).optional(),
   ORCH_TASK_GID: z.coerce.number().int().min(0).optional(),
   ORCH_GIT_AUTHOR_NAME: z.string().min(1).default('orch agent'),
@@ -169,7 +168,19 @@ export interface CliConfig {
   /** Agent data dir (holds the persisted Claude login state reset by `orch login`). */
   dataDir: string;
   claudeBin: string;
+  /** For the in-process Claude check of `orch doctor` when the daemon is unreachable. */
+  defaultImage: string;
+  workDir?: string;
+  taskUid?: number;
+  taskGid?: number;
+  agentId?: string;
 }
+
+const intOrUndef = (v: string | undefined, min: number): number | undefined => {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= min ? n : undefined;
+};
 
 export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
   const e = dropEmpty(env);
@@ -178,5 +189,10 @@ export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
     secretsDir: e.ORCH_SECRETS_DIR ?? '/secrets',
     dataDir: e.ORCH_DATA_DIR ?? '/data',
     claudeBin: e.ORCH_CLAUDE_BIN ?? 'claude',
+    defaultImage: e.ORCH_DEFAULT_IMAGE ?? 'node:22-bookworm',
+    workDir: e.ORCH_WORK_DIR,
+    taskUid: intOrUndef(e.ORCH_TASK_UID, 1),
+    taskGid: intOrUndef(e.ORCH_TASK_GID, 0),
+    agentId: e.ORCH_AGENT_ID,
   };
 }

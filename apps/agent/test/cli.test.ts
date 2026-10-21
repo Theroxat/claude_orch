@@ -14,7 +14,7 @@ import { silentLogger } from '../src/log';
 import { tempDir } from './helpers/util';
 
 const AGENT_DIR = resolve(__dirname, '..');
-const TOKEN = 'sk-ant-oat01-' + 'A1b2C3d4'.repeat(8);
+const TOKEN = 'sk-ant-oat01-' + 'A1b2C3d4'.repeat(12);
 
 let tmp: ReturnType<typeof tempDir>;
 let server: ControlServer | undefined;
@@ -176,18 +176,26 @@ describe('orch login', () => {
     expect(r.stdout + r.stderr).not.toContain('A1b2C3d4');
   });
 
-  it('resets the persisted Claude login state after a successful login', async () => {
+  it('does not mark the Claude login valid by itself (only a real check does)', async () => {
     const secrets = join(tmp.dir, 'secrets');
     const data = join(tmp.dir, 'data');
     new ClaudeAuthState(data).markInvalid('401');
     expect(new ClaudeAuthState(data).isValid()).toBe(false);
     const r = await runEntry(
       ['login', '--token-stdin'],
-      { ORCH_SECRETS_DIR: secrets, ORCH_DATA_DIR: data, ORCH_CLAUDE_BIN: fakeClaude() },
+      {
+        ORCH_SECRETS_DIR: secrets,
+        ORCH_DATA_DIR: data,
+        ORCH_CLAUDE_BIN: fakeClaude(),
+        ORCH_SOCKET_PATH: join(tmp.dir, 'none.sock'),
+      },
       `${TOKEN}\n`,
     );
+    // The check could not run here (no daemon, no docker): inconclusive, login still succeeds.
     expect(r.code).toBe(0);
-    expect(new ClaudeAuthState(data).isValid()).toBe(true);
+    expect(r.stdout).toMatch(/Could not verify the Claude login|Claude login verified|rejected/);
+    expect(new ClaudeAuthState(data).isValid()).toBe(false);
+    expect(r.stdout + r.stderr).not.toContain(TOKEN);
   });
 
   it('rejects an invalid token and a failing setup-token', async () => {
@@ -245,10 +253,10 @@ describe('orch login', () => {
     expect(readFileSync(join(secrets, 'claude-token'), 'utf8').trim()).toBe(TOKEN);
     expect(a.out.join('') + a.err.join('')).not.toContain(TOKEN);
 
-    const other = 'sk-ant-oat01-' + 'Zz9Yy8Xx'.repeat(8);
+    const other = 'sk-ant-oat01-' + 'Zz9Yy8Xx'.repeat(12);
     const b = io(`${other}\n`);
     await login({ ...base, setupRunner: async () => 'no token here\n' }, b.io);
-    expect(b.err.join('')).toContain('Could not read the token automatically');
+    expect(b.err.join('')).toContain('Could not read the token reliably');
     expect(readFileSync(join(secrets, 'claude-token'), 'utf8').trim()).toBe(other);
   });
 });

@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { ZodError, type ZodTypeAny, type z } from 'zod';
+import { ZodError, type ZodType, type z } from 'zod';
 
 export class HttpError extends Error {
   constructor(
@@ -15,7 +15,7 @@ export function sendError(reply: FastifyReply, status: number, code: string, mes
   return reply.status(status).send({ error: { code, message } });
 }
 
-export function parseBody<T extends ZodTypeAny>(schema: T, body: unknown): z.infer<T> {
+export function parseBody<T extends ZodType>(schema: T, body: unknown): z.infer<T> {
   const r = schema.safeParse(body ?? {});
   if (!r.success) {
     const msg = r.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ');

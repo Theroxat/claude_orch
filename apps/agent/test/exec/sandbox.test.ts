@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BLANKED_AUTH_ENV,
   CLAUDE_TOKEN_ENV,
   SandboxError,
   buildCreateArgs,
@@ -70,6 +71,44 @@ describe('sandbox create args', () => {
     expect(e2).not.toContain(`${CLAUDE_TOKEN_ENV}=x`);
     expect(e2).not.toContain('HOME=/root');
     expect(e2).not.toContain('DOCKER_HOST=tcp://h');
+  });
+
+  it('drops auth-related containerEnv and blanks every alternate auth variable', () => {
+    const e = values(
+      buildCreateArgs(
+        spec({
+          containerEnv: {
+            ANTHROPIC_API_KEY: 'sk-ant-api03-FAKE',
+            [CLAUDE_TOKEN_ENV]: 'sk-ant-oat01-FAKE',
+            CLAUDE_CONFIG_DIR: '/home/x/.claude',
+            ANTHROPIC_BASE_URL: 'https://evil.example',
+            KEEP: 'yes',
+          },
+        }),
+      ),
+      '-e',
+    );
+    expect(e).toContain('KEEP=yes');
+    expect(e).not.toContain('ANTHROPIC_API_KEY=sk-ant-api03-FAKE');
+    expect(e).not.toContain(`${CLAUDE_TOKEN_ENV}=sk-ant-oat01-FAKE`);
+    expect(e).not.toContain('CLAUDE_CONFIG_DIR=/home/x/.claude');
+    expect(e).not.toContain('ANTHROPIC_BASE_URL=https://evil.example');
+    expect(e).toContain('CLAUDE_CONFIG_DIR=/tmp/.claude');
+    for (const k of BLANKED_AUTH_ENV) expect(e).toContain(`${k}=`);
+    expect(BLANKED_AUTH_ENV).toEqual(
+      expect.arrayContaining([
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_AUTH_TOKEN',
+        'ANTHROPIC_BASE_URL',
+        'CLAUDE_CODE_USE_BEDROCK',
+        'CLAUDE_CODE_USE_VERTEX',
+        'CLAUDE_CODE_USE_FOUNDRY',
+        'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+        'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+      ]),
+    );
+    // The token variable (name only) is the last -e.
+    expect(e[e.length - 1]).toBe(CLAUDE_TOKEN_ENV);
   });
 
   it('ends with the image and a keep-alive command', () => {
