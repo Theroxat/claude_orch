@@ -1,0 +1,30 @@
+# Member-side orch agent stack. install.sh writes this file to ~/orch/compose.yaml.
+# Variables come from ~/orch/.env (see .env.example).
+name: orch
+
+services:
+  agent:
+    image: ${ORCH_AGENT_IMAGE:-ghcr.io/theroxat/orch-agent}:${ORCH_AGENT_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ORCH_SERVER_URL: ${ORCH_SERVER_URL:?set ORCH_SERVER_URL in .env}
+      ORCH_AGENT_ID: ${ORCH_AGENT_ID:-}
+      ORCH_AGENT_CREDENTIAL: ${ORCH_AGENT_CREDENTIAL:-}
+      ORCH_WORK_DIR: ${ORCH_WORK_DIR:?set ORCH_WORK_DIR in .env}
+      ORCH_CLAUDE_USAGE_ROOT: /host-claude
+      ORCH_PLAN: ${ORCH_PLAN:-pro}
+    volumes:
+      # The agent starts task containers through the host Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Agent state (outbox, pause state, mirrors) and the agent credential.
+      - orch-data:/data
+      # Claude token written by `orch login`; mounted only in this container.
+      - orch-secrets:/secrets
+      # Host Claude Code logs, read-only, used only to estimate your usage window.
+      - ${ORCH_CLAUDE_DIR:-${HOME}/.claude}:/host-claude:ro
+      # Workspace: mounted at the SAME absolute path so the daemon can bind task sources.
+      - ${ORCH_WORK_DIR}:${ORCH_WORK_DIR}
+
+volumes:
+  orch-data:
+  orch-secrets:

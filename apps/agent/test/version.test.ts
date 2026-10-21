@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_VERSION } from './version';
+import { AGENT_VERSION } from '../src/version';
 
-describe('agent stub', () => {
+describe('agent version', () => {
   it('exposes a semver version', () => {
     expect(AGENT_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });

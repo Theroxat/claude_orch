@@ -1,0 +1,133 @@
+/**
+ * Agent configuration from the environment (zod-validated, fails fast with a readable error).
+ *
+ * Names match deploy/agent/compose.yaml and the ~/orch/.env written by install.sh.
+ * Empty values (compose `${X:-}`) are treated as unset.
+ *
+ * Usage interval rule: when ORCH_USAGE_INTERVAL_SEC is set explicitly it always wins.
+ * Otherwise the server's `welcome.usageSec` / `config.update.usageSec` is used, with 300 s
+ * as the value before the first welcome.
+ */
+import { hostname } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+import type { LogLevel } from './log';
+import type { PlanName } from './usage';
+
+export const DEFAULT_USAGE_INTERVAL_SEC = 300;
+
+const optionalString = z.string().min(1).optional();
+
+const EnvSchema = z.object({
+  ORCH_SERVER_URL: z
+    .string({ required_error: 'is required (e.g. https://orch.example.com)' })
+    .url('must be a URL')
+    .refine((u) => /^https?:\/\//i.test(u), 'must start with http:// or https://'),
+  ORCH_AGENT_CREDENTIAL: optionalString,
+  ORCH_AGENT_ID: optionalString,
+  ORCH_ENROLL_TOKEN: optionalString,
+  ORCH_DATA_DIR: z.string().min(1).default('/data'),
+  ORCH_SOCKET_PATH: z.string().min(1).default('/run/orch.sock'),
+  ORCH_SECRETS_DIR: z.string().min(1).default('/secrets'),
+  ORCH_WORK_DIR: optionalString,
+  ORCH_MACHINE_NAME: z.string().trim().min(1).max(100).optional(),
+  ORCH_USAGE_INTERVAL_SEC: z.coerce.number().int().min(5).max(86_400).optional(),
+  ORCH_CLAUDE_USAGE_ROOT: z.string().min(1).default('/host-claude'),
+  ORCH_PLAN: z.enum(['pro', 'max5', 'max20']).default('pro'),
+  ORCH_CLAUDE_BIN: z.string().min(1).default('claude'),
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']).default('info'),
+});
+
+export interface AgentConfig {
+  serverUrl: string;
+  wsUrl: string;
+  enrollUrl: string;
+  credential?: string;
+  agentId?: string;
+  enrollToken?: string;
+  dataDir: string;
+  credentialFile: string;
+  socketPath: string;
+  secretsDir: string;
+  workDir?: string;
+  machineName: string;
+  usageIntervalSec: number;
+  /** True when ORCH_USAGE_INTERVAL_SEC was set: the server value is then ignored. */
+  usageIntervalExplicit: boolean;
+  claudeUsageRoot: string;
+  plan: PlanName;
+  claudeBin: string;
+  logLevel: LogLevel;
+}
+
+export class ConfigError extends Error {
+  override name = 'ConfigError';
+}
+
+function dropEmpty(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined && v.trim() !== '') out[k] = v;
+  return out;
+}
+
+/** Server base URL without credentials, query, hash or trailing slash. */
+function baseUrl(url: string): string {
+  const u = new URL(url);
+  return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+}
+
+export function toWsUrl(serverUrl: string): string {
+  return `${baseUrl(serverUrl).replace(/^http/i, 'ws')}/agent/ws`;
+}
+
+function toLogLevel(l: z.infer<typeof EnvSchema>['LOG_LEVEL']): LogLevel {
+  if (l === 'trace') return 'debug';
+  if (l === 'fatal') return 'error';
+  return l;
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
+  const parsed = EnvSchema.safeParse(dropEmpty(env));
+  if (!parsed.success) {
+    const lines = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`);
+    throw new ConfigError(`Invalid agent configuration:\n${lines.join('\n')}`);
+  }
+  const e = parsed.data;
+  const base = baseUrl(e.ORCH_SERVER_URL);
+  return {
+    serverUrl: base,
+    wsUrl: toWsUrl(e.ORCH_SERVER_URL),
+    enrollUrl: `${base}/api/agents/enroll`,
+    credential: e.ORCH_AGENT_CREDENTIAL,
+    agentId: e.ORCH_AGENT_ID,
+    enrollToken: e.ORCH_ENROLL_TOKEN,
+    dataDir: e.ORCH_DATA_DIR,
+    credentialFile: join(e.ORCH_DATA_DIR, 'agent-credential'),
+    socketPath: e.ORCH_SOCKET_PATH,
+    secretsDir: e.ORCH_SECRETS_DIR,
+    workDir: e.ORCH_WORK_DIR,
+    machineName: e.ORCH_MACHINE_NAME ?? hostname(),
+    usageIntervalSec: e.ORCH_USAGE_INTERVAL_SEC ?? DEFAULT_USAGE_INTERVAL_SEC,
+    usageIntervalExplicit: e.ORCH_USAGE_INTERVAL_SEC !== undefined,
+    claudeUsageRoot: e.ORCH_CLAUDE_USAGE_ROOT,
+    plan: e.ORCH_PLAN,
+    claudeBin: e.ORCH_CLAUDE_BIN,
+    logLevel: toLogLevel(e.LOG_LEVEL),
+  };
+}
+
+/** Subset used by the `orch` CLI, which must work without ORCH_SERVER_URL. */
+export interface CliConfig {
+  socketPath: string;
+  secretsDir: string;
+  claudeBin: string;
+}
+
+export function loadCliConfig(env: NodeJS.ProcessEnv = process.env): CliConfig {
+  const e = dropEmpty(env);
+  return {
+    socketPath: e.ORCH_SOCKET_PATH ?? '/run/orch.sock',
+    secretsDir: e.ORCH_SECRETS_DIR ?? '/secrets',
+    claudeBin: e.ORCH_CLAUDE_BIN ?? 'claude',
+  };
+}

@@ -1,24 +1,24 @@
-import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { App } from './App';
+import { mockApi, me, renderApp } from './test/helpers';
 
-describe('App', () => {
-  it('redirects to My projects inside the layout', () => {
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <App />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('heading', { name: 'My projects' })).toBeTruthy();
+describe('auth gate', () => {
+  it('redirects unauthenticated users to the login page', async () => {
+    mockApi({
+      'GET /me': () => ({ status: 401, json: { error: { code: 'unauthorized', message: 'no' } } }),
+    });
+    renderApp('/projects');
+    const link = await screen.findByRole('link', { name: 'Sign in with GitHub' });
+    expect(link.getAttribute('href')).toBe('/api/auth/github/login');
   });
 
-  it('renders the Pool placeholder', () => {
-    render(
-      <MemoryRouter initialEntries={['/pool']}>
-        <App />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('heading', { name: 'Pool' })).toBeTruthy();
+  it('shows the layout with nav and user when signed in', async () => {
+    mockApi({ 'GET /me': () => ({ json: me }), 'GET /projects/mine': () => ({ json: [] }) });
+    renderApp('/pool');
+    expect(await screen.findByRole('heading', { name: 'Pool' })).toBeTruthy();
+    for (const n of ['Projects', 'Discover', 'Pool', 'Backlog', 'My Server'])
+      expect(screen.getByRole('link', { name: n })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Octo Cat')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy();
   });
 });

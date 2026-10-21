@@ -50,6 +50,8 @@ services:
       ORCH_BASE_URL: ${ORCH_BASE_URL:-http://localhost:8470}
       DATABASE_URL: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:-change-me-dev-only}@postgres:5432/${POSTGRES_DB:-orch}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
@@ -103,5 +105,32 @@ services:
       timeout: 3s
       retries: 20
 
+  # Member-side agent (M2). Builds the real agent image. Start with:
+  #   ./dev up && docker compose -f compose.dev.yaml --profile agent up -d --build agent
+  # Set ORCH_DEV_ENROLL_TOKEN (from My server) or ORCH_DEV_AGENT_CREDENTIAL in .env first.
+  # No host Docker socket in dev for M2 (nothing starts task containers yet).
+  agent:
+    build:
+      context: .
+      dockerfile: apps/agent/Dockerfile
+    image: orch-agent:dev
+    profiles: ['agent']
+    environment:
+      # Dev Caddy is plain HTTP, so the agent uses ws:// here (wss:// in production).
+      ORCH_SERVER_URL: http://caddy:80
+      ORCH_ENROLL_TOKEN: ${ORCH_DEV_ENROLL_TOKEN:-}
+      ORCH_AGENT_CREDENTIAL: ${ORCH_DEV_AGENT_CREDENTIAL:-}
+      ORCH_MACHINE_NAME: dev-agent
+      ORCH_PLAN: ${ORCH_PLAN:-pro}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - agent-data:/data
+      - agent-secrets:/secrets
+    depends_on:
+      caddy:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  agent-data:
+  agent-secrets:

@@ -1,2 +1,2 @@
-// Module boundary: GitHub App client, token minting and webhooks (phase B).
-export {};
+export type * from './client';
+export { OctokitGithubClient, mapGithubRoleName } from './octokit';

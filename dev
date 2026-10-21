@@ -21,6 +21,10 @@ case "$cmd" in
   format) tools pnpm exec prettier --write . ;;
   typecheck) tools pnpm -r typecheck ;;
   test) tools pnpm -r test "$@" ;;
+  test:install)
+    docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install.sh
+    docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install
+    ;;
   build) tools pnpm -r build ;;
   prisma) tools pnpm --filter @orch/server exec prisma "$@" ;;
   pnpm) tools pnpm "$@" ;;
@@ -35,6 +39,6 @@ case "$cmd" in
   logs) dc logs -f "$@" ;;
   ps) dc ps ;;
   help | *)
-    echo "usage: ./dev <install|lint|format|typecheck|test|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
+    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
     ;;
 esac

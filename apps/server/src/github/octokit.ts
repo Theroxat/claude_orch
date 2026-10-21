@@ -1,0 +1,130 @@
+import { readFileSync } from 'node:fs';
+import { createAppAuth } from '@octokit/auth-app';
+import { Octokit } from '@octokit/rest';
+import type { GithubRole } from '@orch/shared';
+import type { GithubClient, GithubRepoAccess, GithubTokens, GithubUserInfo } from './client';
+
+export interface OctokitGithubOptions {
+  appId: string;
+  clientId: string;
+  clientSecret: string;
+  privateKeyPath: string;
+}
+
+const ROLES: Record<string, GithubRole> = {
+  admin: 'ADMIN',
+  maintain: 'MAINTAIN',
+  write: 'WRITE',
+  triage: 'TRIAGE',
+  read: 'READ',
+};
+
+export function mapGithubRoleName(name: string | null | undefined): GithubRole {
+  return (name && ROLES[name]) || 'NONE';
+}
+
+async function tokenRequest(
+  opts: OctokitGithubOptions,
+  params: Record<string, string>,
+): Promise<GithubTokens> {
+  const res = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: opts.clientId,
+      client_secret: opts.clientSecret,
+      ...params,
+    }),
+  });
+  const data = (await res.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+  };
+  if (!res.ok || !data.access_token) {
+    throw new Error(`GitHub token exchange failed: ${data.error ?? res.status}`);
+  }
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : undefined,
+  };
+}
+
+export class OctokitGithubClient implements GithubClient {
+  private readonly privateKey: string;
+  private readonly installationClients = new Map<number, Octokit>();
+
+  constructor(private readonly opts: OctokitGithubOptions) {
+    this.privateKey = readFileSync(opts.privateKeyPath, 'utf8');
+  }
+
+  exchangeCode(code: string, redirectUri: string): Promise<GithubTokens> {
+    return tokenRequest(this.opts, { code, redirect_uri: redirectUri });
+  }
+
+  refreshUserToken(refreshToken: string): Promise<GithubTokens> {
+    return tokenRequest(this.opts, { grant_type: 'refresh_token', refresh_token: refreshToken });
+  }
+
+  async getUser(accessToken: string): Promise<GithubUserInfo> {
+    const { data } = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
+    return { id: data.id, login: data.login, name: data.name, avatarUrl: data.avatar_url };
+  }
+
+  async listUserRepos(accessToken: string): Promise<GithubRepoAccess[]> {
+    const octokit = new Octokit({ auth: accessToken });
+    const installations = await octokit.paginate(
+      octokit.rest.apps.listInstallationsForAuthenticatedUser,
+      { per_page: 100 },
+    );
+    const out: GithubRepoAccess[] = [];
+    for (const inst of installations) {
+      const account = inst.account as { login?: string; slug?: string; type?: string } | null;
+      const repos = await octokit.paginate(
+        octokit.rest.apps.listInstallationReposForAuthenticatedUser,
+        { installation_id: inst.id, per_page: 100 },
+      );
+      for (const r of repos) {
+        out.push({
+          githubRepoId: r.id,
+          fullName: r.full_name,
+          private: r.private,
+          defaultBranch: r.default_branch,
+          installationId: inst.id,
+          accountLogin: account?.login ?? account?.slug ?? '',
+          accountType: account?.type ?? 'User',
+          admin: r.permissions?.admin === true,
+        });
+      }
+    }
+    return out;
+  }
+
+  async getUserRole(installationId: number, fullName: string, login: string): Promise<GithubRole> {
+    const [owner, repo] = fullName.split('/');
+    if (!owner || !repo) return 'NONE';
+    try {
+      const { data } = await this.forInstallation(
+        installationId,
+      ).rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
+      return mapGithubRoleName(data.role_name);
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return 'NONE';
+      throw err;
+    }
+  }
+
+  private forInstallation(installationId: number): Octokit {
+    let client = this.installationClients.get(installationId);
+    if (!client) {
+      client = new Octokit({
+        authStrategy: createAppAuth,
+        auth: { appId: this.opts.appId, privateKey: this.privateKey, installationId },
+      });
+      this.installationClients.set(installationId, client);
+    }
+    return client;
+  }
+}

@@ -13,8 +13,19 @@ const ConfigSchema = z.object({
   GITHUB_APP_ID: z.preprocess(emptyToUndefined, z.string().optional()),
   GITHUB_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
   GITHUB_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
+  GITHUB_APP_SLUG: z.preprocess(emptyToUndefined, z.string().optional()),
+  GITHUB_APP_PRIVATE_KEY_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
   GITHUB_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
   ORCH_ENCRYPTION_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  // Files served to member machines. Default: resolved from the repository root.
+  ORCH_INSTALL_SH_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
+  ORCH_AGENT_COMPOSE_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
+  // Agent gateway timings.
+  AGENT_HEARTBEAT_SEC: z.coerce.number().int().positive().default(30),
+  AGENT_USAGE_SEC: z.coerce.number().int().positive().default(300),
+  AGENT_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+  AGENT_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  RETENTION_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -4,5 +4,5 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [react()],
   server: { host: '0.0.0.0', port: 5173, strictPort: true, allowedHosts: true },
-  test: { environment: 'jsdom', include: ['src/**/*.test.tsx'] },
+  test: { environment: 'jsdom', include: ['src/**/*.test.tsx'], setupFiles: ['src/test/setup.ts'] },
 });

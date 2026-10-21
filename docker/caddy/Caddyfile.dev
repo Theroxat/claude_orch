@@ -10,6 +10,13 @@
 	handle /api/* {
 		reverse_proxy server:3000
 	}
+	# Member machines: enrollment, compose file and the agent WebSocket (upgrade is proxied as-is).
+	handle /agent/* {
+		reverse_proxy server:3000
+	}
+	handle /install.sh {
+		reverse_proxy server:3000
+	}
 	handle /healthz {
 		reverse_proxy server:3000
 	}

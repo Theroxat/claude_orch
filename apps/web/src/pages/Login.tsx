@@ -1,8 +1,11 @@
 export function Login() {
   return (
-    <section>
-      <h1>Sign in</h1>
-      <p>GitHub sign-in is not wired up yet.</p>
+    <section className="card login">
+      <h1>orch</h1>
+      <p className="hint">Share your Claude Code capacity with your team.</p>
+      <a className="btn primary" href="/api/auth/github/login">
+        Sign in with GitHub
+      </a>
     </section>
   );
 }

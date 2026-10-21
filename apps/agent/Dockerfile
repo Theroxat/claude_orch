@@ -1,0 +1,59 @@
+# orch agent image (member machine). Build context = repository root:
+#   docker build -f apps/agent/Dockerfile -t orch-agent .
+#
+# Runs as root: the agent holds the host Docker socket (root-equivalent, PLAN R5), owns
+# /run/orch.sock and the /data and /secrets volumes. Task containers are non-root (PLAN 5.3).
+FROM docker:27-cli AS docker-cli
+
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git screen ca-certificates curl tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI + compose plugin, used to drive task containers through the host daemon.
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+
+# Claude Code CLI (native installer), copied to /opt/orch/bin/claude (PLAN 5.6) so it can be
+# mounted read-only into task containers later. Auto-updates are disabled: the image pins it.
+ENV DISABLE_AUTOUPDATER=1
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && mkdir -p /opt/orch/bin \
+ && cp -L "$HOME/.local/bin/claude" /opt/orch/bin/claude \
+ && chmod 0755 /opt/orch/bin/claude \
+ && rm -rf "$HOME/.local/share/claude" "$HOME/.local/bin/claude" \
+ && /opt/orch/bin/claude --version
+
+ENV COREPACK_HOME=/opt/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    CI=true
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+
+WORKDIR /app
+# Manifests first for layer caching, then sources.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/agent/package.json apps/agent/
+RUN pnpm install --frozen-lockfile --prod --filter "@orch/agent..." \
+ && pnpm store prune
+COPY packages/shared/ packages/shared/
+COPY apps/agent/ apps/agent/
+RUN rm -rf apps/agent/test
+
+RUN printf '#!/bin/sh\nexec node --import tsx /app/apps/agent/src/cli/main.ts "$@"\n' > /usr/local/bin/orch \
+ && chmod 0755 /usr/local/bin/orch \
+ && mkdir -p /data /secrets \
+ && chmod 0700 /data /secrets
+
+ENV NODE_ENV=production \
+    ORCH_DATA_DIR=/data \
+    ORCH_SECRETS_DIR=/secrets \
+    ORCH_SOCKET_PATH=/run/orch.sock \
+    ORCH_CLAUDE_BIN=/opt/orch/bin/claude \
+    ORCH_CLAUDE_USAGE_ROOT=/host-claude
+
+VOLUME ["/data", "/secrets"]
+WORKDIR /app/apps/agent
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "--import", "tsx", "/app/apps/agent/src/main.ts"]
