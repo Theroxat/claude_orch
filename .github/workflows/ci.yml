@@ -32,8 +32,10 @@ jobs:
         run: ./dev typecheck
       - name: Test
         run: ./dev test
-      - name: Installer tests (shellcheck + bats)
+      - name: Installer and backup script tests (shellcheck + bats)
         run: ./dev test:install
+      - name: Backup integration (throwaway Postgres, backup, restore)
+        run: ./dev test:backup
 
   ui:
     name: Browser UI tests (Playwright, Docker)

@@ -18,7 +18,7 @@ Report vulnerabilities privately through GitHub security advisories on the repos
 
 ## Limitations
 
-- Single server instance (in-process scheduler); no high availability. One host, nightly dumps.
+- Single server instance (in-process scheduler); no high availability. One host, scheduled dumps.
 - No egress control, devcontainer/compose sanitizing or token-injecting proxy for task containers (see "Future hardening" in {doc}`PLAN`).
 - Usage and budget are estimates; plans are declared by the member.
 - Repos must build from a `Dockerfile` or a simple `.devcontainer.json`; complex devcontainer features are not honored.

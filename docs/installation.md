@@ -9,7 +9,7 @@ The stack (`deploy/server/compose.yaml`) has these pieces:
 | `caddy`           | Automatic HTTPS for `ORCH_DOMAIN`, serves the web build, proxies the rest to the server        |
 | `server`          | REST API, GitHub OAuth and webhooks, dispatcher, agent WebSocket gateway, MCP server           |
 | `postgres`        | All state. Internal network only                                                               |
-| `backup`          | Nightly `pg_dump` into a volume with retention                                                 |
+| `backup`          | Scheduled `pg_dump` with rotation, optional encryption and S3 upload ({doc}`backups`)          |
 | `agent` (members) | `ghcr.io/theroxat/orch-agent`: runs on each member's machine, drives their local Docker daemon |
 
 ## 1. DNS
@@ -122,28 +122,11 @@ Members upgrade their agent with `docker compose -f ~/orch/compose.yaml pull && 
 
 ## Backups and restore
 
-The `backup` service writes `orch-<UTC timestamp>.dump` files (pg_dump custom format) into the `backups` volume every night at `BACKUP_HOUR_UTC` and deletes dumps older than `BACKUP_RETENTION_DAYS` (14 by default).
+The `backup` service dumps the database every night at 03:00 UTC (`BACKUP_SCHEDULE`), keeps 7 daily, 4 weekly and 6 monthly dumps, and can encrypt them (age) and upload them to S3-compatible storage. To restore:
 
 ```sh
-# list backups
-docker compose exec backup ls -lh /backups
-
-# copy the newest one out of the volume (do this regularly: a backup on the same host is not a disaster plan)
-docker compose cp backup:/backups/orch-<timestamp>.dump ./orch.dump
-
-# take one now
-docker compose exec -e BACKUP_ON_START=false backup sh -c \
-  'pg_dump --format=custom --no-owner --file=/backups/orch-manual.dump'
+backup/restore.sh --list
+backup/restore.sh            # newest dump, asks for confirmation
 ```
 
-Restore into a running stack (this replaces the data):
-
-```sh
-docker compose stop server
-docker compose cp ./orch.dump postgres:/tmp/orch.dump
-docker compose exec postgres sh -c \
-  'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/orch.dump && rm /tmp/orch.dump'
-docker compose start server
-```
-
-Also keep `.env` (in particular `ORCH_ENCRYPTION_KEY`) and the GitHub App private key somewhere safe; they are not in the dump.
+The dump does **not** contain `.env` (notably `ORCH_ENCRYPTION_KEY`) or the GitHub App private key: keep them separately. Details, encryption, off-site copies and what is not backed up are in {doc}`backups`.

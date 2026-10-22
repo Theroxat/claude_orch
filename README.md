@@ -40,7 +40,7 @@ Full documentation (quickstart, server installation, concepts, CLI and MCP refer
                               |  v
  Browser ------ HTTPS ---->  +-------------------------------+      +----------+
  Claude Code -- /mcp ----->  |  Caddy (auto HTTPS, static    | ---> | server   | --- Postgres
-                             |  web build, reverse proxy)    |      | (Fastify)|     (+ nightly
+                             |  web build, reverse proxy)    |      | (Fastify)|     (+ scheduled
  Member agents -- wss ---->  |  /api /mcp /agent/* /install.sh      +----------+      pg_dump)
    /agent/ws                 +-------------------------------+
         ^
@@ -60,7 +60,7 @@ Full documentation (quickstart, server installation, concepts, CLI and MCP refer
 | `caddy`    | Automatic HTTPS for `ORCH_DOMAIN`, serves the web build, proxies the rest to the server    |
 | `server`   | REST API, GitHub OAuth and webhooks, dispatcher, agent WebSocket gateway, MCP server       |
 | `postgres` | All state. Internal network only                                                           |
-| `backup`   | Nightly `pg_dump` into a volume with retention                                             |
+| `backup`   | Scheduled `pg_dump` with rotation, optional age encryption and S3 upload                   |
 | `agent`    | `ghcr.io/theroxat/orch-agent`: runs on each member's machine and drives their local Docker |
 
 ## Quick start
@@ -153,17 +153,7 @@ Agent settings live in `~/orch/.env` (`ORCH_PLAN` is `pro`, `max5` or `max20`); 
 
 **Updating agents.** The web app shows a banner when an agent is behind the server's release. **Update now** (or `orch update [--when-idle]`) makes the agent pull exactly `ghcr.io/theroxat/orch-agent:<version>`, switch over through a helper container and roll back on failure. It refuses while tasks run. Manual fallback: `cd ~/orch && docker compose pull && docker compose up -d`.
 
-**Backups.** The `backup` service writes `orch-<UTC timestamp>.dump` (pg_dump custom format) nightly at `BACKUP_HOUR_UTC` (default 03:00) and keeps 14 days.
-
-```sh
-docker compose cp backup:/backups/orch-<timestamp>.dump ./orch.dump   # copy off the host regularly
-docker compose stop server
-docker compose cp ./orch.dump postgres:/tmp/orch.dump
-docker compose exec postgres sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/orch.dump && rm /tmp/orch.dump'
-docker compose start server
-```
-
-Keep `.env` (notably `ORCH_ENCRYPTION_KEY`) and the App private key somewhere safe: they are not in the dump.
+**Backups.** The `backup` service runs `pg_dump` on `BACKUP_SCHEDULE` (default every day at 03:00 UTC), keeps 7 daily, 4 weekly and 6 monthly dumps, and can encrypt them (age) and upload them to S3-compatible storage. Restore with `deploy/server/backup/restore.sh` (asks for confirmation, stops the server, restores in one transaction, restarts). Keep `.env` (notably `ORCH_ENCRYPTION_KEY`) and the App private key elsewhere: they are not in the dump. See [docs/backups.md](docs/backups.md).
 
 <details>
 <summary><b>Behind Cloudflare Tunnel</b></summary>
@@ -245,7 +235,7 @@ The first run copies `.env.example` to `.env`. GitHub sign-in needs a developmen
 
 ## Limitations
 
-- Single server instance (in-process scheduler), no high availability; one host, nightly dumps.
+- Single server instance (in-process scheduler), no high availability; one host, scheduled dumps.
 - No egress control, compose sanitizing or token-injecting proxy for task containers ([future hardening](docs/PLAN.md#11-future-hardening-if-pools-ever-open-to-untrusted-members)).
 - Usage and budget are estimates; plans are declared by the member.
 - Repos must build from a `Dockerfile` or a simple `.devcontainer.json`.
