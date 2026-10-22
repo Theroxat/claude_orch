@@ -3,6 +3,7 @@ import type { BlockReason, TaskView } from '@orch/shared';
 import { useEffect, useRef, useState } from 'react';
 import { fetchWhyNotRunning } from '../api/endpoints';
 import { relative } from '../time';
+import { TaskLogsButton, hasLogs } from './TaskLogs';
 
 export function unmetDeps(task: TaskView) {
   return task.dependsOn.filter((d) => d.status !== 'DONE');
@@ -151,6 +152,7 @@ export function TaskCard({
           Needs attention{task.needsAttentionReason ? `: ${task.needsAttentionReason}` : ''}
         </p>
       )}
+      {hasLogs(task) && <TaskLogsButton task={task} />}
       {task.canRetry && onRetry && (
         <button
           disabled={retrying}

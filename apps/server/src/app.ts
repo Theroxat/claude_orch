@@ -17,6 +17,7 @@ import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
+import { LiveLogStore, registerLiveLogs } from './logs';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -67,7 +68,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
 
   if (prisma) {
     const deps = { config, prisma, github };
-    const gateway = createAgentGateway(app, deps);
+    const liveLogs = new LiveLogStore();
+    const gateway = createAgentGateway(app, { ...deps, liveLogs });
     const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
     gateway.setDispatcher(dispatcher);
     app.decorate('dispatcher', dispatcher);
@@ -80,6 +82,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     registerProjects(app, m4);
     registerParticipation(app, m4);
     registerTasks(app, m4);
+    registerLiveLogs(app, { ...deps, liveLogs });
     registerOffers(app, m4);
     registerWebhooks(app, m4);
     registerTokens(app, deps);

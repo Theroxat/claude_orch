@@ -24,6 +24,7 @@ import { HttpError, parseBody } from '../http/errors';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { toUsageSummary } from '../usage';
 import { AgentGateway } from './gateway';
+import type { LiveLogStore } from '../logs/store';
 
 export { AgentGateway, OfferRefusedError, type OfferRefusal } from './gateway';
 
@@ -43,9 +44,13 @@ function sameHash(a: string, b: string): boolean {
 }
 
 /** Creates the gateway, exposes it as `app.agentGateway` and stops it on close. */
-export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentGateway {
+export function createAgentGateway(
+  app: FastifyInstance,
+  deps: AuthDeps & { liveLogs?: LiveLogStore },
+): AgentGateway {
   const gateway = new AgentGateway({
     prisma: deps.prisma,
+    liveLogs: deps.liveLogs,
     config: deps.config,
     log: app.log,
     github: deps.github,
