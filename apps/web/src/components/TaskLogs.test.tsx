@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { LiveLogLine, TaskView } from '@orch/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TaskLogsButton, hasLogs } from './TaskLogs';
+import { TaskLogsButton, TaskLogsPanel, hasLogs } from './TaskLogs';
 
 /** Minimal EventSource double: tests push named events into the last opened stream. */
 class FakeEventSource {
@@ -129,6 +129,25 @@ describe('task logs', () => {
     fireEvent.click(jump);
     expect(view.scrollTop).toBe(1400);
     expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
+  });
+
+  it('counts new lines by id, so the count stays right once old lines are trimmed', () => {
+    const view = () => screen.getByTestId('log-view');
+    const lines = Array.from({ length: 6 }, (_, i) => line(`l${i}`));
+    const log = (ls: LiveLogLine[]) => ({
+      lines: ls,
+      meta: { assignmentId: 'a1', state: 'live' as const, truncated: 0 },
+      connection: 'open' as const,
+      reconnect: () => undefined,
+    });
+    const { rerender } = render(<TaskLogsPanel log={log(lines)} />);
+    geometry(view(), 1000);
+    view().scrollTop = 100;
+    fireEvent.scroll(view());
+    // The client keeps a bounded window: 3 new lines arrive, the 3 oldest are dropped.
+    const next = [...lines.slice(3), line('n1'), line('n2'), line('n3')];
+    rerender(<TaskLogsPanel log={log(next)} />);
+    expect(screen.getByRole('button', { name: 'Jump to latest (3 new)' })).toBeTruthy();
   });
 
   it('shows reconnects, and reopens a closed stream from the last line seen', () => {

@@ -60,7 +60,8 @@ function statusOf(s: LiveLogState): { label: string; tone: 'ok' | 'pending' | 's
 export function TaskLogsPanel({ log }: { log: LiveLogState }) {
   const box = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
-  const [seen, setSeen] = useState(0);
+  /** Id of the last line shown when the reader scrolled up (counts survive the client cap). */
+  const [seenId, setSeenId] = useState(0);
   const { lines, meta } = log;
 
   useLayoutEffect(() => {
@@ -74,7 +75,7 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK;
     if (atBottom !== follow) {
       setFollow(atBottom);
-      if (!atBottom) setSeen(lines.length);
+      if (!atBottom) setSeenId(lines.at(-1)?.id ?? 0);
     }
   };
   const jump = () => {
@@ -82,13 +83,19 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
     const el = box.current;
     if (el) el.scrollTop = el.scrollHeight;
   };
-  const unseen = follow ? 0 : Math.max(0, lines.length - seen);
+  let unseen = 0;
+  if (!follow)
+    for (let i = lines.length - 1; i >= 0 && (lines[i] as LiveLogLine).id > seenId; i--) unseen++;
   const status = statusOf(log);
 
   return (
     <div className="task-logs">
       <div className="task-logs-bar">
-        <span className={`badge ${status.tone}`} data-live={status.tone === 'ok' || undefined}>
+        <span
+          className={`badge ${status.tone}`}
+          data-live={status.tone === 'ok' || undefined}
+          role="status"
+        >
           {status.label}
         </span>
         {meta && meta.truncated > 0 && (
@@ -108,6 +115,7 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
         className="log-view"
         onScroll={onScroll}
         tabIndex={0}
+        role="region"
         aria-label="Task output"
         data-testid="log-view"
       >
