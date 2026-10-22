@@ -22,13 +22,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # pnpm content-addressable store (pnpm_config_store_dir in docker/tools.Dockerfile).
-      - name: Cache the pnpm store
-        uses: actions/cache@v6
-        with:
-          path: .pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-${{ runner.os }}-
       # Everything runs through ./dev, which only calls `docker compose` (no host node/pnpm).
       # CI installs with the frozen lockfile: a lockfile out of sync with package.json fails here.
       - name: Install dependencies
@@ -50,12 +43,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Cache the pnpm store
-        uses: actions/cache@v6
-        with:
-          path: .pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-${{ runner.os }}-
       # Self-contained: builds the web app, starts the e2e stack behind the production Caddy CSP,
       # runs Playwright (pinned image), tears everything down. CSP violations and axe
       # serious/critical findings fail the job.
