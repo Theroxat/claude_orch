@@ -42,16 +42,26 @@ export interface LiveLogStoreOptions {
   now?: () => number;
 }
 
+/**
+ * Approximate heap cost of a stored line: its strings plus the object itself (a few fields,
+ * ~150 bytes in V8), so a flood of empty lines is bounded as well as a few long ones.
+ */
 const lineBytes = (l: { text: string; tool?: string }) =>
-  l.text.length + (l.tool?.length ?? 0) + 48;
+  l.text.length + (l.tool?.length ?? 0) + 160;
 
 export class LiveLogStore {
   private readonly runs = new Map<string, Run>();
   /** Latest run per task. */
   private readonly byTask = new Map<string, string>();
   private readonly listeners = new Map<string, Set<LiveLogListener>>();
-  /** Line ids grow across every run, so one resume point per client is enough. */
-  private nextId = 1;
+  /**
+   * Line ids grow across every run, so one resume point per client is enough. They also grow
+   * across server restarts (seeded from the clock: start time in ms x 1000): a browser that
+   * reconnects to a restarted server with an old `Last-Event-ID` must not have every new line
+   * filtered out as "already seen". 1000 ids per millisecond of uptime leave plenty of room,
+   * and the values stay far below Number.MAX_SAFE_INTEGER.
+   */
+  private nextId: number;
   private readonly maxBytes: number;
   private readonly retainMs: number;
   private readonly idleMs: number;
@@ -64,6 +74,7 @@ export class LiveLogStore {
     this.idleMs = o.idleMs ?? 4 * 3600_000;
     this.maxRuns = o.maxRuns ?? 200;
     this.now = o.now ?? Date.now;
+    this.nextId = Math.max(1, Math.floor(this.now()) * 1000);
   }
 
   /** Who may append to a known run (the gateway checks the database for unknown ones). */

@@ -1,6 +1,7 @@
 /** Live task output: agent `task.log` -> bounded buffer -> SSE for users who can see the task. */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { connect } from 'node:net';
 import WebSocket from 'ws';
 import {
   EnrollResponseSchema,
@@ -356,6 +357,43 @@ describe('live task logs', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(app.liveLogs.snapshot(t.task.id).lines).toEqual([]);
   });
+
+  it('closes a stream whose client stops reading instead of queueing output without bound', async () => {
+    const t = await runningTask();
+    app.liveLogs.start(t.assignmentId, t.task.id, t.agent.agentId);
+    const [host, port] = base.split(':') as [string, string];
+    const sock = connect(Number(port), host);
+    await new Promise((r) => sock.once('connect', r));
+    sock.write(
+      `GET /api/tasks/${t.task.id}/logs/stream HTTP/1.1\r\nhost: ${base}\r\ncookie: ${t.owner.cookie}\r\n\r\n`,
+    );
+    let received = 0;
+    let tail = '';
+    let ended = false;
+    sock.on('data', (d: Buffer) => {
+      received += d.length;
+      tail = (tail + d.toString('latin1')).slice(-16);
+      // Last chunk of a chunked response: the server ended it (the socket itself may stay open).
+      if (tail.endsWith('\r\n0\r\n\r\n')) ended = true;
+    });
+    sock.on('close', () => (ended = true));
+    await until(() => received > 0); // subscribed (the first meta event arrived)
+    sock.pause(); // from now on, a client that never reads
+    // ~48 MB of live output while the client is stalled: far more than socket buffers absorb.
+    const big = 'x'.repeat(4000);
+    for (let i = 0; i < 24; i++) {
+      app.liveLogs.append(
+        t.assignmentId,
+        Array.from({ length: 500 }, () => entry(big)),
+      );
+    }
+    sock.resume();
+    // The server gave up on it: what was queued drains, then the stream ends (the browser would
+    // reconnect with Last-Event-ID), long before its 2 min lifetime.
+    await until(() => ended, 10_000);
+    expect(received).toBeLessThan(40 * 1024 * 1024);
+    sock.destroy();
+  }, 30_000);
 });
 
 describe('LiveLogStore', () => {
@@ -394,5 +432,23 @@ describe('LiveLogStore', () => {
       state: 'waiting',
       truncated: 0,
     });
+  });
+
+  it('keeps line ids growing across server restarts, so an old Last-Event-ID hides nothing', () => {
+    let now = Date.UTC(2026, 9, 22);
+    const before = new LiveLogStore({ now: () => now });
+    before.start('a1', 't1', 'agent');
+    before.append(
+      'a1',
+      Array.from({ length: 50 }, (_, i) => entry(`old ${i}`)),
+    );
+    const lastSeen = before.snapshot('t1').lines.at(-1)!.id;
+    expect(Number.isSafeInteger(lastSeen)).toBe(true);
+
+    now += 5_000; // the server restarts: a fresh store, same task resumed by the agent
+    const after = new LiveLogStore({ now: () => now });
+    after.start('a1', 't1', 'agent');
+    after.append('a1', [entry('after restart')]);
+    expect(after.snapshot('t1', lastSeen).lines.map((l) => l.text)).toEqual(['after restart']);
   });
 });

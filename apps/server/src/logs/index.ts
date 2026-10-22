@@ -28,6 +28,12 @@ const PING_MS = 15_000;
 const MAX_STREAMS_PER_USER = 8;
 /** Backlog lines per `lines` event on connect. */
 const REPLAY_BATCH = 500;
+/**
+ * Output queued for a client that does not read (slow link, stalled tab, hostile client) beyond
+ * this is not buffered further: the stream is closed and the browser resumes from the last
+ * event it really received (`Last-Event-ID`), so nothing is lost and memory stays bounded.
+ */
+export const LIVE_LOG_MAX_QUEUED_BYTES = 1024 * 1024;
 
 function resumePoint(header: unknown, query: unknown): number {
   for (const v of [header, query]) {
@@ -39,7 +45,7 @@ function resumePoint(header: unknown, query: unknown): number {
 
 export function registerLiveLogs(
   app: FastifyInstance,
-  deps: AuthDeps & { liveLogs: LiveLogStore; streamMaxMs?: number },
+  deps: AuthDeps & { liveLogs: LiveLogStore; streamMaxMs?: number; maxQueuedBytes?: number },
 ): void {
   const svc = new TaskService(deps);
   const store = deps.liveLogs;
@@ -68,6 +74,7 @@ export function registerLiveLogs(
       (req.query as Record<string, unknown> | undefined)?.after,
     );
 
+    let closed = false;
     reply.hijack();
     const raw = reply.raw;
     raw.writeHead(200, {
@@ -77,8 +84,13 @@ export function registerLiveLogs(
       'x-content-type-options': 'nosniff',
       connection: 'keep-alive',
     });
+    const maxQueued = deps.maxQueuedBytes ?? LIVE_LOG_MAX_QUEUED_BYTES;
+    // The backlog replay is bounded by the store already; the cap applies to what comes after.
+    let replaying = true;
     const write = (chunk: string) => {
-      if (!raw.destroyed && !raw.writableEnded) raw.write(chunk);
+      if (closed || raw.destroyed || raw.writableEnded) return;
+      raw.write(chunk);
+      if (!replaying && raw.writableLength > maxQueued) close();
     };
     const event = (name: string, data: unknown, eventId?: number) =>
       write(
@@ -94,19 +106,12 @@ export function registerLiveLogs(
     };
     const sendMeta = (name: 'meta' | 'end', meta: LiveLogMeta) => event(name, meta);
 
-    write('retry: 2000\n\n');
-    const snap = store.snapshot(task.id, after);
-    sendMeta('meta', snap.meta);
-    sendLines(snap.lines);
-    if (snap.meta.state === 'finished') sendMeta('end', snap.meta);
-
     const unsubscribe = store.subscribe(task.id, (e: LiveLogEvent) => {
       if (e.type === 'lines') sendLines(e.lines);
       else sendMeta(e.type, e.meta);
     });
     const ping = setInterval(() => write(': ping\n\n'), PING_MS);
     const lifetime = setTimeout(() => close(), deps.streamMaxMs ?? LIVE_LOG_STREAM_MAX_MS);
-    let closed = false;
     function close() {
       if (closed) return;
       closed = true;
@@ -122,5 +127,13 @@ export function registerLiveLogs(
     closers.add(close);
     raw.on('close', close);
     raw.on('error', close);
+
+    // Synchronous: no store event can slip in between the snapshot and the subscription above.
+    write('retry: 2000\n\n');
+    const snap = store.snapshot(task.id, after);
+    sendMeta('meta', snap.meta);
+    sendLines(snap.lines);
+    if (snap.meta.state === 'finished') sendMeta('end', snap.meta);
+    replaying = false;
   });
 }
