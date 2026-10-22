@@ -18,6 +18,7 @@ import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
 import { Notifier, registerNotifications } from './notifications';
+import { recipientCheck } from './notifications/access';
 import type { Mailer } from './notifications/service';
 import type { WebhookPoster } from './notifications/ssrf';
 
@@ -77,7 +78,18 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
     const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
     gateway.setDispatcher(dispatcher);
     app.decorate('dispatcher', dispatcher);
-    const notifier = new Notifier({ prisma, config, log: app.log, ...notify });
+    const notifier = new Notifier({
+      prisma,
+      config,
+      log: app.log,
+      // `app.allowlist` is registered later (registerAuth): resolved at call time.
+      canReceive: recipientCheck({
+        prisma,
+        github,
+        isAllowed: async (user) => (await app.allowlist.check(user)) === 'allowed',
+      }),
+      ...notify,
+    });
     app.decorate('notifier', notifier);
     app.addHook('onReady', async () => notifier.start());
     app.addHook('onClose', async () => notifier.stop());

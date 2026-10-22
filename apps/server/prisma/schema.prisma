@@ -625,6 +625,8 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, readAt])
+  /// Retention purge.
+  @@index([createdAt])
 }
 
 /// Per-user notification channels and preferences. Webhook URLs are secrets: AES-256-GCM encrypted.

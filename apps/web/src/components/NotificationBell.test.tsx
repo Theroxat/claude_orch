@@ -116,6 +116,23 @@ describe('notification bell', () => {
     );
   });
 
+  it.each(['javascript:alert(1)', 'data:text/html,<script>1</script>', '//evil.example/x'])(
+    'never opens a non-http(s) link: %s',
+    async (url) => {
+      const open = vi.fn();
+      vi.stubGlobal('open', open);
+      mockApi({
+        ...base(1, [item({ title: 'Odd link', url })]),
+        'POST /notifications/read': () => ({ json: { unreadCount: 0 } }),
+      });
+      renderApp('/projects');
+      fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }));
+      fireEvent.click(await screen.findByRole('button', { name: /Odd link/ }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(open).not.toHaveBeenCalled();
+    },
+  );
+
   it('marks everything read', async () => {
     const calls = mockApi({
       ...base(2, [item(), item({ id: 'n2', title: 'Second' })]),

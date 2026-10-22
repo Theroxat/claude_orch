@@ -91,8 +91,10 @@ export function NotificationBell() {
     if (!n.readAt) markRead.mutate({ ids: [n.id] });
     close(false);
     if (!n.url) return;
-    if (n.url.startsWith('/')) navigate(n.url);
-    else window.open(n.url, '_blank', 'noopener,noreferrer');
+    // App paths stay in the app (`//host` is not one); only http(s) leaves it, so a stored
+    // `javascript:` or `data:` URL can never run.
+    if (n.url.startsWith('/') && !n.url.startsWith('//')) navigate(n.url);
+    else if (/^https?:\/\//i.test(n.url)) window.open(n.url, '_blank', 'noopener,noreferrer');
   };
 
   const label = unread > 0 ? `Notifications, ${unread} unread` : 'Notifications';

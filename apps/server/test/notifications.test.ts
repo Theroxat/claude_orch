@@ -20,6 +20,7 @@ import {
 } from '@orch/shared';
 import { audit } from '../src/audit';
 import { signBody } from '../src/webhooks';
+import { recipientCheck } from '../src/notifications/access';
 import type { Mailer } from '../src/notifications/service';
 import {
   guardedLookup,
@@ -403,6 +404,72 @@ describe('task events become in-app notifications', { timeout: 20_000 }, () => {
   });
 });
 
+describe('recipients who lost access', { timeout: 20_000 }, () => {
+  it('a private repo: an ex-collaborator creator is not notified, the runner still is', async () => {
+    const owner = await loginAs(app, gh);
+    const repo = repoFor({ private: true });
+    gh.repos.set(owner.token, [repo]);
+    gh.roles.set(`4242:${repo.fullName}:${owner.login}`, 'ADMIN');
+    const p = ProjectViewSchema.parse(
+      (await api(app, owner)('POST', '/api/projects', { githubRepoId: repo.githubRepoId })).json(),
+    );
+    const creator = await loginAs(app, gh);
+    gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'WRITE');
+    const m = await member(p.id);
+    const t = await createTask(creator, p.id, 'Secret thing');
+    // The creator is removed from the repository; the cached role expires.
+    gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'NONE');
+    await prisma.projectPermission.updateMany({
+      where: { userId: creator.userId, projectId: p.id },
+      data: { syncedAt: new Date(0) },
+    });
+    await setPrefs(creator, {}, { webhookUrl: 'https://hooks.example.com/creator' });
+    const offer = await startRun(m, t.id);
+    await m.client.call(
+      agentMessage('task.finished', {
+        assignmentId: offer.payload.assignmentId,
+        seq: 2,
+        outcome: 'failed',
+        usage: { weighted: 0, input: 0, output: 0 },
+        error: 'tests failed',
+      } as never),
+    );
+    await settle();
+    expect(await rows(creator.userId)).toHaveLength(0);
+    expect(posted.filter((x) => x.url.includes('/creator'))).toHaveLength(0);
+    // The runner has no GitHub role but an active participation: its agent ran the code.
+    expect(await events(m.user.userId)).toEqual(['task_failed']);
+  });
+
+  it('recipientCheck: refused by the allowlist, unknown user, public and private projects', async () => {
+    const { owner, project: p } = await project();
+    const outsider = await loginAs(app, gh);
+    let allowed = true;
+    const check = recipientCheck({ prisma, github: gh, isAllowed: async () => allowed });
+    expect(await check(outsider.userId, null)).toBe(true);
+    expect(await check(outsider.userId, p.id)).toBe(true); // public repo
+    expect(await check('nobody', null)).toBe(false);
+    allowed = false;
+    expect(await check(owner.userId, p.id)).toBe(false);
+    expect(await check(owner.userId, null)).toBe(false);
+    allowed = true;
+    await prisma.project.update({ where: { id: p.id }, data: { isPrivate: true } });
+    expect(await check(outsider.userId, p.id)).toBe(false);
+    await prisma.projectPermission.upsert({
+      where: { projectId_userId: { projectId: p.id, userId: outsider.userId } },
+      create: {
+        projectId: p.id,
+        userId: outsider.userId,
+        githubRole: 'NONE',
+        canSubmit: true,
+        syncedAt: new Date(),
+      },
+      update: { canSubmit: true },
+    });
+    expect(await check(outsider.userId, p.id)).toBe(true); // owner override
+  });
+});
+
 describe('owner and admin requests', () => {
   it('a participation request notifies the project owner once, not on every budget change', async () => {
     const { owner, repo, project: p } = await project();
@@ -537,6 +604,13 @@ describe('SSRF guard', () => {
     'https://[fe80::1]/x',
     'https://[::ffff:127.0.0.1]/x',
     'https://[::ffff:10.0.0.1]/x',
+    'https://[::127.0.0.1]/x', // IPv4-compatible, normalised to ::7f00:1
+    'https://[::a9fe:a9fe]/x',
+    'https://[2002:7f00:1::]/x', // 6to4 of 127.0.0.1
+    'https://[2001:0:4136:e378:8000:63bf:80ff:fffe]/x', // Teredo
+    'https://2130706433/x', // decimal 127.0.0.1
+    'https://0x7f.1/x',
+    'https://017700000001/x', // octal
     'https://localhost/x',
     'https://foo.localhost/x',
     'https://printer.local/x',
@@ -617,7 +691,7 @@ describe('external channels', () => {
     const by = (host: string) => posted.find((x) => x.url.includes(host))!.body;
 
     const slack = by('hooks.slack.com');
-    expect(slack.text).toContain('Needs attention: Fix <setup> & go');
+    expect(slack.text).toContain('Needs attention: Fix &lt;setup&gt; &amp; go');
     expect(slack.blocks).toEqual([
       {
         type: 'section',

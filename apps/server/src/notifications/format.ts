@@ -45,7 +45,8 @@ export function slackPayload(n: OutgoingNotification) {
   const title = slackEscape(n.title);
   const heading = n.link ? `*<${n.link}|${title}>*` : `*${title}*`;
   return {
-    text: `${n.title}: ${n.body}`,
+    // The fallback `text` is mrkdwn too: unescaped, a task title like `<!channel>` would ping.
+    text: `${title}: ${slackEscape(n.body)}`,
     blocks: [
       {
         type: 'section',

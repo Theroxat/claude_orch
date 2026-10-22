@@ -1,5 +1,5 @@
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
-import { request as httpsRequest } from 'node:https';
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 import { BlockList, isIP, type LookupFunction } from 'node:net';
 
 /**
@@ -29,8 +29,12 @@ for (const [net, prefix] of [
   blocked.addSubnet(net, prefix, 'ipv4');
 }
 for (const [net, prefix] of [
-  ['::', 128], // unspecified
+  // Unspecified, loopback and IPv4-compatible (deprecated `::a.b.c.d`, which URL parsing turns
+  // into `::7f00:1`): nothing public lives in ::/96.
+  ['::', 96],
   ['::1', 128], // loopback
+  ['2001::', 32], // Teredo: embeds an arbitrary (possibly private) IPv4 server/client
+  ['2002::', 16], // 6to4: embeds an arbitrary (possibly private) IPv4 address
   ['64:ff9b:1::', 48], // local-use NAT64
   ['100::', 64], // discard
   ['2001:db8::', 32], // documentation
@@ -168,7 +172,14 @@ export const safePost: WebhookPoster = (url, body, opts = {}) => {
       u,
       {
         method: 'POST',
+        // A dedicated agent: never the global one, which honours HTTP(S)_PROXY when
+        // NODE_USE_ENV_PROXY is set (Node 24+). Through a proxy, the target would be resolved
+        // and reached by the proxy, past the guarded lookup.
+        agent: new HttpsAgent({ keepAlive: false }),
         lookup: guardedLookup(),
+        // Whole-exchange deadline: `timeout` alone is an idle timeout, which a server dribbling
+        // one byte at a time never trips.
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
         headers: {
           'content-type': 'application/json',
           'content-length': payload.length,
@@ -177,6 +188,7 @@ export const safePost: WebhookPoster = (url, body, opts = {}) => {
         timeout: opts.timeoutMs ?? 10_000,
       },
       (res) => {
+        res.on('error', () => {}); // a deadline hit while draining: the status is already known
         res.resume();
         const status = res.statusCode ?? 0;
         resolve({ ok: status >= 200 && status < 300, status });

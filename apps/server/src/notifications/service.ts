@@ -12,6 +12,7 @@ import { onAudit, type AuditEntry } from '../audit';
 import { decrypt } from '../auth/crypto';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
+import type { RecipientCheck } from './access';
 import { planNotifications, type NotificationDraft } from './events';
 import {
   absoluteLink,
@@ -38,6 +39,8 @@ export interface NotifierDeps {
   post?: WebhookPoster;
   /** E-mail transport (default: nodemailer from SMTP_*, or none). */
   mailer?: Mailer | null;
+  /** Drops recipients who lost access to orch or to the project (default: everyone receives). */
+  canReceive?: RecipientCheck;
 }
 
 /** A delivery that failed; `retryable` false stops the retries (e.g. HTTP 404: the hook is gone). */
@@ -178,6 +181,8 @@ export class Notifier {
     const settings = await prisma.notificationSettings.findUnique({ where: { userId } });
     const channels = effectivePreferences(settings?.preferences)[draft.event];
     if (channels.length === 0) return;
+    // Recipients come from stored ids (creator, owner, runner): check they may still see this.
+    if (this.deps.canReceive && !(await this.deps.canReceive(userId, draft.projectId))) return;
     let id: string | null = null;
     let createdAt = new Date();
     if (channels.includes('in_app')) {
