@@ -747,6 +747,11 @@ button.ghost:hover:not(:disabled) {
   border-color: transparent;
   color: var(--ink);
 }
+.btn.ghost:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: transparent;
+  color: var(--ink);
+}
 .icon-button {
   width: 38px;
   padding: 0;
@@ -2096,6 +2101,16 @@ details.card > summary {
     padding: 10px 16px 2px;
   }
   .user-name {
+    display: none;
+  }
+  .topbar-tools {
+    gap: 2px;
+  }
+  .topbar-tools .icon-button {
+    width: 34px;
+    min-height: 34px;
+  }
+  .topbar-tools .user .avatar {
     display: none;
   }
   .line {

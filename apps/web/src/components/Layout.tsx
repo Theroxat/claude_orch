@@ -16,6 +16,9 @@ import { AgentUpdateBanner } from './AgentUpdateBanner';
 import { useOnboarding } from './GettingStarted';
 import { VersionFooter } from './VersionFooter';
 
+const DOCS_URL = 'https://claude-orch.readthedocs.io';
+const REPO_URL = 'https://github.com/Theroxat/claude_orch';
+
 const links = [
   { to: '/projects', label: 'Projects' },
   { to: '/discover', label: 'Discover' },
@@ -123,6 +126,26 @@ export function Layout() {
                 {doneSteps}/{onboarding.length}
               </NavLink>
             )}
+            <a
+              className="btn ghost icon-button"
+              href={DOCS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Documentation"
+              title="Documentation"
+            >
+              <Icon name="book" />
+            </a>
+            <a
+              className="btn ghost icon-button"
+              href={REPO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="GitHub repository"
+              title="GitHub repository"
+            >
+              <Icon name="github" />
+            </a>
             <button
               type="button"
               className="ghost icon-button"
