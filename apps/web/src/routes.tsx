@@ -44,6 +44,10 @@ const table = {
     () => import('./pages/Backlog'),
     (m) => m.Backlog,
   ),
+  '/usage': page(
+    () => import('./pages/Usage'),
+    (m) => m.Usage,
+  ),
   '/claude-code': page(
     () => import('./pages/ClaudeCode'),
     (m) => m.ClaudeCode,

@@ -17,6 +17,7 @@ import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
+import { registerUsage } from './usage/dashboard';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -86,6 +87,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     registerOAuth(app, deps);
     registerMcp(app, m4);
     registerOnboarding(app, m4);
+    registerUsage(app, deps);
     app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
     app.register(async (scope) => registerAgents(scope, m4, gateway));
   }
