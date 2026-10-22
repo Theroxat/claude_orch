@@ -4,10 +4,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates git curl postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
+# pnpm >= 11 only reads pnpm_config_* variables: the former npm_config_store_dir was ignored and
+# the store ended up in node_modules/.pnpm-store. CI caches /workspace/.pnpm-store between runs.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     HOME=/tmp/home \
-    npm_config_store_dir=/workspace/.pnpm-store \
+    pnpm_config_store_dir=/workspace/.pnpm-store \
     CI=true
 
 RUN corepack enable \
