@@ -1,30 +1,37 @@
+<div align="center">
+
 # orch
 
-A shared to-do list for small, trusted teams, with automation on top.
+**How do you hand a teammate's idle Claude capacity a to-do list, without ever sharing an account?**
 
-- Tasks are GitHub issues. A team member (or Claude Code, through MCP) adds them to a shared pool.
-- Each member runs tasks **on their own machine, with their own Claude subscription**. Nothing is pooled across accounts.
-- A task runs in a throwaway container that only sees its own git clone, then orch pushes a branch and opens a PR.
-- The central server only sees usage estimates and task statuses, never Claude credentials.
-- Everything runs in Docker: server, web, database, proxy, member agent, task sandboxes and all dev workflows.
+[**orch.selfhostr.io**](https://orch.selfhostr.io) · [Docs](https://claude-orch.readthedocs.io) · [Source](https://github.com/Theroxat/claude_orch) · [Design notes](docs/PLAN.md) · [Deploy](#deploy-the-server)
 
-Design and decisions: [docs/PLAN.md](docs/PLAN.md).
+[![Docs](https://readthedocs.org/projects/claude-orch/badge/?version=latest)](https://claude-orch.readthedocs.io)
+![Node >=22](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=nodedotjs&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-793%20passing-2ea44f)
+![Docker](https://img.shields.io/badge/everything%20in-Docker-2496ed?logo=docker&logoColor=white)
+![Claude creds](https://img.shields.io/badge/Claude%20credentials-stay%20local-blue)
+![License MIT](https://img.shields.io/badge/license-MIT-lightgrey)
+
+</div>
+
+<img src="docs/screenshot-backlog.png" alt="The Backlog: tasks by status, each one a GitHub issue" width="100%">
+
+A shared to-do list for small, trusted teams, with automation on top. Tasks are GitHub issues. A member, or Claude Code through MCP, adds them to a shared pool. Each task then runs **on a teammate's own machine, with their own Claude subscription**, in a throwaway container that only sees its own git clone. orch pushes a branch and opens a PR.
+
+- **No pooled accounts.** The server sees task statuses and usage estimates, never Claude credentials.
+- **Outbound only.** Member machines connect to the server over a WebSocket; no inbound ports.
+- **Docker everywhere.** Server, web, database, proxy, member agent, task sandboxes and every dev workflow.
+
+<img src="docs/screenshot-pool.png" alt="The Pool: who is lending capacity right now" width="100%">
+
+Full documentation (quickstart, server installation, concepts, CLI and MCP reference, configuration, security model, FAQ) lives at **[claude-orch.readthedocs.io](https://claude-orch.readthedocs.io)**; its sources are in [`docs/`](docs/).
 
 ## Contents
 
-- [Architecture](#architecture)
-- [Server installation](#server-installation)
-- [Creating the GitHub App](#creating-the-github-app)
-- [Adding a member](#adding-a-member)
-- [Updating agents](#updating-agents)
-- [Day-to-day usage](#day-to-day-usage)
-- [MCP setup](#mcp-setup)
-- [Local development](#local-development)
-- [Security model](#security-model)
-- [Limitations](#limitations)
-- [License](#license)
+[How it works](#how-it-works) · [Quick start](#quick-start) · [Deploy the server](#deploy-the-server) · [Operations](#operations) · [Daily use](#daily-use) · [MCP](#claude-code-mcp) · [Security model](#security-model) · [Development](#development) · [Limitations](#limitations)
 
-## Architecture
+## How it works
 
 ```
                          GitHub (App: OAuth, webhooks, issues, PRs)
@@ -48,370 +55,203 @@ Design and decisions: [docs/PLAN.md](docs/PLAN.md).
  +--------------------------------------------------------------------+
 ```
 
-| Piece             | What it does                                                                                   |
-| ----------------- | ---------------------------------------------------------------------------------------------- |
-| `caddy`           | Automatic HTTPS for `ORCH_DOMAIN`, serves the web build, proxies the rest to the server        |
-| `server`          | REST API, GitHub OAuth and webhooks, dispatcher, agent WebSocket gateway, MCP server           |
-| `postgres`        | All state. Internal network only                                                               |
-| `backup`          | Nightly `pg_dump` into a volume with retention                                                 |
-| `agent` (members) | `ghcr.io/theroxat/orch-agent`: runs on each member's machine, drives their local Docker daemon |
+| Piece      | What it does                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| `caddy`    | Automatic HTTPS for `ORCH_DOMAIN`, serves the web build, proxies the rest to the server    |
+| `server`   | REST API, GitHub OAuth and webhooks, dispatcher, agent WebSocket gateway, MCP server       |
+| `postgres` | All state. Internal network only                                                           |
+| `backup`   | Nightly `pg_dump` into a volume with retention                                             |
+| `agent`    | `ghcr.io/theroxat/orch-agent`: runs on each member's machine and drives their local Docker |
 
-## Server installation
+## Quick start
 
-Requirements: a Linux host with Docker Engine 26+ and the Compose plugin, ports 80 and 443 reachable from the internet, and a DNS name.
-
-**1. DNS.** Create an `A` (and optionally `AAAA`) record for your domain, for example `orch.selfhostr.io`, pointing at the host. Caddy requests the Let's Encrypt certificate on first start, so DNS must resolve before you start the stack.
-
-**2. Get the deployment files.**
+Server admin, once. Needs a Linux host with Docker 26+ and Compose, ports 80/443 and a DNS name. Full steps in [Deploy the server](#deploy-the-server).
 
 ```sh
-git clone https://github.com/Theroxat/claude_orch.git
-cd orch/deploy/server
-cp .env.example .env
+git clone https://github.com/Theroxat/claude_orch.git && cd claude_orch/deploy/server
+cp .env.example .env     # fill it in, then create the GitHub App
+docker compose up -d
 ```
 
-**3. Fill in `.env`.** Generate the secrets with the commands shown in the file:
+Each member, from the web UI (**My Server** gives you a one-time command, valid 15 minutes):
+
+```sh
+curl -fsSL https://<domain>/install.sh | ORCH_TOKEN=<one-time-token> sh   # installs the agent
+orch login                                                                # links your Claude account, stored locally
+```
+
+Claude Code, to submit and inspect tasks from your editor:
+
+```sh
+claude mcp add --transport http --scope user orch https://<domain>/mcp
+```
+
+Then run `/mcp`, pick **orch**, **Authenticate**.
+
+## Deploy the server
+
+**1. DNS.** An `A` (and optionally `AAAA`) record for your domain, for example `orch.selfhostr.io`. It must resolve before the first start: Caddy requests the Let's Encrypt certificate then.
+
+**2. Configure.** In `deploy/server`, copy `.env.example` to `.env` and generate the secrets:
 
 ```sh
 openssl rand -hex 24      # POSTGRES_PASSWORD
-openssl rand -base64 32   # ORCH_ENCRYPTION_KEY
+openssl rand -base64 32   # ORCH_ENCRYPTION_KEY (back it up)
 openssl rand -hex 32      # GITHUB_WEBHOOK_SECRET
 ```
 
-| Variable                                                                       | Required | Meaning                                                                                 |
-| ------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------- |
-| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                         |
-| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                     |
-| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port            |
-| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [Behind Cloudflare Tunnel](#behind-cloudflare-tunnel)       |
-| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)            |
-| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                            |
-| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                 |
-| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up                 |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App (next section)                                                     |
-| `ORCH_ADMIN_GITHUB_LOGINS`                                                     | yes (\*) | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page   |
-| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | no (\*)  | Who may also sign in: GitHub logins and/or organizations, comma-separated               |
-| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public            |
-| `ORCH_ACCESS_GRACE_SEC`                                                        | no       | GitHub outage grace for org-based access, default 900 (see [Security](#security-model)) |
-| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                  |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                   |
-| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                       |
-| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start       |
+| Variable                                                                       | Meaning                                                                 |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `ORCH_DOMAIN`                                                                  | Public host name                                                        |
+| `POSTGRES_PASSWORD`                                                            | Database password                                                       |
+| `ORCH_ENCRYPTION_KEY`                                                          | 32 random bytes, base64. Encrypts stored GitHub user tokens             |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | From your GitHub App (below)                                            |
+| `GITHUB_WEBHOOK_SECRET`                                                        | Same value as the App's webhook secret                                  |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | Host path of the App private key (default `./secrets/github-app.pem`)   |
+| `ORCH_ADMIN_GITHUB_LOGINS`                                                     | Admins (GitHub logins, comma-separated). They manage the Access page    |
+| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | Optional: who else may sign in (logins and/or organizations)            |
+| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | `true` lets any GitHub account in. Only for a server that is not public |
+| `ORCH_VERSION`                                                                 | Image tag of `orch-server` and `orch-web` (default `latest`)            |
 
-(\*) **In production the server refuses to start** when nobody restricts sign-in: no `ORCH_ADMIN_GITHUB_LOGINS`, no `ORCH_ALLOWED_GITHUB_LOGINS`, no `ORCH_ALLOWED_GITHUB_ORGS` and no access approved on the Access page, unless `ORCH_ALLOW_ANY_GITHUB_USER=true`. Without an allowlist, anyone with a GitHub account could sign in, see the projects set to "All orch users on this server" and join their pools. The usual setup is to list yourself in `ORCH_ADMIN_GITHUB_LOGINS` and let people in from the web UI (see [Managing access](#managing-access)). A user may sign in if they are an admin, **or** their login is listed, **or** they are an active member of a listed organization, **or** an admin approved them on the Access page. Org membership is checked at login with the user's own GitHub token, and again for open sessions every `ORCH_ALLOWLIST_CACHE_SEC` seconds (default 300). Removing someone from the list or the org therefore takes effect within minutes (logins are re-checked on every request). Org checks need the GitHub App organization permission **Members: Read-only** (see below) and the App installed on, or approved by, the organization. In development and tests an empty allowlist only logs a warning.
+In production the server **refuses to start** when nobody restricts sign-in (no admin, no allowlist, no approved access) unless `ORCH_ALLOW_ANY_GITHUB_USER=true`. All other variables (ports, TLS mode, proxy trust, access grace, backup schedule, log level) are documented in `.env.example`; scheduler knobs live in [`apps/server/src/config/index.ts`](apps/server/src/config/index.ts).
 
-### Managing access
+**3. Create the GitHub App** (GitHub, Settings, Developer settings, GitHub Apps, New). Replace `<domain>` with yours.
 
-Admins (`ORCH_ADMIN_GITHUB_LOGINS`) see an **Access** page in the web UI (`/admin/access`). To let someone in, you do not edit `.env` or restart anything:
+| Field                              | Value                                                                       |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| Homepage URL                       | `https://<domain>`                                                          |
+| Callback URL                       | `https://<domain>/api/auth/github/callback`                                 |
+| Request user authorization (OAuth) | Enabled                                                                     |
+| Webhook URL and secret             | `https://<domain>/api/github/webhook`, the value of `GITHUB_WEBHOOK_SECRET` |
+| Repository permissions             | Contents, Pull requests, Issues: read & write (Metadata: read-only)         |
+| Organization permissions           | Members: read-only, only if you use `ORCH_ALLOWED_GITHUB_ORGS`              |
+| Events                             | Issues, Pull request, Installation, Installation repositories               |
 
-- **Access requests.** Someone who is not allowed yet signs in with GitHub and gets a "Request access" page instead of a session, with an optional message for the admins. The request appears on the Access page (with a counter in the navigation); **Approve** lets them sign in, **Deny** shows them "Your request was declined".
-- **Pre-approve.** Type a GitHub login on the Access page to approve it before the person even tries.
-- **Invite links.** Create a single-use or multi-use link that expires after 1 to 720 hours and send it to someone. Opening `https://<domain>/invite/<token>` and signing in with GitHub approves that account automatically (never one an admin declined). Only a hash of the token is stored; the link is shown once. Revoke a link from the Access page at any time.
-- **Remove.** Removing someone sets their access to denied. Like removal from the env lists, nothing is deleted: their sessions, personal tokens, OAuth grants and agents are refused at once (the cached check is dropped; connected agents are disconnected with close code 4403 and keep retrying slowly) and work again if you approve them later, without re-enrolling. A declined or removed login stays refused even if it is in `ORCH_ALLOWED_GITHUB_LOGINS`, in an allowed organization or the server runs with `ORCH_ALLOW_ANY_GITHUB_USER=true`; only admins are never refused.
+Copy the App ID and slug, generate a client secret, then generate a private key and save it as `deploy/server/secrets/github-app.pem`. It must exist before the first start and be readable by uid 1000 (`sudo chown 1000:1000 ... && chmod 400 ...`). Never commit it; `*.pem` is git-ignored. Because `Contents: write` can push to any branch, **enable branch protection** on your default branches: orch only pushes `orch/issue-<n>-*` and opens PRs.
 
-The env lists keep working for people who should always have access (logins, whole organizations). Every decision is written to the audit log.
-
-Other server knobs (dispatcher interval, offer TTLs, budget factors) have defaults and are listed in [`apps/server/src/config/index.ts`](apps/server/src/config/index.ts). To change one, add it to the `server` service `environment` in `compose.yaml`.
-
-**4. Put the GitHub App private key in place** (see the next section for how to get it):
+**4. Start and check.**
 
 ```sh
-mkdir -p secrets
-mv ~/Downloads/<app-name>.<date>.private-key.pem secrets/github-app.pem
-sudo chown 1000:1000 secrets/github-app.pem && chmod 400 secrets/github-app.pem
+docker compose up -d      # pulls ghcr.io/theroxat/orch-server and orch-web (or add --build)
+curl -fsS https://<domain>/healthz     # {"status":"ok"}
 ```
 
-The file must exist before the first start (otherwise Docker creates a directory in its place). The server runs as uid 1000, so the file has to be readable by that user.
+Migrations run on every start. Upgrade with `git pull && docker compose pull && docker compose up -d`.
 
-**5. Start.**
+## Operations
+
+**Access.** Admins get an **Access** page (`/admin/access`), no `.env` edit or restart needed. Someone not yet allowed signs in and lands on a "Request access" form; admins **Approve** or **Deny**. They can also pre-approve a login, create single-use or multi-use invite links (1 to 720 hours, stored hashed), or remove someone (sessions, tokens and agents are refused at once; nothing is deleted). Every decision is audited.
+
+**Adding a member.**
+
+1. Sign in at `https://<domain>` (request access if needed) and install the App on the repos to use. Owners register a repo as a project from **Projects**.
+2. On **Discover**, join a project and choose `AUTO` (starts while you have budget) or `APPROVAL` (you accept each request), and which models you allow.
+3. On **My Server**, copy the install command (see [Quick start](#quick-start)). It writes `~/orch/compose.yaml` and `~/orch/.env`, enrolls the machine, starts the agent and installs an `orch` shortcut in `~/.local/bin`. It is idempotent; `--uninstall [--purge]` removes it.
+4. Run `orch login` (the installer offers it). The token stays in the agent's `orch-secrets` volume and is never sent to the server. If it expires, the agent refuses new AUTO offers until you log in again.
+
+Agent settings live in `~/orch/.env` (`ORCH_PLAN` is `pro`, `max5` or `max20`); more options in [`apps/agent/src/config.ts`](apps/agent/src/config.ts).
+
+**Updating agents.** The web app shows a banner when an agent is behind the server's release. **Update now** (or `orch update [--when-idle]`) makes the agent pull exactly `ghcr.io/theroxat/orch-agent:<version>`, switch over through a helper container and roll back on failure. It refuses while tasks run. Manual fallback: `cd ~/orch && docker compose pull && docker compose up -d`.
+
+**Backups.** The `backup` service writes `orch-<UTC timestamp>.dump` (pg_dump custom format) nightly at `BACKUP_HOUR_UTC` (default 03:00) and keeps 14 days.
 
 ```sh
-docker compose up -d          # pulls ghcr.io/theroxat/orch-server and orch-web
-# or build from your checkout:
-docker compose up -d --build
+docker compose cp backup:/backups/orch-<timestamp>.dump ./orch.dump   # copy off the host regularly
+docker compose stop server
+docker compose cp ./orch.dump postgres:/tmp/orch.dump
+docker compose exec postgres sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/orch.dump && rm /tmp/orch.dump'
+docker compose start server
 ```
 
-The server applies database migrations on every start. Check it:
+Keep `.env` (notably `ORCH_ENCRYPTION_KEY`) and the App private key somewhere safe: they are not in the dump.
 
-```sh
-docker compose ps
-curl -fsS https://orch.selfhostr.io/healthz     # {"status":"ok"}
-```
+<details>
+<summary><b>Behind Cloudflare Tunnel</b></summary>
 
-If you change `HTTP_PORT` or `HTTPS_PORT`, the Let's Encrypt challenge cannot succeed on its own. Use Caddy behind another proxy that owns 80/443, or a DNS challenge build of Caddy.
-
-### Behind Cloudflare Tunnel
-
-If you host behind a Cloudflare Tunnel, Cloudflare terminates TLS for your domain and `cloudflared` forwards plain HTTP to a local port. There is no ACME and ports 80 and 443 are not used. Set these in `.env`:
+Cloudflare terminates TLS and `cloudflared` forwards plain HTTP to a local port; ports 80/443 are not used. In `.env`:
 
 ```sh
 ORCH_DOMAIN=orch.selfhostr.io
 ORCH_TLS_MODE=tunnel                      # default is acme
 HTTP_PORT=8495                            # local port cloudflared connects to
 ORCH_BIND_ADDR=127.0.0.1                  # keep the port off the LAN
-HTTPS_PUBLISH=127.0.0.1:              # nothing serves 443; maps it to a random loopback port
+HTTPS_PUBLISH=127.0.0.1:                  # nothing serves 443
 ORCH_PUBLIC_URL=https://orch.selfhostr.io # always https
 ```
 
-In this mode Caddy serves plain HTTP only (`auto_https off`, no HSTS; Cloudflare can add HSTS at the edge). The routes and the Content-Security-Policy are the same as in ACME mode. The server builds the GitHub OAuth callback, the `install.sh` URL, the install and `claude mcp add` commands and the `Secure` session cookie from `ORCH_PUBLIC_URL`, so they say `https` even though the request reached the server over HTTP. It trusts `X-Forwarded-For` only from private networks (the Caddy container), see `ORCH_TRUST_PROXY`.
+Point `cloudflared` ingress at `http://localhost:8495`. If it runs in Docker in another Compose project, use `deploy/server/compose.cloudflared.yaml` (`docker compose -f compose.yaml -f compose.cloudflared.yaml up -d`, service URL `http://orch-caddy:80`; Compose 2.24+). If `cloudflared` reaches the port from another host, set `ORCH_BIND_ADDR=0.0.0.0` and firewall the port so only it can connect, otherwise anyone could forge `X-Forwarded-For`.
 
-`cloudflared` ingress (`config.yml`, or the equivalent public hostname in the Zero Trust dashboard):
+Do not put Cloudflare Access in front of `/api/github/webhook`, `/agent/ws`, `/mcp`, `/.well-known/oauth-*`, `/api/oauth/*` or `/install.sh`: they authenticate themselves. WebSockets work by default; the 30 s agent heartbeat keeps them under Cloudflare's idle timeout.
 
-```yaml
-ingress:
-  - hostname: orch.selfhostr.io
-    service: http://localhost:8495
-  - service: http_status:404
-```
+</details>
 
-**`cloudflared` in Docker on another Compose project.** If `cloudflared` runs in Docker, use the optional override `deploy/server/compose.cloudflared.yaml`: `docker compose -f compose.yaml -f compose.cloudflared.yaml up -d` and set the tunnel service URL to `http://orch-caddy:80`. It attaches Caddy to the external network named by `CLOUDFLARED_NETWORK` (default `cloudflared_default`, which must exist) under the alias `orch-caddy`, and publishes no host port for Caddy (`ports: !reset []`, needs Docker Compose 2.24 or later). Without a GitHub App yet, create an empty `secrets/github-app.pem` so Docker does not create a directory there; GitHub routes answer 503 until all `GITHUB_*` values are set.
+## Daily use
 
-If `cloudflared` runs in Docker on the same Compose network, use `service: http://caddy:80` (the Caddy container name or service name) instead. If it runs in another container on a different network or on another host, set `ORCH_BIND_ADDR=0.0.0.0` so it can reach the port, and firewall that port so only `cloudflared` can connect: with `trusted_proxies` on private ranges, anyone who can reach the port directly could forge `X-Forwarded-For`.
+**Web.** Issues carrying the project's pool label (default `pool`) become tasks. **Backlog** shows them by status, **Pool** shows teammates' availability (estimates), **Requests** lists approvals addressed to you. New tasks can also come from the Backlog page or MCP.
 
-Notes:
-
-- WebSockets are enabled by default in Tunnel, which `/agent/ws` needs. Cloudflare closes idle WebSockets after about 100 s; the agent heartbeat is 30 s, so the link stays up.
-- Do not put Cloudflare Access in front of `/api/github/webhook`, `/agent/ws`, `/mcp`, `/.well-known/oauth-*`, `/api/oauth/*` or `/install.sh`: they authenticate themselves (HMAC, agent credential, OAuth or personal token, public script) and Access would block GitHub, Claude Code and the agents.
-- "Always Use HTTPS" is fine.
-- Update the GitHub App URLs as in the next section; they use your public `https` domain.
-
-### Upgrading
-
-```sh
-git pull
-docker compose pull && docker compose up -d     # or: docker compose up -d --build
-```
-
-Members upgrade their agent with `docker compose -f ~/orch/compose.yaml pull && docker compose -f ~/orch/compose.yaml up -d`.
-
-### Backups and restore
-
-The `backup` service writes `orch-<UTC timestamp>.dump` files (pg_dump custom format) into the `backups` volume every night at `BACKUP_HOUR_UTC` and deletes dumps older than `BACKUP_RETENTION_DAYS` (14 by default).
-
-```sh
-# list backups
-docker compose exec backup ls -lh /backups
-
-# copy the newest one out of the volume (do this regularly: a backup on the same host is not a disaster plan)
-docker compose cp backup:/backups/orch-<timestamp>.dump ./orch.dump
-
-# take one now
-docker compose exec -e BACKUP_ON_START=false backup sh -c \
-  'pg_dump --format=custom --no-owner --file=/backups/orch-manual.dump'
-```
-
-Restore into a running stack (this replaces the data):
-
-```sh
-docker compose stop server
-docker compose cp ./orch.dump postgres:/tmp/orch.dump
-docker compose exec postgres sh -c \
-  'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/orch.dump && rm /tmp/orch.dump'
-docker compose start server
-```
-
-Also keep `.env` (in particular `ORCH_ENCRYPTION_KEY`) and the GitHub App private key somewhere safe; they are not in the dump.
-
-## Creating the GitHub App
-
-orch signs users in with GitHub and acts on repositories through one GitHub App that you own. Create it at **GitHub -> Settings -> Developer settings -> GitHub Apps -> New GitHub App** (or under your organization's settings). Replace `<domain>` with your `ORCH_DOMAIN`.
-
-| Field                                                  | Value                                        |
-| ------------------------------------------------------ | -------------------------------------------- |
-| GitHub App name                                        | Anything unique, for example `orch-yourteam` |
-| Homepage URL                                           | `https://<domain>`                           |
-| Callback URL                                           | `https://<domain>/api/auth/github/callback`  |
-| Request user authorization (OAuth) during installation | Enabled                                      |
-| Expire user authorization tokens                       | Leave the default                            |
-| Webhook -> Active                                      | Enabled                                      |
-| Webhook URL                                            | `https://<domain>/api/github/webhook`        |
-| Webhook secret                                         | The value of `GITHUB_WEBHOOK_SECRET`         |
-| Where can this App be installed?                       | "Only on this account" is enough for a team  |
-
-**Repository permissions**
-
-| Permission    | Access                                        |
-| ------------- | --------------------------------------------- |
-| Contents      | Read & write                                  |
-| Pull requests | Read & write                                  |
-| Issues        | Read & write                                  |
-| Metadata      | Read-only (mandatory, selected automatically) |
-
-**Organization permissions:** set **Members: Read-only** only if you use `ORCH_ALLOWED_GITHUB_ORGS`. orch then calls `GET /user/memberships/orgs/{org}` with the signed-in user's own token. Without the permission, org checks answer "not a member" and everybody is refused. A login-only allowlist (`ORCH_ALLOWED_GITHUB_LOGINS`) needs nothing extra.
-
-**Subscribe to events:** Issues, Pull request, plus the Installation and Installation repositories events that GitHub delivers to every App (`issues`, `pull_request`, `installation`, `installation_repositories`).
-
-After creating the App:
-
-1. Copy the **App ID** to `GITHUB_APP_ID`, and the **slug** from the App's public URL (`github.com/apps/<slug>`) to `GITHUB_APP_SLUG`.
-2. Under **Client secrets**, generate one. Put the **Client ID** in `GITHUB_CLIENT_ID` and the secret in `GITHUB_CLIENT_SECRET`.
-3. Under **Private keys**, generate one and save the `.pem` as `deploy/server/secrets/github-app.pem` (see the installation steps). It is read-only inside the server container. Never commit it; `*.pem` is git-ignored.
-4. Restart: `docker compose up -d`.
-
-Because a `Contents: write` installation token can push to any branch, **enable branch protection on your default branches**: orch only pushes `orch/issue-<n>-*` branches and opens PRs, but protection keeps that guarantee even if something goes wrong.
-
-## Adding a member
-
-1. **Get access, then sign in.** The member opens `https://<domain>` and signs in with GitHub. If they are not allowed yet, they click **Request access** and an admin approves them on the **Access** page (`/admin/access`); or an admin pre-approves their login or sends them an invite link first (see [Managing access](#managing-access)). No `.env` edit or restart is needed.
-2. **Install the App on the repos** they want to use (the Projects page links to the install page). Repository owners then register a repo as a project from **Projects**.
-3. **Join projects.** On **Discover**, the member joins a project and picks their participation settings: `AUTO` (tasks start automatically while they have budget) or `APPROVAL` (they get a request they accept or reject), and which models they allow (Sonnet, Opus). Their Claude plan is declared on the agent side (`ORCH_PLAN`). Private projects require the owner's approval by default.
-4. **Install the agent.** On **My Server**, click to generate an install command. It is valid for 15 minutes, once:
-
-   ```sh
-   curl -fsSL https://<domain>/install.sh | ORCH_TOKEN=<one-time-token> sh
-   ```
-
-   The token travels in an environment variable, not in a command-line argument, so it does not show up in the process list. The old `sh -s -- --token <token>` form still works but is deprecated.
-
-   This needs only Docker Engine 26+ with Compose, `curl` and `sh`. It writes `~/orch/compose.yaml` and `~/orch/.env`, enrolls the machine, starts the agent and installs an `orch` shortcut in `~/.local/bin/orch` (it tells you how to add that directory to your `PATH` if needed). Re-run it any time: it is idempotent and does not re-enroll (use `--force` for that). `--uninstall [--purge]` removes the stack and the shortcut.
-
-5. **Link Claude.** At the end, in a terminal, the installer asks `Connect your Claude account now? [Y/n]`. Answer yes, open the URL it shows, sign in and paste the code back. `orch login` captures the long-lived token by itself; it is stored in the agent's `orch-secrets` volume on that machine (mode 0600) and never sent to the server. To do it later (or when installing without a terminal, or with `--yes`), run:
-
-   ```sh
-   orch login
-   ```
-
-   If a task fails because the Claude login expired or was revoked (`401 ... OAuth access token is invalid`), the agent remembers it in `claude-auth.json` in its data directory, tells the server (`claudeAuthValid: false`), refuses new AUTO offers and shows "Claude login expired" in `orch status`. The agent cannot check a token without calling Anthropic, so `orch login` simply marks the login valid again once the new token is stored; the running agent picks that up without a restart.
-
-   The `orch` shortcut is `docker compose -f ~/orch/compose.yaml exec agent orch "$@"` (with a terminal attached when you have one), so every command below works as written.
-
-Agent settings (in `~/orch/.env`): `ORCH_SERVER_URL`, `ORCH_AGENT_ID`, `ORCH_AGENT_CREDENTIAL`, `ORCH_WORK_DIR`, `ORCH_CLAUDE_DIR`, `ORCH_PLAN` (`pro`, `max5` or `max20`), plus optional `ORCH_AGENT_IMAGE` and `ORCH_AGENT_TAG`. Further agent options such as `ORCH_MAX_CONCURRENT` (default 1) are defined in [`apps/agent/src/config.ts`](apps/agent/src/config.ts).
-
-## Updating agents
-
-The server knows its own release (`ORCH_VERSION`) and the version each agent reports when it connects. When one of your agents runs an older release, the web app shows a banner at the top of every page, for example "Your agent on laptop is out of date (v0.4.1 → v0.4.3)", and the **My Server** page shows the state of each agent. Local `dev` builds are never reported as outdated.
-
-**One click.** Press **Update now**. The server sends the agent an `agent.update` message naming the target version and the image `ghcr.io/theroxat/orch-agent:<version>`. The server decides the image from its own release and `ORCH_AGENT_IMAGE_REPO`; the request cannot choose it. The agent then:
-
-1. refuses when tasks are running (choose **Update when idle** to wait until they finish; meanwhile it takes no new automatic offers);
-2. checks that the image is exactly `<its configured repository>:<release>` (`ORCH_AGENT_IMAGE_REPO`, from `ORCH_AGENT_IMAGE` in `~/orch/.env`); anything else is refused;
-3. finds its compose project, files and directory from its own container labels, and pulls the image. If the pull fails, nothing changes and the old version keeps running;
-4. writes `ORCH_AGENT_TAG=<version>` into `~/orch/.env` (or `ORCH_AGENT_IMAGE`, if your compose file uses only that), keeping a backup;
-5. starts a short-lived helper container from its current image, with the Docker socket and `~/orch` mounted at the same path. After a few seconds the helper runs `docker compose up -d agent`. If that fails, it restores the backup and starts the old version again.
-
-The page follows the steps (requested, waiting for tasks, downloading, restarting). The update is marked done when the agent reconnects with the new version. Only the owner of an agent can update it, and every request is audited (`agent.update_requested`, `agent.update_done`, `agent.update_failed`).
-
-**From the machine.** `orch update` does the same thing locally, for the version the server announces (`orch update --when-idle` waits for running tasks; `orch update --version=0.4.3` picks a release). `orch status` shows the latest version and the update progress. If the agent container is stopped, the `orch` shortcut falls back to `docker compose pull agent && docker compose up -d agent`.
-
-**Manually**, for agents too old for one-click updates, or for installs not made with `install.sh`:
-
-```sh
-cd ~/orch
-# pin a release: echo ORCH_AGENT_TAG=0.4.3 >> .env   (or leave the default tag, latest)
-docker compose pull && docker compose up -d
-```
-
-## Day-to-day usage
-
-**Web.** Issues carrying the project's pool label (default `pool`) become tasks. **Backlog** shows tasks by status. **Pool** shows teammates' availability (estimates). **Requests** lists approval requests addressed to you. New tasks can also be created from the Backlog page or through [MCP](#mcp-setup).
-
-**CLI** (the `orch` shortcut installed on your machine runs these inside the agent container):
+**CLI.** The `orch` shortcut runs these inside the agent container.
 
 | Command                  | What it does                                                     |
 | ------------------------ | ---------------------------------------------------------------- |
 | `orch status`            | Agent connection, pause state, your tasks                        |
 | `orch list [owner/repo]` | Tasks you can take now                                           |
-| `orch take <n>`          | Claim issue `<n>` (or `owner/repo#<n>`) and prepare its sandbox  |
+| `orch take <n>`          | Claim issue `<n>` and prepare its sandbox (manual mode)          |
 | `orch attach <n>`        | Attach to the Claude session of issue `<n>` (detach: `Ctrl-a d`) |
-| `orch shell <n>`         | Shell inside the task container                                  |
-| `orch done <n>`          | Commit, push the branch; the server opens the PR; sandbox stops  |
-| `orch logs <n>`          | Follow the log of an auto run (`--no-follow`, `--lines=<k>`)     |
-| `orch requests`          | Approval requests waiting for you                                |
-| `orch accept <id>`       | Accept a request: the task runs on your machine                  |
-| `orch reject <id>`       | Decline a request                                                |
-| `orch pause` / `resume`  | Stop or restart receiving work (applied locally first)           |
-| `orch login`             | Store your Claude token                                          |
+| `orch done <n>`          | Commit and push the branch; the server opens the PR              |
+| `orch logs <n>`          | Follow the log of an auto run                                    |
+| `orch requests`          | Approval requests waiting for you (`accept <id>`, `reject <id>`) |
+| `orch pause` / `resume`  | Stop or restart receiving work                                   |
+| `orch login`, `update`   | Store your Claude token, update the agent                        |
 
-**Manual mode** (`orch take`): orch builds the dev container, starts an interactive Claude session in a `screen` named `issue-<n>` inside the agent container, and you attach with `orch attach <n>` (detach with `Ctrl-a d`). When you are happy, `orch done <n>` pushes and the PR is opened ready for review.
+**Auto vs approval.** In `AUTO` the server offers a task to a member with enough estimated budget and the agent runs it headlessly; the PR opens as a **draft**. In `APPROVAL` nothing starts until you accept. You can always refuse locally with `orch pause`. Limits: 1 concurrent task per machine, 20 pending tasks per creator, timeouts of 30, 90 and 180 minutes for sizes S, M and L. The project owner merges the PRs.
 
-**Auto vs approval.** In `AUTO` participation, the server offers a task to a member with enough estimated budget, and the agent runs it headlessly; the PR is opened as a **draft**. In `APPROVAL` participation you get a request (web or `orch requests`) and nothing starts until you accept. Your agent can always refuse locally (`orch pause`). Limits: 1 concurrent task per machine, 20 pending tasks per creator, timeouts of 30, 90 and 180 minutes for sizes S, M and L.
+## Claude Code (MCP)
 
-Branches are named `orch/issue-<n>-*`. The project owner merges the PRs.
+The MCP server lets Claude Code see the pool and submit work. It needs no LLM key: your own Claude Code does the planning. Authentication is MCP OAuth 2.1 (PKCE, short-lived access tokens, rotating refresh tokens, all stored hashed and audited); the **Claude Code** page of the web UI shows the command and lets you revoke connected apps. For scripts and CI, create a personal access token there and pass `--header "Authorization: Bearer <orch_pat_token>"` to `claude mcp add`.
 
-## MCP setup
-
-orch exposes an MCP server so Claude Code can see the pool and submit work (the server needs no LLM key: your own Claude Code does the planning).
-
-1. Add the server to Claude Code (no token to copy):
-
-   ```sh
-   claude mcp add --transport http --scope user orch https://<domain>/mcp
-   ```
-
-2. In Claude Code, run `/mcp`, choose **orch**, then **Authenticate**.
-3. Your browser opens: sign in with GitHub (the same orch login and allowlist) and approve. Done.
-
-The **Claude Code** page of the web UI shows the command pre-filled with your domain and lists the connected apps, each with a **Revoke** button. Under the hood this is MCP OAuth 2.1: discovery (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`), dynamic client registration, the authorization code flow with PKCE (S256), access tokens (`orch_oat_…`, 1 hour) bound to `https://<domain>/mcp`, and rotating refresh tokens. Everything is stored hashed and audited. A member removed from the allowlist loses every token.
-
-**Advanced / scripts: personal access tokens.** For scripts and CI, create a personal access token on the **Claude Code** page (shown once, hashed, revocable) and send it as a header:
-
-```sh
-claude mcp add --transport http --scope user orch https://<domain>/mcp \
-  --header "Authorization: Bearer <orch_pat_token>"
-```
-
-Tools: `view_pool`, `list_tasks`, `submit_task` (atomic batch with dependencies; supports dry runs), `take_task`, `task_status`.
-
-Example prompts:
-
-- "Use orch to show who in the pool has capacity right now."
-- "Read this repo, split the work to add CSV export into small tasks with acceptance criteria, and submit them to `acme/webapp` through orch. Dry run first."
-- "List my open orch tasks for `acme/webapp` and tell me which ones are blocked."
-- "What is the status of issue 42 in `acme/webapp`?"
-
-## Local development
-
-Everything goes through Docker; the host needs only `docker` with Compose and `sh`. `./dev` is a thin wrapper around `docker compose -f compose.dev.yaml`.
-
-```sh
-./dev install      # pnpm install inside the tools container
-./dev up           # web + API: http://localhost:8470 (Caddy), http://localhost:8471 (API direct)
-./dev down
-./dev lint
-./dev typecheck
-./dev test
-./dev test:install # shellcheck + bats for install.sh
-./dev build
-./dev prisma <args>
-./dev logs [service]
-```
-
-The first run copies `.env.example` to `.env`. Ports come from `ORCH_DEV_WEB_PORT` (8470) and `ORCH_DEV_API_PORT` (8471). GitHub sign-in needs a development GitHub App; the dev `.env` variables are the same `GITHUB_*` and `ORCH_ENCRYPTION_KEY` as in production, with callback `http://localhost:8470/api/auth/github/callback`.
-
-Database migrations live in `apps/server/prisma/migrations/`, one folder per migration named `YYYYMMDDHHMMSS_snake_name`, applied in sort order. Create them with `./dev prisma migrate dev --create-only` (or by hand) and give each new one a unique timestamp later than the latest existing folder. Applied migrations are immutable: never edit or rename one. In particular, the two folders sharing the `20261027000000` prefix are already applied in production and must keep their names.
-
-A dev member agent is available with `docker compose -f compose.dev.yaml --profile agent up -d --build agent` after setting `ORCH_DEV_ENROLL_TOKEN` in `.env`.
-
-CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests, installer tests, production image builds and gitleaks. Pushing a `v*` tag runs `release.yml`, which publishes `orch-server`, `orch-web` and `orch-agent` to `ghcr.io/theroxat`.
+Tools: `view_pool`, `list_tasks`, `submit_task` (atomic batch with dependencies, supports dry runs), `take_task`, `task_status`. Example: "Read this repo, split the work to add CSV export into small tasks with acceptance criteria, and submit them to `acme/webapp` through orch. Dry run first."
 
 ## Security model
 
-orch is for **small teams who trust each other**. It is a shared to-do list with automation, not a multi-tenant platform. Read this before you adopt it.
+orch is for **small teams who trust each other**. It is a shared to-do list with automation, not a multi-tenant platform.
 
-- **Trusted teams only.** Anyone who can get an issue labeled for the pool can, in effect, write a prompt that runs on a teammate's machine. Do not use orch with strangers or with public repos where outsiders can file labeled issues.
-- **What the sandbox does.** Each task runs in its own container, non-root, with only that task's clone mounted. No docker socket, no host home directory. Each task gets an isolated clone, not your working copy. Git metadata (the bare mirror and the clone's `.git` bookkeeping) is kept outside the task container, so a task cannot rewrite hooks or config that the agent's own git would later run.
-- **The repo's compose file is validated.** When a task uses the repository's own `compose.yaml` for its dev environment, the agent checks it before starting anything and refuses `privileged`, host bind mounts, the Docker socket, host networking and `cap_add`. This validation is being completed on the agent side; until it ships, treat a repo's compose file as trusted code. It is not a defence against a hostile teammate.
-- **What the sandbox does not do.** In auto mode the agent runs `claude -p --permission-mode bypassPermissions` inside the task container. That container has **network access** and receives **the member's Claude token**. A malicious or compromised issue can therefore make Claude exfiltrate that token, call external services, or push harmful code to the task branch. There is no egress filtering in v1. The token is the member's own and can be revoked from their Claude account.
-- **The agent is root-equivalent on the member's host.** The agent container mounts `/var/run/docker.sock` to start task containers. Anyone controlling the agent controls that Docker daemon. Rootless Docker is a supported way to reduce this.
-- **Claude credentials never leave the member's machine.** The token lives in the agent's local volume and in that member's task containers. The server stores no Claude credentials. The agent mounts `~/.claude` read-only, only to estimate usage.
-- **Usage figures are estimates.** Anthropic does not publish exact subscription limits. Budgets, margins and reset times come from local logs plus a safety reserve and may be wrong. Treat them as hints.
-- **Review PRs.** Auto-mode PRs are drafts. Enable branch protection and require human review before merging. The GitHub App's `Contents: write` can push to any branch.
-- **Who can sign in.** Production requires admins (`ORCH_ADMIN_GITHUB_LOGINS`) and/or an allowlist of GitHub logins or organizations (see Server installation). Admins approve everyone else on the Access page; a refused sign-in creates no session, only a request form protected by a short-lived HMAC-signed token, the Origin check and a rate limit. Invite links are stored hashed and expire. A task board is visible only to the project owner, active participants and GitHub collaborators; owner rights are re-checked against the GitHub ADMIN role (cached a few minutes), so a former admin loses them.
-- **GitHub outages: last known decision for 15 minutes, then fail closed.** Organization membership is checked with the user's GitHub token. When that check fails (network error, 5xx, rate limit, or a 401 because the user revoked the orch App authorization in their GitHub settings), the user's last known allow/deny decision is reused only if it is younger than `ORCH_ACCESS_GRACE_SEC` (default 900 seconds). After that, or with no earlier decision, the user is refused: sessions, personal tokens, OAuth tokens and agents alike. A failed check is not retried for 30 seconds, so an outage does not turn every request into a GitHub call. A revoked App authorization never grants access: it is "unknown", gets the same grace, then is refused; so is a GitHub token that can no longer be refreshed. Admins, logins in `ORCH_ALLOWED_GITHUB_LOGINS` and logins approved on the Access page do not depend on GitHub and are unaffected. A refused member's agents are disconnected with the non-fatal close code 4403 (an upgrade gets HTTP 403) and receive no offers; they reconnect on their own once access is restored. Tasks already running keep their GitHub installation token until it expires (at most one hour).
-- **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated by delivery id and by body hash. Caddy sends HSTS and a strict Content-Security-Policy, and the server never logs query strings (they carry the OAuth code). Every state change is written to an append-only audit log.
+- **Trusted teams only.** Anyone who can get an issue labeled for the pool can, in effect, write a prompt that runs on a teammate's machine. Do not use orch with strangers or public repos where outsiders can file labeled issues.
+- **Sandbox.** Each task runs in its own non-root container with only its own clone mounted: no Docker socket, no host home. Git metadata stays outside the container. A repo's own compose file is validated (no `privileged`, host mounts, Docker socket, host networking or `cap_add`); until that lands fully on the agent side, treat it as trusted code.
+- **What the sandbox does not do.** In auto mode the agent runs `claude -p --permission-mode bypassPermissions` in a container that has **network access** and the member's Claude token. A malicious issue can make Claude exfiltrate that token or push harmful code to the task branch. There is no egress filtering in v1. The token is the member's own and revocable from their Claude account.
+- **The agent is root-equivalent on the member's host** (it mounts `/var/run/docker.sock`). Rootless Docker reduces this.
+- **Credentials stay local.** The Claude token lives in the agent's volume and that member's task containers. The agent mounts `~/.claude` read-only, only to estimate usage, which is approximate: treat budgets as hints.
+- **Review PRs.** Auto-mode PRs are drafts. Enable branch protection and require human review.
+- **Sign-in.** Admins and/or an allowlist of logins or organizations; everyone else needs approval. Org membership is checked with the user's own token. If GitHub is unreachable, the last decision is reused for `ORCH_ACCESS_GRACE_SEC` (default 900 s), then access fails closed. Removed users lose sessions, tokens and agents within minutes.
+- **Server.** Only Caddy is published. GitHub user tokens are encrypted; agent credentials and MCP tokens are stored hashed. Webhooks are HMAC-verified and deduplicated. Caddy sends HSTS and a strict CSP, query strings are never logged, and every state change goes to an append-only audit log.
 
 Report vulnerabilities privately through GitHub security advisories on this repository.
 
+## Development
+
+The host needs only `docker` with Compose and `sh`. `./dev` wraps `docker compose -f compose.dev.yaml`.
+
+| Command                                | What it does                                             |
+| -------------------------------------- | -------------------------------------------------------- |
+| `./dev install`                        | `pnpm install` in the tools container                    |
+| `./dev up` / `down` / `logs [service]` | Web at `localhost:8470`, API at `localhost:8471`         |
+| `./dev lint` / `typecheck` / `build`   | Static checks and build                                  |
+| `./dev test`                           | Unit and integration tests (shared, agent, web, server)  |
+| `./dev test:ui`                        | Playwright UI suite on a seeded stack with a fake GitHub |
+| `./dev test:install`                   | shellcheck and bats for `install.sh`                     |
+| `./dev e2e`                            | End-to-end stack                                         |
+| `./dev prisma <args>`                  | Prisma CLI                                               |
+
+The first run copies `.env.example` to `.env`. GitHub sign-in needs a development GitHub App with callback `http://localhost:8470/api/auth/github/callback`. Migrations live in `apps/server/prisma/migrations/` (`YYYYMMDDHHMMSS_snake_name`); applied ones are immutable, never edit or rename them. CI runs lint, typecheck, tests, installer tests, image builds and gitleaks; a `v*` tag publishes `orch-server`, `orch-web` and `orch-agent` to `ghcr.io/theroxat`. Design and decisions: [docs/PLAN.md](docs/PLAN.md).
+
 ## Limitations
 
-- Single server instance (in-process scheduler); no high availability. One host, nightly dumps.
-- No egress control, devcontainer/compose sanitizing or token-injecting proxy for task containers (see [future hardening](docs/PLAN.md#11-future-hardening-if-pools-ever-open-to-untrusted-members)).
+- Single server instance (in-process scheduler), no high availability; one host, nightly dumps.
+- No egress control, compose sanitizing or token-injecting proxy for task containers ([future hardening](docs/PLAN.md#11-future-hardening-if-pools-ever-open-to-untrusted-members)).
 - Usage and budget are estimates; plans are declared by the member.
-- Repos must build from a `Dockerfile` or a simple `.devcontainer.json`; complex devcontainer features are not honored.
-- Manual-mode `screen` sessions end if the agent container restarts; the task container survives and `orch attach <n>` reopens a session.
-- One concurrent task per machine by default.
-- GitHub only. English UI only.
-- The production images run TypeScript through `tsx` rather than a compiled build; the server image is therefore large (~900 MB).
+- Repos must build from a `Dockerfile` or a simple `.devcontainer.json`.
+- Manual-mode `screen` sessions end if the agent container restarts; `orch attach <n>` reopens one.
+- GitHub only, English UI only.
+- Images run TypeScript through `tsx` rather than a compiled build, so the server image is large (about 900 MB).
 
 ## License
 
