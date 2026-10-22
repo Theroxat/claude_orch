@@ -64,3 +64,15 @@ export function branchNameFor(issueNumber: number, title: string): string {
     .replace(/-+$/g, '');
   return `orch/issue-${issueNumber}${slug ? `-${slug}` : ''}`;
 }
+
+/**
+ * `task.createdBy` of a task offer: the agent credits the creator as the commit author. A GitHub
+ * id outside the safe integer range is left out (the agent then keeps its own identity).
+ */
+export function creatorOf(u: { login: string; githubId: bigint }): {
+  login: string;
+  githubId?: number;
+} {
+  const id = Number(u.githubId);
+  return Number.isSafeInteger(id) && id > 0 ? { login: u.login, githubId: id } : { login: u.login };
+}

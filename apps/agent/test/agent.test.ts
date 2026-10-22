@@ -119,6 +119,10 @@ describe('usage mapping', () => {
       source: 'jsonl',
     });
     expect(toUsageReport({ ...estimate, window: null }).windowStart).toBeNull();
+    // v0.6.2: task runs from the ledger are reported per project.
+    expect(
+      toUsageReport({ ...estimate, byProject: { personal: 300, prj_1: 200 } }).byProject,
+    ).toEqual({ personal: 300, prj_1: 200 });
   });
 });
 

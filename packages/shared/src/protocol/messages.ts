@@ -316,7 +316,11 @@ export const TaskOfferPayloadSchema = z.object({
     model: Model,
     baseBranch: z.string(),
     branchName: z.string(),
-    createdBy: z.object({ login: z.string() }),
+    /**
+     * Who submitted the task. `githubId` (v0.6.2, additive): the agent credits them as the git
+     * author of the run's commit (`<id>+<login>@users.noreply.github.com`); absent = agent identity.
+     */
+    createdBy: z.object({ login: z.string(), githubId: z.number().int().positive().optional() }),
     /** M4: integration branch, when set (`baseBranch` already equals it: the PR base). */
     integrationBranch: z.string().nullable().optional(),
   }),

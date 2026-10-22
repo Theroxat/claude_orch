@@ -90,6 +90,14 @@ export function registerWebhooks(
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
       const sig = req.headers['x-hub-signature-256'];
       if (!verifySignature(secret, raw, typeof sig === 'string' ? sig : undefined)) {
+        // Delivery id and event only: never the signature, the secret or the body.
+        req.log.warn(
+          {
+            deliveryId: header(req, 'x-github-delivery') ?? null,
+            event: header(req, 'x-github-event') ?? null,
+          },
+          'webhook signature verification failed',
+        );
         throw new HttpError(401, 'bad_signature', 'Invalid webhook signature');
       }
       const event = header(req, 'x-github-event');

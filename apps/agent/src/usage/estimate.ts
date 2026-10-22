@@ -1,6 +1,7 @@
 import { buildBlocks, currentBlock } from './blocks';
 import { modelFamily } from './models';
 import { createUsageCache, scanUsage } from './scanner';
+import { readTaskUsage } from './task-ledger';
 import type { EstimateOptions, TokenTotals, UsageCache, UsageEntry, UsageEstimate } from './types';
 
 const DAY_MS = 24 * 3_600_000;
@@ -76,12 +77,19 @@ export async function estimateUsage(opts: EstimateOptions = {}): Promise<UsageEs
   const historySince = now - (opts.historyDays ?? DEFAULT_HISTORY_DAYS) * DAY_MS;
 
   const scan = await scanUsage(root, historySince, opts.cache ?? defaultCache);
-  const entries = scan.entries.filter((e) => e.timestamp <= now);
+  // orch task runs log inside their containers, never under `root`: merge their recorded usage.
+  const taskEntries = opts.taskLedger ? readTaskUsage(opts.taskLedger, historySince) : [];
+  const entries: UsageEntry[] = [...scan.entries, ...taskEntries].filter((e) => e.timestamp <= now);
 
   const blocks = buildBlocks(entries);
   const block = currentBlock(blocks, now);
   const completed = blocks.filter((b) => b !== block);
   const cur = summarize(block?.entries ?? [], opusFactor);
+  const byProject: Record<string, number> = { personal: 0 };
+  for (const e of block?.entries ?? []) {
+    const p = (e as { projectId?: string }).projectId ?? 'personal';
+    byProject[p] = (byProject[p] ?? 0) + weighEntry(e, opusFactor);
+  }
   const weekSince = now - WEEK_MS;
   const week = summarize(
     entries.filter((e) => e.timestamp >= weekSince),
@@ -110,6 +118,7 @@ export async function estimateUsage(opts: EstimateOptions = {}): Promise<UsageEs
     tokens: cur.tokens,
     byModel: cur.byModel,
     weighted: cur.weighted,
+    byProject,
     weekly: {
       since: weekSince,
       tokens: week.tokens,

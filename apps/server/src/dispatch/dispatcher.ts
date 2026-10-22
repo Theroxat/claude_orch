@@ -32,7 +32,7 @@ import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import { participationStatus } from '../projects/service';
 import { buildPrompt } from '../tasks/service';
-import { branchNameFor } from '../tasks/meta';
+import { branchNameFor, creatorOf } from '../tasks/meta';
 import {
   EXEC_TIMEOUT_MIN,
   compareCandidates,
@@ -311,7 +311,8 @@ export class Dispatcher {
         userId,
         ...(excludeTaskId ? { taskId: { not: excludeTaskId } } : {}),
         OR: [
-          { status: { in: [...HOLDS_SLOT] } },
+          // A pushed run is not over yet (its usage is only known at task.finished): still held.
+          { status: { in: [...HOLDS_SLOT, 'PUSHED'] } },
           { status: 'PENDING', kind: 'AUTO_OFFER', expiresAt: { gt: now } },
         ],
       },
@@ -324,14 +325,17 @@ export class Dispatcher {
       reservedAll += e;
       if (a.task.projectId === projectId) reservedProject += e;
     }
-    const finished = await this.prisma.assignment.aggregate({
-      where: {
-        userId,
-        task: { projectId },
-        finishedAt: { gte: windowStartOf(usage, now) },
-      },
-      _sum: { usageWeighted: true },
-    });
+    const since = windowStartOf(usage, now);
+    const [finished, finishedAll] = await Promise.all([
+      this.prisma.assignment.aggregate({
+        where: { userId, task: { projectId }, finishedAt: { gte: since } },
+        _sum: { usageWeighted: true },
+      }),
+      this.prisma.assignment.aggregate({
+        where: { userId, finishedAt: { gte: since } },
+        _sum: { usageWeighted: true },
+      }),
+    ]);
     return computeMargin({
       usage,
       now,
@@ -339,6 +343,7 @@ export class Dispatcher {
       percent,
       reserve: this.deps.config.BUDGET_SAFETY_RESERVE,
       orchUsedInWindow: Number(finished._sum.usageWeighted ?? 0),
+      orchUsedAllInWindow: Number(finishedAll._sum.usageWeighted ?? 0),
       reservedProject,
       reservedAll,
     });
@@ -843,7 +848,7 @@ export class Dispatcher {
         model: task.model,
         baseBranch: task.integrationBranch ?? task.baseBranch,
         branchName: task.branchName ?? branchNameFor(task.githubIssueNumber, task.title),
-        createdBy: { login: task.createdBy.login },
+        createdBy: creatorOf(task.createdBy),
         integrationBranch: task.integrationBranch,
       },
     };

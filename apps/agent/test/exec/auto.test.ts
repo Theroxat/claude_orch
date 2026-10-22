@@ -4,8 +4,19 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { serverMessage, type ServerMessage, type TaskOfferPayload } from '@orch/shared';
 import { ClaudeAuthState, CLAUDE_AUTH_REJECT_PREFIX } from '../../src/claude-auth';
-import { MAX_TURNS, buildAutoArgv, parseResultEvent } from '../../src/exec/claude-run';
-import { ExecError, ManualExecutor, type ExecutorConfig } from '../../src/exec/executor';
+import {
+  MAX_TURNS,
+  buildAutoArgv,
+  parseAssistantUsage,
+  parseResultEvent,
+} from '../../src/exec/claude-run';
+import {
+  ExecError,
+  ManualExecutor,
+  creatorIdentity,
+  type ExecutorConfig,
+} from '../../src/exec/executor';
+import { readTaskUsage, taskLedgerPath } from '../../src/usage';
 import { silentLogger } from '../../src/log';
 import { tempDir, waitFor } from '../helpers/util';
 import {
@@ -626,5 +637,120 @@ describe('failure classification and Claude login state', () => {
     mkdirSync(t.cfg.dataDir, { recursive: true });
     writeFileSync(join(t.cfg.dataDir, 'claude-auth.json'), 'not json');
     expect(t.ex.claudeAuth.isValid()).toBe(true);
+  });
+});
+
+describe('auto mode: task usage counts toward the budget (v0.6.2)', () => {
+  const assistant = (id: string, model: string, input: number, output: number) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id, model, usage: { input_tokens: input, output_tokens: output } },
+    });
+
+  it('reports the largest of stream, result and container logs, and records it in the ledger', async () => {
+    const t = setup();
+    t.proc.script = (run) => {
+      // The same message is repeated once per content block: counted once.
+      run.stdout(assistant('m1', 'claude-sonnet-5-5', 1_000, 200));
+      run.stdout(assistant('m1', 'claude-sonnet-5-5', 1_000, 200));
+      run.stdout(assistant('m2', 'claude-opus-5-5', 100, 50));
+      // A result whose usage is smaller than what the stream saw (e.g. last turn only).
+      run.stdout(resultLine());
+      run.finish(0);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    const fin = t.of('task.finished')[0]!.payload;
+    // sonnet 1200 + opus 150 x 5
+    expect(fin).toMatchObject({
+      outcome: 'succeeded',
+      usage: { weighted: 1_950, input: 1_100, output: 250 },
+    });
+    const ledger = readTaskUsage(taskLedgerPath(t.cfg.dataDir), 0);
+    expect(ledger.map((e) => [e.projectId, e.model, e.input])).toEqual([
+      ['prj_1', 'claude-sonnet-5-5', 1_000],
+      ['prj_1', 'claude-opus-5-5', 100],
+    ]);
+  });
+
+  it('uses the per-model totals of the result event (modelUsage) when they are the largest', async () => {
+    const t = setup();
+    t.proc.script = (run) => {
+      run.stdout(
+        resultLine({
+          modelUsage: {
+            'claude-opus-5-5': { inputTokens: 1_000, outputTokens: 100 },
+            'claude-haiku-5-5': { inputTokens: 500, outputTokens: 0, cacheReadInputTokens: 1_000 },
+          },
+        }),
+      );
+      run.finish(0);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({
+      usage: { weighted: 1_100 * 5 + 600, input: 1_500, output: 100 },
+    });
+  });
+
+  it('a run with no usage at all reports 0 and records nothing', async () => {
+    const t = setup();
+    t.proc.script = (run) => {
+      run.stdout(resultLine({ usage: {} }));
+      run.finish(0);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({
+      usage: { weighted: 0, input: 0, output: 0 },
+    });
+    expect(readTaskUsage(taskLedgerPath(t.cfg.dataDir), 0)).toEqual([]);
+  });
+
+  it('parseAssistantUsage reads assistant events only', () => {
+    expect(parseAssistantUsage('nope')).toBeNull();
+    expect(parseAssistantUsage(resultLine())).toBeNull();
+    expect(parseAssistantUsage(assistant('m9', '<synthetic>', 1, 1))).toBeNull();
+    expect(parseAssistantUsage(assistant('m9', 'claude-sonnet-5-5', 3, 4))).toEqual({
+      id: 'm9',
+      model: 'claude-sonnet-5-5',
+      input: 3,
+      output: 4,
+      cacheWrite: 0,
+      cacheRead: 0,
+    });
+  });
+});
+
+describe('commit author: the task creator (v0.6.2)', () => {
+  it('credits the creator when the offer carries their GitHub id, else keeps the agent identity', async () => {
+    const t = setup();
+    t.proc.script = finishOk;
+    acceptAndAck(t, autoOffer({ task: { createdBy: { login: 'alice', githubId: 4242 } } }));
+    await t.ex.idle();
+    expect(t.git.commitAuthors).toEqual([
+      { name: 'alice', email: '4242+alice@users.noreply.github.com' },
+    ]);
+
+    const old = setup();
+    old.proc.script = finishOk;
+    // Older server: no githubId. (Same data dir as above: another assignment.)
+    acceptAndAck(old, autoOffer({ assignmentId: 'asg_2', issueNumber: 43 }));
+    await old.ex.idle();
+    expect(old.git.commitAuthors).toEqual([undefined]);
+  });
+
+  it('never puts an unexpected login or id in a commit header', () => {
+    expect(creatorIdentity({ login: 'bob', githubId: 7 })).toEqual({
+      name: 'bob',
+      email: '7+bob@users.noreply.github.com',
+    });
+    expect(creatorIdentity({ login: 'ci[bot]', githubId: 8 })?.email).toBe(
+      '8+ci[bot]@users.noreply.github.com',
+    );
+    expect(creatorIdentity({ login: 'bob' })).toBeNull();
+    expect(creatorIdentity({ login: 'bob', githubId: 0 })).toBeNull();
+    expect(creatorIdentity({ login: 'evil> <x@y', githubId: 7 })).toBeNull();
+    expect(creatorIdentity({ login: 'a\nb', githubId: 7 })).toBeNull();
   });
 });

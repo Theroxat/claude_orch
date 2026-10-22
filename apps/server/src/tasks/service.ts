@@ -24,7 +24,7 @@ import type { GithubClient, GithubIssue } from '../github';
 import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
 import { getRoleInfo, participationStatus } from '../projects/service';
-import { bodyHash, branchNameFor, buildIssueBody, parseIssueBody } from './meta';
+import { bodyHash, branchNameFor, buildIssueBody, creatorOf, parseIssueBody } from './meta';
 import {
   ENV_FAILURES_BEFORE_ATTENTION,
   RATE_LIMIT_FALLBACK_MS,
@@ -1222,7 +1222,7 @@ export class TaskService {
         model: task.model,
         baseBranch: task.integrationBranch ?? task.baseBranch,
         branchName: task.branchName ?? branchNameFor(task.githubIssueNumber, task.title),
-        createdBy: { login: task.createdBy.login },
+        createdBy: creatorOf(task.createdBy),
       },
     };
     return { ack: { ok: true }, offer, withdrawn };

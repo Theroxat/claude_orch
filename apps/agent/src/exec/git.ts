@@ -47,7 +47,13 @@ export interface GitOps {
   /** Writes the task's throwaway copy of the git dir at `<workTree>/.git`. */
   seedTaskGit(repo: GitRepo): Promise<void>;
   /** Commits every pending worktree change. Returns false when there was nothing. */
-  commitAll(repo: GitRepo, message: string, id: GitIdentity): Promise<boolean>;
+  /** `id` commits; `author` (default `id`) is credited as the commit author. */
+  commitAll(
+    repo: GitRepo,
+    message: string,
+    id: GitIdentity,
+    author?: GitIdentity,
+  ): Promise<boolean>;
   /** Commits on HEAD that are not on `origin/<base>`. */
   commitsAhead(repo: GitRepo, base: string): Promise<number>;
   changedFiles(repo: GitRepo, base: string): Promise<number>;
@@ -280,7 +286,12 @@ export class CliGit implements GitOps {
     }
   }
 
-  async commitAll(repo: GitRepo, message: string, id: GitIdentity): Promise<boolean> {
+  async commitAll(
+    repo: GitRepo,
+    message: string,
+    id: GitIdentity,
+    author?: GitIdentity,
+  ): Promise<boolean> {
     // The task's throwaway git dir (or whatever the task put there) is never read nor committed.
     rmSync(join(repo.workTree, '.git'), { recursive: true, force: true });
     const nested = findNestedGit(repo.workTree);
@@ -312,6 +323,7 @@ export class CliGit implements GitOps {
         '-c',
         `user.email=${id.email}`,
         'commit',
+        ...(author ? [`--author=${author.name} <${author.email}>`] : []),
         '--no-verify',
         '--no-gpg-sign',
         '-q',

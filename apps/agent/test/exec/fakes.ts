@@ -40,8 +40,11 @@ export class FakeGit implements GitOps {
     this.calls.push(['seedTaskGit', repo.workTree]);
     mkdirSync(join(repo.workTree, '.git'), { recursive: true });
   }
-  async commitAll(repo: GitRepo, message: string) {
+  /** `author` passed to each commitAll (undefined: the agent identity). */
+  commitAuthors: Array<GitIdentity | undefined> = [];
+  async commitAll(repo: GitRepo, message: string, _id: GitIdentity, author?: GitIdentity) {
     this.calls.push(['commitAll', repo.workTree, message]);
+    this.commitAuthors.push(author);
     return true;
   }
   async commitsAhead() {

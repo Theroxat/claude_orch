@@ -1342,6 +1342,51 @@ describe('pool endpoint', () => {
   });
 });
 
+describe('pool endpoint: task runs count toward the budget (v0.6.2)', () => {
+  it('margin drops while a run is held (running, pushed) and stays down once it finished', async () => {
+    const { owner, project: p } = await project();
+    const m = await member(p.id, { mode: 'AUTO', used: 0, percent: 50 });
+    const t = await createTask(owner, p.id, { title: 'Budget run' });
+    const offer = await m.client.next('task.offer', (o) => o.payload.task.taskId === t.id);
+    // The creator is credited as the commit author: the offer carries their GitHub id.
+    expect(offer.payload.task.createdBy).toEqual({ login: owner.login, githubId: owner.id });
+    const id = offer.payload.assignmentId;
+    await m.client.call(agentMessage('offer.accept', { assignmentId: id, execMode: 'AUTO' }));
+    const margin = async () => {
+      const res = await api(app, owner)('GET', `/api/pool?projectId=${p.id}`);
+      const row = PoolResponseSchema.parse(res.json()).members.find(
+        (x) => x.userId === m.user.userId,
+      )!;
+      return row.projects[0]!.estimatedMargin!;
+    };
+    await m.client.call(
+      agentMessage('task.status', { assignmentId: id, seq: 1, state: 'running' }),
+    );
+    expect(await margin()).toBeLessThan(500_000);
+    await m.client.call(
+      agentMessage('task.pushed', {
+        assignmentId: id,
+        seq: 2,
+        branch: offer.payload.task.branchName,
+        headSha: 'abc123',
+        changedFiles: 1,
+        summary: 'done',
+      }),
+    );
+    expect(await margin()).toBeLessThan(500_000);
+    await m.client.call(
+      agentMessage('task.finished', {
+        assignmentId: id,
+        seq: 3,
+        outcome: 'succeeded',
+        usage: { weighted: 120_000, input: 1, output: 1 },
+      }),
+    );
+    // The report (older agent) never saw the run: the server-side usage counts it.
+    expect(await margin()).toBe(500_000 - 120_000);
+  });
+});
+
 describe('pool endpoint: submitters', () => {
   it('a submitter who does not participate sees the pool of that project to pick members', async () => {
     const { project: p, repo } = await project();
