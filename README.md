@@ -4,8 +4,9 @@
 
 **How do you hand a teammate's idle Claude capacity a to-do list, without ever sharing an account?**
 
-[**orch.selfhostr.io**](https://orch.selfhostr.io) · [Source](https://github.com/Theroxat/claude_orch) · [Design notes](docs/PLAN.md) · [Deploy](#deploy-the-server)
+[**orch.selfhostr.io**](https://orch.selfhostr.io) · [Docs](https://claude-orch.readthedocs.io) · [Source](https://github.com/Theroxat/claude_orch) · [Design notes](docs/PLAN.md) · [Deploy](#deploy-the-server)
 
+[![Docs](https://readthedocs.org/projects/claude-orch/badge/?version=latest)](https://claude-orch.readthedocs.io)
 ![Node >=22](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=nodedotjs&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-793%20passing-2ea44f)
 ![Docker](https://img.shields.io/badge/everything%20in-Docker-2496ed?logo=docker&logoColor=white)
@@ -23,6 +24,8 @@ A shared to-do list for small, trusted teams, with automation on top. Tasks are 
 - **Docker everywhere.** Server, web, database, proxy, member agent, task sandboxes and every dev workflow.
 
 <img src="docs/screenshot-pool.png" alt="The Pool: who is lending capacity right now" width="100%">
+
+Full documentation (quickstart, server installation, concepts, CLI and MCP reference, configuration, security model, FAQ) lives at **[claude-orch.readthedocs.io](https://claude-orch.readthedocs.io)**; its sources are in [`docs/`](docs/).
 
 ## Contents
 
