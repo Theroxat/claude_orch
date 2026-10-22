@@ -5,6 +5,19 @@
 # /run/orch.sock and the /data and /secrets volumes. Task containers are non-root (PLAN 5.3).
 FROM docker:27-cli AS docker-cli
 
+# ---- deps: production dependencies only. Built in parallel with the runtime stage below. ----
+FROM node:24-bookworm-slim AS deps
+ENV COREPACK_HOME=/opt/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    CI=true
+RUN corepack enable && corepack prepare pnpm@12.14.0 --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/agent/package.json apps/agent/
+RUN pnpm install --frozen-lockfile --prod --filter "@orch/agent..."
+
+# ---- runtime ----
 FROM node:24-bookworm-slim
 
 RUN apt-get update \
@@ -27,18 +40,14 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
  && rm -rf "$HOME/.local/share/claude" "$HOME/.local/bin/claude" \
  && /opt/orch/bin/claude --version
 
-ENV COREPACK_HOME=/opt/corepack \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    CI=true
-RUN corepack enable && corepack prepare pnpm@12.14.0 --activate
+# CI=true was set for pnpm in the former single-stage image and is part of the runtime
+# environment the agent (and the Claude CLI it runs) has always seen: kept as is.
+ENV CI=true
 
 WORKDIR /app
-# Manifests first for layer caching, then sources.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
-COPY packages/shared/package.json packages/shared/
-COPY apps/agent/package.json apps/agent/
-RUN pnpm install --frozen-lockfile --prod --filter "@orch/agent..." \
- && pnpm store prune
+# Production node_modules from the deps stage (pnpm, its store and its metadata cache stay
+# there), then sources.
+COPY --from=deps /app/ ./
 COPY packages/shared/ packages/shared/
 COPY apps/agent/ apps/agent/
 RUN rm -rf apps/agent/test

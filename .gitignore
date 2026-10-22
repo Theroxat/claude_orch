@@ -30,3 +30,6 @@ pgdata/
 
 # Claude Code local state
 .claude/
+
+# documentation build
+docs/_build/

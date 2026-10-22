@@ -392,6 +392,8 @@ model Task {
   @@unique([projectId, githubIssueNumber])
   @@index([projectId, status])
   @@index([createdById, status])
+  /// Dispatcher tick: every TODO task, oldest first.
+  @@index([status, createdAt])
 }
 
 /// Acyclic: checked before insert.
@@ -466,6 +468,10 @@ model Assignment {
   @@index([userId, status])
   @@index([agentId, status])
   @@index([status, expiresAt])
+  /// Dispatcher: a member's latest answered assignment, per member per task on every tick.
+  @@index([userId, respondedAt])
+  /// Dispatcher: usage of the latest SUCCEEDED runs (estimateFor).
+  @@index([status, finishedAt])
 }
 
 /// M5 personal access token (`orch_pat_<...>`) for the MCP endpoint. Only the SHA-256 is stored.
