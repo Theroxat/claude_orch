@@ -394,6 +394,8 @@ model Task {
   @@index([createdById, status])
   /// Dispatcher tick: every TODO task, oldest first.
   @@index([status, createdAt])
+  /// History: stable keyset pagination, newest first.
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
 }
 
 /// Acyclic: checked before insert.

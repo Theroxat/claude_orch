@@ -7,6 +7,7 @@ import {
   OutdatedCountResponseSchema,
   PersonalTokenListResponseSchema,
   DiscoverItemSchema,
+  HistoryResponseSchema,
   ImportTasksResponseSchema,
   InstallUrlResponseSchema,
   TaskBoardSchema,
@@ -167,3 +168,11 @@ export const revokeInvite = (id: string) =>
   api('POST', `/admin/access/invites/${id}/revoke`, {
     schema: z.object({ invite: InviteSchema }),
   });
+
+/** One page of the task history; `params` is the filter query string (cursor excluded). */
+export const fetchHistory = (params: URLSearchParams, cursor?: string) => {
+  const qs = new URLSearchParams(params);
+  if (cursor) qs.set('cursor', cursor);
+  const text = qs.toString();
+  return api('GET', `/tasks/history${text ? `?${text}` : ''}`, { schema: HistoryResponseSchema });
+};
