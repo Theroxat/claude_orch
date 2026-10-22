@@ -15,9 +15,11 @@
   --rule: #cad3c9;
   --rule-strong: #a8b4a9;
   --route: #2452c2;
-  --proceed: #1b8450;
-  --caution: #c98410;
-  --caution-ink: #8a5a00;
+  --proceed: #d97757;
+  --proceed-ink: #a8472a;
+  --on-proceed: #2b1208;
+  --caution: #cfa500;
+  --caution-ink: #6f5600;
   --stop: #c0362c;
   --on-ink: #f3f6f1;
   --code-bg: #142029;
@@ -49,9 +51,11 @@
     --rule: #26353b;
     --rule-strong: #3a4c52;
     --route: #8aa9ff;
-    --proceed: #4cc98a;
-    --caution: #f2b54b;
-    --caution-ink: #f2b54b;
+    --proceed: #e88b6b;
+    --proceed-ink: #e88b6b;
+    --on-proceed: #2b1208;
+    --caution: #f0cc3c;
+    --caution-ink: #f0cc3c;
     --stop: #f36d60;
     --on-ink: #0f171b;
     --code-bg: #0b1216;
@@ -72,9 +76,11 @@
   --rule: #26353b;
   --rule-strong: #3a4c52;
   --route: #8aa9ff;
-  --proceed: #4cc98a;
-  --caution: #f2b54b;
-  --caution-ink: #f2b54b;
+  --proceed: #e88b6b;
+  --proceed-ink: #e88b6b;
+  --on-proceed: #2b1208;
+  --caution: #f0cc3c;
+  --caution-ink: #f0cc3c;
   --stop: #f36d60;
   --on-ink: #0f171b;
   --code-bg: #0b1216;
@@ -394,7 +400,7 @@ strong {
   padding: 1px 5px 0;
   border-radius: 999px;
   background: var(--caution);
-  color: #1f1500;
+  color: #241a00;
   font-size: 0.72rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
@@ -640,7 +646,7 @@ strong {
 }
 .badge.ok {
   --lamp: var(--proceed);
-  color: var(--proceed);
+  color: var(--proceed-ink);
 }
 .badge.pending {
   --lamp: var(--caution);
@@ -764,12 +770,12 @@ button:disabled {
 }
 .copy-button[data-copied] {
   border-color: color-mix(in srgb, var(--proceed) 55%, transparent);
-  color: var(--proceed);
+  color: var(--proceed-ink);
 }
 .copy-button.primary[data-copied] {
   background: var(--proceed);
   border-color: var(--proceed);
-  color: #fff;
+  color: var(--on-proceed);
 }
 
 /* ---------- Forms ---------- */
@@ -1536,7 +1542,7 @@ progress::-moz-progress-bar {
 .getting-started .done .check {
   border-color: var(--proceed);
   background: var(--proceed);
-  color: #fff;
+  color: var(--on-proceed);
 }
 .getting-started .unknown .check {
   border-style: dashed;
@@ -1668,7 +1674,7 @@ progress::-moz-progress-bar {
 }
 .wizard-status.ok,
 .wizard-summary .ok {
-  color: var(--proceed);
+  color: var(--proceed-ink);
 }
 .wizard-status.ok > span[aria-hidden] {
   display: inline-grid;
@@ -1677,7 +1683,7 @@ progress::-moz-progress-bar {
   height: 22px;
   border-radius: 50%;
   background: var(--proceed);
-  color: #fff;
+  color: var(--on-proceed);
   font-size: 0.75rem;
   animation: tick-in 420ms var(--ease-out);
 }
