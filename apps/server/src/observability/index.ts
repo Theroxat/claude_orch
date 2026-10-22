@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
@@ -10,9 +10,10 @@ export { Metrics, versionLabel } from './metrics';
 function tokenMatches(req: FastifyRequest, token: string): boolean {
   const h = req.headers.authorization;
   const given = typeof h === 'string' && h.startsWith('Bearer ') ? h.slice(7) : '';
-  const a = Buffer.from(given);
-  const b = Buffer.from(token);
-  return a.length === b.length && timingSafeEqual(a, b);
+  // Hash both sides: equal-length buffers, so neither the content nor the token length leaks.
+  const a = createHash('sha256').update(given).digest();
+  const b = createHash('sha256').update(token).digest();
+  return timingSafeEqual(a, b);
 }
 
 /**

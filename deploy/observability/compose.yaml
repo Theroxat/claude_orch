@@ -14,7 +14,7 @@ services:
       METRICS_ENABLED: 'true'
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.1
     restart: unless-stopped
     entrypoint: ['/bin/sh', '/prometheus-entrypoint.sh']
     environment:
@@ -29,13 +29,15 @@ services:
         condition: service_healthy
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.4
     restart: unless-stopped
     ports:
       - '127.0.0.1:${GRAFANA_PORT:-3001}:3000'
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
     volumes:
       - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro

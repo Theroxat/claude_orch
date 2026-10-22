@@ -1,3 +1,39 @@
+/** Paths whose segments are secrets (invite tokens) are masked in span URLs. */
+const SECRET_PATH = /^(\/invite\/)[^/]+/;
+/** Query keys masked on spans (OAuth codes and PKCE values, tokens). Replaces the SDK defaults. */
+export const REDACTED_QUERY_PARAMS = [
+  // SDK defaults
+  'sig',
+  'Signature',
+  'AWSAccessKeyId',
+  'X-Goog-Signature',
+  'X-Amz-Signature',
+  'X-Amz-Credential',
+  'X-Amz-Security-Token',
+  // orch: GitHub / MCP OAuth flows and bearer-like values
+  'code',
+  'state',
+  'code_challenge',
+  'code_verifier',
+  'token',
+  'access_token',
+  'refresh_token',
+  'client_secret',
+];
+
+/** Span attributes for an incoming request with secrets stripped: no query string, masked path. */
+export function safeIncomingUrlAttributes(req: { url?: string }): Record<string, string> {
+  const path = (req.url ?? '').split('?')[0] ?? '';
+  const safe = path.replace(SECRET_PATH, '$1[redacted]');
+  return { 'http.target': safe, 'url.path': safe, 'url.query': '' };
+}
+
+/** Health and metrics probes are never traced (any case, trailing slash). */
+export function isProbePath(url: string | undefined): boolean {
+  const path = (url ?? '').split('?')[0]?.toLowerCase().replace(/\/+$/, '') ?? '';
+  return ['/healthz', '/readyz', '/metrics', '/api/healthz', '/api/readyz'].includes(path);
+}
+
 /**
  * OpenTelemetry tracing, off by default. `startTracing` is the only entry point and loads the SDK
  * with dynamic imports, so a server without OTEL_EXPORTER_OTLP_ENDPOINT never even loads it
@@ -23,8 +59,10 @@ export async function startTracing(
         '@opentelemetry/instrumentation-dns': { enabled: false },
         '@opentelemetry/instrumentation-net': { enabled: false },
         '@opentelemetry/instrumentation-http': {
-          ignoreIncomingRequestHook: (req) =>
-            ['/healthz', '/readyz', '/metrics'].includes((req.url ?? '').split('?')[0] ?? ''),
+          ignoreIncomingRequestHook: (req) => isProbePath(req.url),
+          startIncomingSpanHook: (req) => safeIncomingUrlAttributes(req),
+          redactedQueryParams: REDACTED_QUERY_PARAMS,
+          redactedQueryParamsServer: REDACTED_QUERY_PARAMS,
         },
       }),
     ],

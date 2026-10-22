@@ -56,7 +56,7 @@ docker compose -f compose.yaml -f ../observability/compose.yaml up -d
 - Grafana listens on `127.0.0.1:3001` only (`GRAFANA_PORT`). Reach it through an SSH tunnel (`ssh -L 3001:127.0.0.1:3001 host`) or your own authenticated proxy.
 - The datasource and the **orch overview** dashboard (`deploy/observability/grafana/dashboards/orch.json`) are provisioned automatically: request rate and latency, agents by version, tasks by status, dispatcher tick, offers, assignment outcomes, WebSocket and webhook traffic, process CPU and memory.
 
-The stack uses the `latest` Prometheus and Grafana images; pin them in your copy of the override if you want reproducible upgrades.
+The Prometheus and Grafana images are pinned to exact versions in the override (kept up to date by Renovate). Grafana has no anonymous access and sign-up is disabled.
 
 ## Tracing (OpenTelemetry)
 
