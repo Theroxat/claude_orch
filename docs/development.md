@@ -38,6 +38,12 @@ after setting `ORCH_DEV_ENROLL_TOKEN` in `.env`.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests, installer tests, browser UI tests, production image builds, a documentation build and gitleaks. Pushing a `v*` tag runs `release.yml`, which publishes `orch-server`, `orch-web` and `orch-agent` to `ghcr.io/theroxat`.
 
+## Dependency updates
+
+Dependencies are kept up to date by [Renovate](https://docs.renovatebot.com/), configured in `renovate.json` at the repository root. Renovate opens grouped pull requests on Monday mornings (before 6am, Europe/Paris) for npm, GitHub Actions, Docker base images, the Sphinx requirements and Prisma, React and Vitest packages. A dependency dashboard issue lists all pending updates. Minor and patch updates to devDependencies and GitHub Actions merge automatically once CI passes; major updates always wait for a review.
+
+Renovate only runs once its GitHub App is installed on the repository. The repository owner must install it at <https://github.com/apps/renovate> and grant access to `Theroxat/claude_orch`.
+
 ## Building these docs
 
 The documentation is Sphinx with MyST (Markdown), built by Read the Docs from `main`:

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits", ":dependencyDashboard"],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group all non-major npm updates into one PR",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm non-major"
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Group Docker base images (node, postgres, caddy, debian, ...)",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "groupName": "Docker base images"
+    },
+    {
+      "description": "Group pip requirements (docs/requirements.txt)",
+      "matchManagers": ["pip_requirements"],
+      "groupName": "pip (docs)"
+    },
+    {
+      "description": "Group Prisma packages together",
+      "matchPackageNames": ["@prisma/*", "prisma"],
+      "groupName": "Prisma"
+    },
+    {
+      "description": "Group React, react-dom and their type packages together",
+      "matchPackageNames": ["react", "react-dom", "@types/react*"],
+      "groupName": "React"
+    },
+    {
+      "description": "Group Vitest packages together",
+      "matchPackageNames": ["vitest", "@vitest/*"],
+      "groupName": "Vitest"
+    },
+    {
+      "description": "Automerge minor and patch devDependencies once CI passes",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": "Automerge minor and patch GitHub Actions once CI passes",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": "Major updates are never automerged",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Pin digests for Docker images and GitHub Actions",
+      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "pinDigests": true
+    }
+  ]
+}
