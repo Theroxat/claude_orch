@@ -41,17 +41,20 @@ Org membership is checked at login with the user's own GitHub token, and again f
 
 The server limits requests with an **in-memory** counter (`@fastify/rate-limit`). orch runs as one server instance, so no shared store is needed; counters reset when the server restarts and are not shared between instances. Each limit counts requests per window (`RATE_LIMIT_WINDOW_SEC`, default 60 s). Over the limit the server answers `429` with a `Retry-After` header, `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` headers, and the usual error body `{"error": {"code": "rate_limited", "message": "..."}}`. The web app shows a short notice.
 
-| Variable                       | Default | Applies to (key)                                                                                                                                              |
-| ------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RATE_LIMIT_ENABLED`           | `true`  | `false` turns the HTTP limiter off (also the agent message cap)                                                                                               |
-| `RATE_LIMIT_WINDOW_SEC`        | 60      | Window length of every limit below                                                                                                                            |
-| `RATE_LIMIT_API_MAX`           | 300     | All other routes (signed-in user, else client IP)                                                                                                             |
-| `RATE_LIMIT_AUTH_MAX`          | 20      | Sign-in start and callback, access requests, OAuth `authorize`/`register`/`token`/`revoke`, agent enrollment, invite links (client IP)                        |
-| `RATE_LIMIT_WEBHOOK_MAX`       | 600     | `POST /api/github/webhook` (client IP). Bodies are capped at 1 MiB                                                                                            |
-| `RATE_LIMIT_MCP_MAX`           | 120     | `/mcp` (bearer token, else client IP)                                                                                                                         |
-| `RATE_LIMIT_HEAVY_MAX`         | 60      | Expensive reads such as the pool view (signed-in user)                                                                                                        |
-| `RATE_LIMIT_AGENT_CONNECT_MAX` | 30      | New agent WebSocket connections (client IP)                                                                                                                   |
-| `RATE_LIMIT_AGENT_MSG_PER_SEC` | 100     | Messages per second on one agent connection. Above it the socket is closed with code 4429; the agent reconnects with its normal backoff. `0` disables the cap |
+| Variable                       | Default | Applies to (key)                                                                                                                                                        |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RATE_LIMIT_ENABLED`           | `true`  | `false` turns the HTTP limiter off (also the agent message cap)                                                                                                         |
+| `RATE_LIMIT_WINDOW_SEC`        | 60      | Window length of every limit below                                                                                                                                      |
+| `RATE_LIMIT_API_MAX`           | 300     | All other routes (signed-in user, else client IP)                                                                                                                       |
+| `RATE_LIMIT_AUTH_MAX`          | 20      | Sign-in start and callback, access requests, OAuth `authorize`/`register`/`token`/`revoke`, agent enrollment, invite links (client IP)                                  |
+| `RATE_LIMIT_WEBHOOK_MAX`       | 600     | `POST /api/github/webhook` (client IP). Bodies are capped at 1 MiB                                                                                                      |
+| `RATE_LIMIT_MCP_MAX`           | 120     | `/mcp` (bearer token, else client IP)                                                                                                                                   |
+| `RATE_LIMIT_HEAVY_MAX`         | 60      | Expensive reads such as the pool view, usage and task history (signed-in user)                                                                                          |
+| `RATE_LIMIT_STREAM_MAX`        | 30      | Live-log streams (SSE) opened per user. Counts openings, so a reconnect storm is limited; an open stream costs one hit                                                  |
+| `RATE_LIMIT_AGENT_CONNECT_MAX` | 30      | New agent WebSocket connections (client IP)                                                                                                                             |
+| `RATE_LIMIT_AGENT_MSG_PER_SEC` | 100     | Messages per second on one agent connection. Above it the socket is closed with code 4429; the agent reconnects with its normal backoff plus 10 s. `0` disables the cap |
+
+MCP is limited per bearer token and, to stop token spraying, also per client IP (5x the per-token limit). IPv6 clients are counted per /64. In `deploy/server/compose.yaml` these variables are passed through only when set in `.env` (an empty value means the default).
 
 Health checks (`/healthz`, `/api/healthz`), `install.sh` and `/agent/compose.yaml` are never limited. The existing per-IP limits on access requests and on OAuth registration and token calls stay in place on top of these.
 

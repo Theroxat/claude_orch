@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { CloseCode, EnrollResponseSchema, agentMessage } from '@orch/shared';
+import type { FastifyRequest } from 'fastify';
+import { rateLimitKey, tierOf } from '../src/http/rate-limit';
+import { loadConfig } from '../src/config';
 import { FakeGithub, api, loginAs, makeApp, prisma } from './harness';
 
 const gh = new FakeGithub();
@@ -136,6 +139,25 @@ describe('HTTP rate limiting', () => {
     expect((await mcp('orch_b')).statusCode).toBe(401);
   });
 
+  it('MCP: spraying random tokens from one IP is capped per IP', async () => {
+    const a = app({ RATE_LIMIT_MCP_MAX: '1' });
+    const codes: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      codes.push(
+        (
+          await a.inject({
+            method: 'POST',
+            url: '/mcp',
+            headers: { authorization: `Bearer orch_rand${i}`, 'content-type': 'application/json' },
+            payload: '{}',
+          })
+        ).statusCode,
+      );
+    }
+    expect(codes.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect(codes.slice(5)).toEqual([429, 429]);
+  });
+
   it('heavy tier (pool) is limited per user', async () => {
     const a = app({ RATE_LIMIT_HEAVY_MAX: '2' });
     const u = await loginAs(a, gh);
@@ -143,6 +165,58 @@ describe('HTTP rate limiting', () => {
     await api(a, u)('GET', '/api/pool');
     expect((await api(a, u)('GET', '/api/pool')).statusCode).toBe(429);
     expect((await api(a, u)('GET', '/api/me')).statusCode).toBe(200);
+  });
+});
+
+describe('tiers and keys', () => {
+  const req = (url: string, extra: Record<string, unknown> = {}) =>
+    ({
+      routeOptions: { url },
+      ip: '198.51.100.1',
+      headers: {},
+      ...extra,
+    }) as unknown as FastifyRequest;
+
+  it('puts log streams, usage and history in sensible tiers (by path pattern)', () => {
+    expect(tierOf(req('/api/tasks/:id/logs/stream'))).toBe('stream');
+    expect(tierOf(req('/api/usage'))).toBe('heavy');
+    expect(tierOf(req('/api/usage/summary'))).toBe('heavy');
+    expect(tierOf(req('/api/tasks/history'))).toBe('heavy');
+    expect(tierOf(req('/api/tasks/:id'))).toBe('api');
+    expect(tierOf(req('/api/tasks'))).toBe('api');
+    expect(tierOf(req('/api/usagexyz'))).toBe('api');
+  });
+
+  it('keeps user and IP namespaces apart, and groups an IPv6 /64', () => {
+    expect(rateLimitKey(req('/api/me', { user: { id: 'ip:198.51.100.1' } }))).toBe(
+      'api:user:ip:198.51.100.1',
+    );
+    expect(rateLimitKey(req('/api/me'))).toBe('api:ip:198.51.100.1');
+    const a = rateLimitKey(req('/api/me', { ip: '2001:db8:1:2:aaaa::1' }));
+    const b = rateLimitKey(req('/api/me', { ip: '2001:db8:1:2:bbbb:cccc:dddd:1' }));
+    expect(a).toBe(b);
+    expect(rateLimitKey(req('/api/me', { ip: '2001:db8:1:3::1' }))).not.toBe(a);
+    expect(rateLimitKey(req('/api/me', { ip: '::ffff:192.0.2.1' }))).toBe(
+      'api:ip:::ffff:192.0.2.1',
+    );
+  });
+
+  it('treats empty RATE_LIMIT_* env values as unset', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://x',
+      ORCH_ENCRYPTION_KEY: Buffer.alloc(32).toString('base64'),
+    };
+    const c = loadConfig({
+      ...base,
+      RATE_LIMIT_ENABLED: '',
+      RATE_LIMIT_API_MAX: '',
+      RATE_LIMIT_AGENT_MSG_PER_SEC: '',
+      ORCH_TRUST_PROXY: '',
+    });
+    expect(c.RATE_LIMIT_ENABLED).toBe(true);
+    expect(c.RATE_LIMIT_API_MAX).toBe(300);
+    expect(c.RATE_LIMIT_AGENT_MSG_PER_SEC).toBe(100);
+    expect(c.ORCH_TRUST_PROXY).toBe('loopback,linklocal,uniquelocal');
   });
 });
 

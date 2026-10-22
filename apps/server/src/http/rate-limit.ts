@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isIPv6 } from 'node:net';
 import rateLimit from '@fastify/rate-limit';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from '../config';
@@ -14,14 +15,17 @@ import { HttpError } from './errors';
  *   agent enrollment, invite links. Keyed by client IP (the caller is not known yet).
  * - `webhook`: GitHub webhook deliveries, by client IP.
  * - `mcp`: the MCP endpoint, by bearer token (hashed), else by IP.
- * - `heavy`: expensive reads (the pool view), by user.
+ * - `heavy`: expensive reads (pool view, usage, task history), by user.
  * - `agent-connect`: new agent WebSocket connections, by IP.
+ * - `stream`: live-log SSE streams, by user. Counts connection openings, so a reconnect storm
+ *   is limited while one long-lived stream costs a single hit.
  * - exempt: health checks and the static files the server hands out (install.sh, compose.yaml).
  *
  * The client IP is `req.ip`, which Fastify derives from X-Forwarded-For only when the peer is in
  * ORCH_TRUST_PROXY (default: private networks, i.e. Caddy). A direct client cannot spoof it.
  */
-export type Tier = 'exempt' | 'api' | 'auth' | 'webhook' | 'mcp' | 'heavy' | 'agent-connect';
+export type Tier =
+  'exempt' | 'api' | 'auth' | 'webhook' | 'mcp' | 'heavy' | 'stream' | 'agent-connect';
 
 const EXEMPT = new Set(['/healthz', '/api/healthz', '/install.sh', '/agent/compose.yaml']);
 const AUTH = new Set([
@@ -45,6 +49,11 @@ export function tierOf(req: FastifyRequest): Tier {
   if (url === '/mcp') return 'mcp';
   if (url === '/agent/ws') return 'agent-connect';
   if (url === '/api/pool') return 'heavy';
+  // Routes from PRs that may not be on this branch yet are matched by path pattern (the
+  // registered pattern, so query strings, case and trailing slashes cannot change the tier).
+  if (/^\/api\/tasks\/:[^/]+\/logs\/stream$/.test(url)) return 'stream';
+  if (url === '/api/usage' || url.startsWith('/api/usage/')) return 'heavy';
+  if (url === '/api/tasks/history') return 'heavy';
   return 'api';
 }
 
@@ -54,11 +63,26 @@ function bearerKey(req: FastifyRequest): string | null {
   return `tok:${createHash('sha256').update(h.slice(7).trim()).digest('hex').slice(0, 32)}`;
 }
 
+/** IPv6 clients rotate freely inside their /64: count the whole prefix as one client. */
+function clientIp(req: FastifyRequest): string {
+  const ip = req.ip;
+  if (!isIPv6(ip) || ip.includes('.')) return ip; // IPv4 and IPv4-mapped IPv6
+  const groups = ip.includes('::') ? expandV6(ip) : ip.split(':');
+  return `${groups.slice(0, 4).join(':')}::/64`;
+}
+
+function expandV6(ip: string): string[] {
+  const [head = '', tail = ''] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  return [...h, ...Array<string>(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+}
+
 /** Counter key for a request: `<tier>:<subject>`. */
 export function rateLimitKey(req: FastifyRequest): string {
   const tier = tierOf(req);
-  let subject = `ip:${req.ip}`;
-  if (tier === 'api' || tier === 'heavy') {
+  let subject = `ip:${clientIp(req)}`;
+  if (tier === 'api' || tier === 'heavy' || tier === 'stream') {
     if (req.user) subject = `user:${req.user.id}`;
   } else if (tier === 'mcp') {
     subject = bearerKey(req) ?? subject;
@@ -81,6 +105,7 @@ export function registerRateLimit(app: FastifyInstance, config: Config): void {
     webhook: config.RATE_LIMIT_WEBHOOK_MAX,
     mcp: config.RATE_LIMIT_MCP_MAX,
     heavy: config.RATE_LIMIT_HEAVY_MAX,
+    stream: config.RATE_LIMIT_STREAM_MAX,
     'agent-connect': config.RATE_LIMIT_AGENT_CONNECT_MAX,
   };
   app.register(rateLimit, {
@@ -90,6 +115,8 @@ export function registerRateLimit(app: FastifyInstance, config: Config): void {
       return t === 'exempt' ? Number.MAX_SAFE_INTEGER : max[t];
     },
     timeWindow: config.RATE_LIMIT_WINDOW_SEC * 1000,
+    // Bounded store (LRU): entries expire with the window and the oldest are evicted past this.
+    cache: 20_000,
     keyGenerator: rateLimitKey,
     allowList: (req: FastifyRequest) => tierOf(req) === 'exempt',
     // IETF draft headers: RateLimit-Limit / -Remaining / -Reset, plus Retry-After on 429.
@@ -105,6 +132,20 @@ export function registerRateLimit(app: FastifyInstance, config: Config): void {
   // Once the plugin is loaded (before any later-registered scope is created), add the hook.
   app.after(() => {
     app.addHook('onRequest', app.rateLimit());
+    // MCP buckets are per bearer token, so a client spraying random tokens would get a fresh
+    // bucket each time. Cap it per IP as well (5x the per-token limit: shared NATs stay fine).
+    // (createRateLimit, not a second app.rateLimit hook: the plugin runs once per request.)
+    const mcpPerIp = app.createRateLimit({
+      max: config.RATE_LIMIT_MCP_MAX * 5,
+      keyGenerator: (req: FastifyRequest) => `mcp-ip:${clientIp(req)}`,
+    });
+    app.addHook('onRequest', async (req, reply) => {
+      if (tierOf(req) !== 'mcp') return;
+      const r = await mcpPerIp(req);
+      if (r.isAllowed || !r.isExceeded) return;
+      void reply.header('retry-after', r.ttlInSeconds);
+      throw new HttpError(429, 'rate_limited', `Too many requests. Retry in ${r.ttlInSeconds} s.`);
+    });
     // A refused WebSocket upgrade must not keep its socket open. @fastify/websocket destroys it
     // in its own onResponse hook, but flags the request in an onRequest hook that runs after the
     // limiter, so a 429 thrown here would otherwise leave the socket dangling. (A successful
