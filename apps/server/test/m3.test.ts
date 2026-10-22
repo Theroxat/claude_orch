@@ -253,6 +253,40 @@ describe('create and import', () => {
 });
 
 describe('backlog REST', () => {
+  it('GET /api/tasks: every visible project, project by project, issue order, no cancelled', async () => {
+    const owner = await loginAs(app, gh);
+    const repos = [repoFor(), repoFor()];
+    gh.repos.set(owner.token, repos);
+    const [p1, p2] = await Promise.all(
+      repos.map(async (r) =>
+        ProjectViewSchema.parse(
+          (await api(app, owner)('POST', '/api/projects', { githubRepoId: r.githubRepoId })).json(),
+        ),
+      ),
+    );
+    const a1 = await createTask(owner, p1!.id, { title: 'A1' });
+    const b1 = await createTask(owner, p2!.id, { title: 'B1' });
+    const a2 = await createTask(owner, p1!.id, { title: 'A2' });
+    const gone = await createTask(owner, p1!.id, { title: 'gone' });
+    await prisma.task.update({ where: { id: gone.id }, data: { status: 'CANCELLED' } });
+
+    const mine = new Set([a1.id, a2.id, b1.id, gone.id]);
+    const ids = async (u: TestUser) =>
+      Object.entries(TaskBoardSchema.parse((await api(app, u)('GET', '/api/tasks')).json()))
+        .filter(([k]) => k !== 'access')
+        .flatMap(([, v]) => (v as TaskView[]).map((t) => t.id))
+        .filter((id) => mine.has(id));
+    const order = await ids(owner);
+    expect([[a1.id, a2.id, b1.id].join(), [b1.id, a1.id, a2.id].join()]).toContain(order.join());
+
+    // a member sees only the projects where their participation is active
+    const member = await loginAs(app, gh);
+    await participate(member, p1!.id, { active: false });
+    expect(await ids(member)).toEqual([]);
+    await participate(member, p2!.id);
+    expect(await ids(member)).toEqual([b1.id]);
+  });
+
   it('lists by status with access info, edits size/model/deps and rejects cycles', async () => {
     const { owner, member, project } = await world();
     const a = await createTask(owner, project.id, { title: 'A' });

@@ -349,7 +349,7 @@ export class TaskService {
       },
       include: { installation: true },
     });
-    const views: TaskView[] = [];
+    const visible: { id: string; access: Access }[] = [];
     const accessMap: Record<string, ProjectTaskAccess> = {};
     for (const p of projects) {
       let access: Access;
@@ -359,12 +359,26 @@ export class TaskService {
         continue; // pending, rejected or inactive participation: not visible
       }
       accessMap[p.id] = toProjectAccess(access);
-      const rows = await this.prisma.task.findMany({
-        where: { projectId: p.id, status: { not: 'CANCELLED' } },
-        include: taskInclude,
-        orderBy: { githubIssueNumber: 'asc' },
-      });
-      views.push(...rows.map((t) => toTaskView(t, access, user, this.deps.config.GITHUB_WEB_URL)));
+      visible.push({ id: p.id, access });
+    }
+    if (visible.length === 0) return groupBoard([], accessMap);
+    // One query for every visible project, then project by project in `projects` order.
+    const rows = await this.prisma.task.findMany({
+      where: { projectId: { in: visible.map((v) => v.id) }, status: { not: 'CANCELLED' } },
+      include: taskInclude,
+      orderBy: { githubIssueNumber: 'asc' },
+    });
+    const byProject = new Map<string, typeof rows>();
+    for (const t of rows) {
+      const list = byProject.get(t.projectId);
+      if (list) list.push(t);
+      else byProject.set(t.projectId, [t]);
+    }
+    const views: TaskView[] = [];
+    for (const { id, access } of visible) {
+      for (const t of byProject.get(id) ?? []) {
+        views.push(toTaskView(t, access, user, this.deps.config.GITHUB_WEB_URL));
+      }
     }
     return groupBoard(views, accessMap);
   }
