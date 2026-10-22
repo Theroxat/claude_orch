@@ -1,0 +1,28 @@
+# Security model
+
+orch is for **small teams who trust each other**. It is a shared to-do list with automation, not a multi-tenant platform. Read this before you adopt it.
+
+- **Trusted teams only.** Anyone who can get an issue labeled for the pool can, in effect, write a prompt that runs on a teammate's machine. Do not use orch with strangers or with public repos where outsiders can file labeled issues.
+- **What the sandbox does.** Each task runs in its own container, non-root, with only that task's clone mounted. No docker socket, no host home directory. Each task gets an isolated clone, not your working copy. Git metadata (the bare mirror and the clone's `.git` bookkeeping) is kept outside the task container, so a task cannot rewrite hooks or config that the agent's own git would later run.
+- **The repo's compose file is validated.** When a task uses the repository's own `compose.yaml` for its dev environment, the agent checks it before starting anything and refuses `privileged`, host bind mounts, the Docker socket, host networking and `cap_add`. This validation is being completed on the agent side; until it ships, treat a repo's compose file as trusted code. It is not a defence against a hostile teammate.
+- **What the sandbox does not do.** In auto mode the agent runs `claude -p --permission-mode bypassPermissions` inside the task container. That container has **network access** and receives **the member's Claude token**. A malicious or compromised issue can therefore make Claude exfiltrate that token, call external services, or push harmful code to the task branch. There is no egress filtering in v1. The token is the member's own and can be revoked from their Claude account.
+- **The agent is root-equivalent on the member's host.** The agent container mounts `/var/run/docker.sock` to start task containers. Anyone controlling the agent controls that Docker daemon. Rootless Docker is a supported way to reduce this.
+- **Claude credentials never leave the member's machine.** The token lives in the agent's local volume and in that member's task containers. The server stores no Claude credentials. The agent mounts `~/.claude` read-only, only to estimate usage.
+- **Usage figures are estimates.** Anthropic does not publish exact subscription limits. Budgets, margins and reset times come from local logs plus a safety reserve and may be wrong. Treat them as hints.
+- **Review PRs.** Auto-mode PRs are drafts. Enable branch protection and require human review before merging. The GitHub App's `Contents: write` can push to any branch.
+- **Who can sign in.** Production requires admins (`ORCH_ADMIN_GITHUB_LOGINS`) and/or an allowlist of GitHub logins or organizations (see {ref}`access-control`). Admins approve everyone else on the Access page; a refused sign-in creates no session, only a request form protected by a short-lived HMAC-signed token, the Origin check and a rate limit. Invite links are stored hashed and expire. A task board is visible only to the project owner, active participants and GitHub collaborators; owner rights are re-checked against the GitHub ADMIN role (cached a few minutes), so a former admin loses them.
+- **GitHub outages: last known decision for 15 minutes, then fail closed.** Organization membership is checked with the user's GitHub token. When that check fails (network error, 5xx, rate limit, or a 401 because the user revoked the orch App authorization in their GitHub settings), the user's last known allow/deny decision is reused only if it is younger than `ORCH_ACCESS_GRACE_SEC` (default 900 seconds). After that, or with no earlier decision, the user is refused: sessions, personal tokens, OAuth tokens and agents alike. A failed check is not retried for 30 seconds, so an outage does not turn every request into a GitHub call. A revoked App authorization never grants access: it is "unknown", gets the same grace, then is refused; so is a GitHub token that can no longer be refreshed. Admins, logins in `ORCH_ALLOWED_GITHUB_LOGINS` and logins approved on the Access page do not depend on GitHub and are unaffected. A refused member's agents are disconnected with the non-fatal close code 4403 (an upgrade gets HTTP 403) and receive no offers; they reconnect on their own once access is restored. Tasks already running keep their GitHub installation token until it expires (at most one hour).
+- **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated by delivery id and by body hash. Caddy sends HSTS and a strict Content-Security-Policy, and the server never logs query strings (they carry the OAuth code). Every state change is written to an append-only audit log.
+
+Report vulnerabilities privately through GitHub security advisories on the repository.
+
+## Limitations
+
+- Single server instance (in-process scheduler); no high availability. One host, nightly dumps.
+- No egress control, devcontainer/compose sanitizing or token-injecting proxy for task containers (see "Future hardening" in {doc}`PLAN`).
+- Usage and budget are estimates; plans are declared by the member.
+- Repos must build from a `Dockerfile` or a simple `.devcontainer.json`; complex devcontainer features are not honored.
+- Manual-mode `screen` sessions end if the agent container restarts; the task container survives and `orch attach <n>` reopens a session.
+- One concurrent task per machine by default.
+- GitHub only. English UI only.
+- The production images run TypeScript through `tsx` rather than a compiled build; the server image is therefore large (~900 MB).

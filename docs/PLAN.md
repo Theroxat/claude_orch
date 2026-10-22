@@ -141,7 +141,7 @@ Conventions: `id String @id @default(cuid())`, `createdAt`/`updatedAt` on every 
 only as **SHA-256 hashes of high-entropy random tokens** (32 bytes, base64url). GitHub user tokens are
 **encrypted** with AES-256-GCM using a key from env (`ORCH_ENCRYPTION_KEY`).
 
-```prisma
+```text
 model User {
   id                String   @id
   githubId          BigInt   @unique
