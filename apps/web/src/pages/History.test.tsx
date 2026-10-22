@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { mockApi, me, renderApp, type Routes } from '../test/helpers';
-import { formatDuration, formatTokens } from './History';
+import { filtersOf, formatDuration, formatTokens } from './History';
 
 const alice = { id: 'u2', githubLogin: 'alice', avatarUrl: null };
 const bob = { id: 'u3', githubLogin: 'bob', avatarUrl: null };
@@ -44,6 +44,32 @@ function base(extra: Routes = {}): Routes {
   return { 'GET /me': () => ({ json: me }), ...extra };
 }
 
+describe('filtersOf', () => {
+  it('drops values the API would reject and caps lengths', () => {
+    const f = filtersOf(
+      new URLSearchParams(
+        'status=DONE&status=NOPE&status=DONE&model=GPT&model=OPUS&from=yesterday&to=2026-02-31&creator=%20&q=' +
+          'x'.repeat(300) +
+          '&evil=1&limit=9999&cursor=zzz',
+      ),
+    );
+    expect(f.getAll('status')).toEqual(['DONE']);
+    expect(f.getAll('model')).toEqual(['OPUS']);
+    expect(f.has('from')).toBe(false);
+    expect(f.has('to')).toBe(false);
+    expect(f.has('creator')).toBe(false);
+    expect(f.get('q')).toHaveLength(200);
+    expect(f.has('evil')).toBe(false);
+    expect(f.has('limit')).toBe(false);
+    expect(f.has('cursor')).toBe(false);
+  });
+  it('keeps valid dates', () => {
+    expect(filtersOf(new URLSearchParams('from=2026-03-01&to=2026-03-05')).toString()).toBe(
+      'from=2026-03-01&to=2026-03-05',
+    );
+  });
+});
+
 describe('format helpers', () => {
   it('formats durations and token counts', () => {
     expect(formatDuration(null)).toBe('-');
@@ -85,6 +111,24 @@ describe('History', () => {
     expect(r.getByText('bob')).toBeTruthy();
     expect(screen.getByText('That is every matching task.')).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Main' }).textContent).toContain('History');
+  });
+
+  it('has a toggle for the extra filters that reflects its state', async () => {
+    mockApi(
+      base({
+        'GET /tasks/history?status=DONE': () => ({
+          json: { items: [item()], nextCursor: null, facets },
+        }),
+      }),
+    );
+    renderApp('/history?status=DONE');
+    const toggle = await screen.findByRole('button', { name: /More filters/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('1');
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: /Hide filters/ }).getAttribute('aria-expanded')).toBe(
+      'true',
+    );
   });
 
   it('starts from the filters in the address and sends them to the API', async () => {

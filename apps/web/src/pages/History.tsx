@@ -34,13 +34,39 @@ const LIST_KEYS = ['status', 'project', 'model'] as const;
 const VALUE_KEYS = ['creator', 'executor', 'from', 'to', 'q'] as const;
 const DEBOUNCE_MS = 300;
 
-/** Only the keys the API knows, in a fixed order: a stable cache key and a clean address bar. */
-function filtersOf(params: URLSearchParams): URLSearchParams {
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_LIST = 20;
+const isRealDay = (v: string) => {
+  const d = new Date(`${v}T00:00:00.000Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(v);
+};
+const ALLOWED: Record<(typeof LIST_KEYS)[number], Set<string> | null> = {
+  status: new Set(STATUSES.map((s) => s.value)),
+  model: new Set(MODELS.map((m) => m.value)),
+  project: null,
+};
+
+/**
+ * Only the keys the API knows, in a fixed order, with values it would accept: a hand-edited or
+ * stale address never turns into a 400 error page. Also a stable cache key and a clean address bar.
+ */
+export function filtersOf(params: URLSearchParams): URLSearchParams {
   const out = new URLSearchParams();
-  for (const k of LIST_KEYS) for (const v of params.getAll(k)) if (v) out.append(k, v);
+  for (const k of LIST_KEYS) {
+    const allowed = ALLOWED[k];
+    const seen = new Set<string>();
+    for (const v of params.getAll(k)) {
+      if (!v || v.length > 64 || seen.has(v) || seen.size >= MAX_LIST) continue;
+      if (allowed && !allowed.has(v)) continue;
+      seen.add(v);
+      out.append(k, v);
+    }
+  }
   for (const k of VALUE_KEYS) {
     const v = params.get(k)?.trim();
-    if (v) out.set(k, v);
+    if (!v) continue;
+    if ((k === 'from' || k === 'to') && (!DAY_RE.test(v) || !isRealDay(v))) continue;
+    out.set(k, k === 'q' ? v.slice(0, 200) : v.slice(0, 64));
   }
   return out;
 }
@@ -219,6 +245,8 @@ export function History() {
     });
   };
   const active = key !== '';
+  const [open, setOpen] = useState(false);
+  const activeCount = [...new Set(filters.keys())].filter((k) => k !== 'q').length;
 
   // Infinite scroll where the browser supports it; the button stays for everyone else.
   const sentinel = useRef<HTMLDivElement>(null);
@@ -271,109 +299,121 @@ export function History() {
             onChange={(e) => setText(e.target.value)}
           />
         </label>
-        <fieldset className="chips">
-          <legend>Status</legend>
-          {STATUSES.map((s) => (
-            <button
-              key={s.value}
-              type="button"
-              className="chip"
-              data-status={s.value}
-              aria-pressed={picked('status').includes(s.value)}
-              onClick={() => toggle('status', s.value)}
-            >
-              <span className="lamp" aria-hidden="true" />
-              {s.label}
+        <button
+          type="button"
+          className="ghost history-toggle"
+          aria-expanded={open}
+          aria-controls="history-more-filters"
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? 'Hide filters' : 'More filters'}
+          {activeCount > 0 && <span className="tag">{activeCount}</span>}
+        </button>
+        <div id="history-more-filters" className="history-more-filters" data-open={open}>
+          <fieldset className="chips">
+            <legend>Status</legend>
+            {STATUSES.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                className="chip"
+                data-status={s.value}
+                aria-pressed={picked('status').includes(s.value)}
+                onClick={() => toggle('status', s.value)}
+              >
+                <span className="lamp" aria-hidden="true" />
+                {s.label}
+              </button>
+            ))}
+          </fieldset>
+          <fieldset className="chips">
+            <legend>Model</legend>
+            {MODELS.map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                className="chip"
+                aria-pressed={picked('model').includes(m.value)}
+                onClick={() => toggle('model', m.value)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </fieldset>
+          <div className="history-selects">
+            <label className="field">
+              Project
+              <select
+                value={picked('project')[0] ?? ''}
+                onChange={(e) =>
+                  update((n) => {
+                    n.delete('project');
+                    if (e.target.value) n.append('project', e.target.value);
+                  })
+                }
+              >
+                <option value="">All projects</option>
+                {(facets?.projects ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.fullName}
+                  </option>
+                ))}
+                {picked('project')[0] &&
+                  !facets?.projects.some((p) => p.id === picked('project')[0]) && (
+                    <option value={picked('project')[0]}>{picked('project')[0]}</option>
+                  )}
+              </select>
+            </label>
+            <label className="field">
+              Created by
+              <select
+                value={filters.get('creator') ?? ''}
+                onChange={(e) => setOne('creator', e.target.value)}
+              >
+                <option value="">Anyone</option>
+                {withCurrent(peopleOptions, filters.get('creator')).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Run by
+              <select
+                value={filters.get('executor') ?? ''}
+                onChange={(e) => setOne('executor', e.target.value)}
+              >
+                <option value="">Anyone</option>
+                {withCurrent(peopleOptions, filters.get('executor')).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Created from
+              <input
+                type="date"
+                value={filters.get('from') ?? ''}
+                max={filters.get('to') ?? undefined}
+                onChange={(e) => setOne('from', e.target.value)}
+              />
+            </label>
+            <label className="field">
+              Created until
+              <input
+                type="date"
+                value={filters.get('to') ?? ''}
+                min={filters.get('from') ?? undefined}
+                onChange={(e) => setOne('to', e.target.value)}
+              />
+            </label>
+            <button type="button" className="ghost" disabled={!active} onClick={clear}>
+              Clear filters
             </button>
-          ))}
-        </fieldset>
-        <fieldset className="chips">
-          <legend>Model</legend>
-          {MODELS.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              className="chip"
-              aria-pressed={picked('model').includes(m.value)}
-              onClick={() => toggle('model', m.value)}
-            >
-              {m.label}
-            </button>
-          ))}
-        </fieldset>
-        <div className="history-selects">
-          <label className="field">
-            Project
-            <select
-              value={picked('project')[0] ?? ''}
-              onChange={(e) =>
-                update((n) => {
-                  n.delete('project');
-                  if (e.target.value) n.append('project', e.target.value);
-                })
-              }
-            >
-              <option value="">All projects</option>
-              {(facets?.projects ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.fullName}
-                </option>
-              ))}
-              {picked('project')[0] &&
-                !facets?.projects.some((p) => p.id === picked('project')[0]) && (
-                  <option value={picked('project')[0]}>{picked('project')[0]}</option>
-                )}
-            </select>
-          </label>
-          <label className="field">
-            Created by
-            <select
-              value={filters.get('creator') ?? ''}
-              onChange={(e) => setOne('creator', e.target.value)}
-            >
-              <option value="">Anyone</option>
-              {withCurrent(peopleOptions, filters.get('creator')).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            Run by
-            <select
-              value={filters.get('executor') ?? ''}
-              onChange={(e) => setOne('executor', e.target.value)}
-            >
-              <option value="">Anyone</option>
-              {withCurrent(peopleOptions, filters.get('executor')).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            Created from
-            <input
-              type="date"
-              value={filters.get('from') ?? ''}
-              max={filters.get('to') ?? undefined}
-              onChange={(e) => setOne('from', e.target.value)}
-            />
-          </label>
-          <label className="field">
-            Created until
-            <input
-              type="date"
-              value={filters.get('to') ?? ''}
-              min={filters.get('from') ?? undefined}
-              onChange={(e) => setOne('to', e.target.value)}
-            />
-          </label>
-          <button type="button" className="ghost" disabled={!active} onClick={clear}>
-            Clear filters
-          </button>
+          </div>
         </div>
       </form>
 

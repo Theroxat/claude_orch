@@ -40,13 +40,19 @@ export function encodeCursor(createdAt: Date, id: string): string {
   return Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
 }
 
+const CURSOR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\|([A-Za-z0-9_-]{1,64})$/;
+
+/**
+ * The cursor is only a keyset position (never an authorization): it is ANDed with the visibility
+ * and filter clauses. It is still parsed strictly so garbage fails with a 400, not a DB error.
+ */
 export function decodeCursor(cursor: string): { createdAt: Date; id: string } {
-  const [iso, id] = Buffer.from(cursor, 'base64url').toString().split('|');
-  const createdAt = new Date(iso ?? '');
-  if (!id || Number.isNaN(createdAt.getTime())) {
+  const m = CURSOR_RE.exec(Buffer.from(cursor, 'base64url').toString('utf8'));
+  const createdAt = m ? new Date(m[1]!) : null;
+  if (!m || !createdAt || Number.isNaN(createdAt.getTime())) {
     throw new HttpError(400, 'invalid_cursor', 'The cursor is not valid');
   }
-  return { createdAt, id };
+  return { createdAt, id: m[2]! };
 }
 
 const userView = (u: User) => ({ id: u.id, githubLogin: u.login, avatarUrl: u.avatarUrl });

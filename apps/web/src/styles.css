@@ -2440,6 +2440,28 @@ details.card > summary {
     justify-self: start;
   }
 }
+/* Desktop: the extra filters are always visible and part of the grid; the toggle is mobile only. */
+.history-more-filters {
+  display: contents;
+}
+.history-toggle {
+  display: none;
+  justify-self: start;
+  gap: 8px;
+}
+@media (max-width: 820px) {
+  .history-toggle {
+    display: inline-flex;
+    align-items: center;
+  }
+  .history-more-filters {
+    display: grid;
+    gap: 14px;
+  }
+  .history-more-filters[data-open='false'] {
+    display: none;
+  }
+}
 /* Narrow screens: each task becomes a stacked card, columns keep their labels. */
 @media (max-width: 820px) {
   .history-selects {
