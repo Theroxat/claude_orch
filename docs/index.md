@@ -42,6 +42,7 @@ members
 
 concepts
 usage
+notifications
 cli
 mcp
 ```

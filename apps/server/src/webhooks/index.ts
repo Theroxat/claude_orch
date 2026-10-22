@@ -407,7 +407,8 @@ export function registerWebhooks(
         action: 'task.in_review',
         projectId: project.id,
         taskId: task.id,
-        data: { prNumber: pr.number },
+        // Already IN_REVIEW: orch opened this PR itself (task.pr_opened) or it is a reopen/ready.
+        data: { prNumber: pr.number, alreadyInReview: task.status === 'IN_REVIEW' },
       });
       return 'in_review';
     }

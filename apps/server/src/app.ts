@@ -17,10 +17,14 @@ import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
+import { Notifier, registerNotifications } from './notifications';
+import type { Mailer } from './notifications/service';
+import type { WebhookPoster } from './notifications/ssrf';
 
 declare module 'fastify' {
   interface FastifyInstance {
     dispatcher: Dispatcher;
+    notifier: Notifier;
   }
 }
 
@@ -30,6 +34,8 @@ export interface AppDeps {
   github?: GithubClient;
   /** Test hook: where pino writes (with config.LOG_LEVEL). */
   logStream?: { write(msg: string): void };
+  /** Test hooks: webhook HTTP client and e-mail transport of the notifier. */
+  notify?: { post?: WebhookPoster; mailer?: Mailer | null };
 }
 
 /** Logged URL without the query string: it carries the OAuth code and state. */
@@ -39,7 +45,7 @@ export function redactUrl(url: string | undefined): string | undefined {
   return i < 0 ? url : `${url.slice(0, i)}?[redacted]`;
 }
 
-export function buildApp({ config, prisma, github, logStream }: AppDeps): FastifyInstance {
+export function buildApp({ config, prisma, github, logStream, notify }: AppDeps): FastifyInstance {
   const app = Fastify({
     logger: {
       level: config.LOG_LEVEL,
@@ -71,6 +77,10 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
     gateway.setDispatcher(dispatcher);
     app.decorate('dispatcher', dispatcher);
+    const notifier = new Notifier({ prisma, config, log: app.log, ...notify });
+    app.decorate('notifier', notifier);
+    app.addHook('onReady', async () => notifier.start());
+    app.addHook('onClose', async () => notifier.stop());
     app.addHook('onReady', async () => dispatcher.start());
     // Runs before the gateway's onClose (hooks run in order): no tick sends on closed sockets.
     app.addHook('preClose', async () => dispatcher.stop());
@@ -86,6 +96,7 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     registerOAuth(app, deps);
     registerMcp(app, m4);
     registerOnboarding(app, m4);
+    registerNotifications(app, { ...deps, notifier });
     app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
     app.register(async (scope) => registerAgents(scope, m4, gateway));
   }

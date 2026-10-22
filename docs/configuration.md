@@ -25,6 +25,17 @@
 | `LOG_LEVEL`                                                                    | no       | `info` by default                                                                     |
 | `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start     |
 
+### E-mail notifications (optional)
+
+| Variable        | Default              | Meaning                                                                          |
+| --------------- | -------------------- | -------------------------------------------------------------------------------- |
+| `SMTP_HOST`     | (unset)              | SMTP server. Without it the e-mail channel is unavailable ({doc}`notifications`) |
+| `SMTP_PORT`     | 587                  | SMTP port                                                                        |
+| `SMTP_SECURE`   | `false`              | `true`: TLS from the first byte (port 465). `false`: STARTTLS when offered       |
+| `SMTP_USER`     | (unset)              | SMTP login. No authentication when unset                                         |
+| `SMTP_PASSWORD` | (unset)              | SMTP password                                                                    |
+| `SMTP_FROM`     | `orch <orch@domain>` | Sender address; the default uses the host of the public URL                      |
+
 (access-control)=
 
 ### Who may sign in
@@ -55,6 +66,9 @@ These have defaults and are defined in `apps/server/src/config/index.ts`. To cha
 | `AGENT_HEARTBEAT_TIMEOUT_MS` | 90000                       | Agent considered offline after this                                      |
 | `AGENT_USAGE_SEC`            | 300                         | Usage report interval                                                    |
 | `ORCH_AGENT_IMAGE_REPO`      | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                     |
+| `NOTIFY_MAX_ATTEMPTS`        | 4                           | Attempts per external notification delivery before giving up             |
+| `NOTIFY_RETRY_BASE_MS`       | 2000                        | First retry delay of a notification; each next one is 4x longer          |
+| `NOTIFY_RETENTION_DAYS`      | 90                          | In-app notifications older than this are deleted                         |
 
 ## Agent environment
 

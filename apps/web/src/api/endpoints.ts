@@ -19,7 +19,14 @@ import {
   PoolResponseSchema,
   ParticipationViewSchema,
   ProjectViewSchema,
+  NotificationListResponseSchema,
+  NotificationSettingsViewSchema,
+  SendTestNotificationResponseSchema,
+  UnreadCountResponseSchema,
   type AddProjectRequest,
+  type MarkNotificationsReadRequest,
+  type NotificationChannel,
+  type UpdateNotificationSettingsRequest,
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
   type UpdateProjectRequest,
@@ -166,4 +173,20 @@ export const createInvite = (body: { multiUse: boolean; expiresInHours: number }
 export const revokeInvite = (id: string) =>
   api('POST', `/admin/access/invites/${id}/revoke`, {
     schema: z.object({ invite: InviteSchema }),
+  });
+
+export const fetchNotifications = (limit = 30) =>
+  api('GET', `/notifications?limit=${limit}`, { schema: NotificationListResponseSchema });
+export const fetchUnreadCount = () =>
+  api('GET', '/notifications/unread-count', { schema: UnreadCountResponseSchema });
+export const markNotificationsRead = (body: MarkNotificationsReadRequest) =>
+  api('POST', '/notifications/read', { body, schema: UnreadCountResponseSchema });
+export const fetchNotificationSettings = () =>
+  api('GET', '/notifications/settings', { schema: NotificationSettingsViewSchema });
+export const updateNotificationSettings = (body: UpdateNotificationSettingsRequest) =>
+  api('PUT', '/notifications/settings', { body, schema: NotificationSettingsViewSchema });
+export const sendTestNotification = (channel: NotificationChannel) =>
+  api('POST', '/notifications/test', {
+    body: { channel },
+    schema: SendTestNotificationResponseSchema,
   });

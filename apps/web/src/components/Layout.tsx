@@ -12,6 +12,7 @@ import { motionAllowed } from '../ui/motion';
 import { PageFallback } from '../ui/PageFallback';
 import { useChangeCount } from '../ui/presence';
 import { useTheme } from '../ui/theme';
+import { NotificationBell } from './NotificationBell';
 import { AgentUpdateBanner } from './AgentUpdateBanner';
 import { useOnboarding } from './GettingStarted';
 import { VersionFooter } from './VersionFooter';
@@ -146,6 +147,7 @@ export function Layout() {
             >
               <Icon name="github" />
             </a>
+            <NotificationBell />
             <button
               type="button"
               className="ghost icon-button"

@@ -69,6 +69,13 @@ services:
       ORCH_ALLOW_ANY_GITHUB_USER: ${ORCH_ALLOW_ANY_GITHUB_USER:-false}
       ORCH_ADMIN_GITHUB_LOGINS: ${ORCH_ADMIN_GITHUB_LOGINS:-}
       ORCH_ENCRYPTION_KEY: ${ORCH_ENCRYPTION_KEY:?set ORCH_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+      # Optional e-mail notifications (see docs/notifications.md).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     volumes:
       # GitHub App private key (read-only). See README: Creating the GitHub App.
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-./secrets/github-app.pem}:/run/orch-secrets/github-app.pem:ro
