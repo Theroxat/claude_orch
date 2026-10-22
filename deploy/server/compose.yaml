@@ -125,18 +125,23 @@ services:
       BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
       BACKUP_S3_PRUNE: ${BACKUP_S3_PRUNE:-false}
     volumes:
-      # A named volume (default) or a host directory (BACKUP_VOLUME=/srv/orch-backups, chown 70:70).
+      # A named volume (default) or a host directory (BACKUP_VOLUME=/srv/orch-backups).
       - ${BACKUP_VOLUME:-backups}:/backups
     read_only: true
     tmpfs:
       - /tmp
     cap_drop:
       - ALL
+    cap_add:
+      # Only for the entrypoint: chown an older root-owned volume, then su-exec to uid 70.
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     healthcheck:
       # Fails when the last successful backup is older than twice the schedule interval.
-      test: ['CMD', '/usr/local/bin/orch-backup-healthcheck']
+      test: ['CMD', 'su-exec', 'postgres', '/usr/local/bin/orch-backup-healthcheck']
       interval: 60s
       timeout: 5s
       retries: 3

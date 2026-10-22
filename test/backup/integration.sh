@@ -12,11 +12,12 @@ IMG="$ID:img"
 NET="$ID"
 PG="$ID-pg"
 VOL="$ID-vol"
+OLDVOL="$ID-oldvol"
 fail=0
 
 cleanup() {
   docker rm -f "$PG" >/dev/null 2>&1 || true
-  docker volume rm -f "$VOL" >/dev/null 2>&1 || true
+  docker volume rm -f "$VOL" "$OLDVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   docker rmi -f "$IMG" >/dev/null 2>&1 || true
 }
@@ -31,7 +32,10 @@ check() {
 }
 psql_pg() { docker exec -e PGPASSWORD=pw "$PG" psql -U orch -tA "$@"; }
 backup_run() { # backup_run [docker run options] -- [backup.sh args]
-  docker run --rm --network "$NET" -v "$VOL:/backups" \
+  # same hardening as compose.yaml
+  docker run --rm --network "$NET" -v "${VOLUME:-$VOL}:/backups" \
+    --read-only --tmpfs /tmp --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+    --security-opt no-new-privileges:true \
     -e PGHOST="$PG" -e PGUSER=orch -e PGPASSWORD=pw -e PGDATABASE=orch "$@"
 }
 
@@ -60,6 +64,14 @@ plain="$(docker run --rm -v "$VOL:/backups" --entrypoint sh "$IMG" -c 'ls /backu
 check 1 "$(printf '%s\n' "$plain" | grep -c .)" "one plain dump written"
 check yes "$(docker run --rm -v "$VOL:/backups" --entrypoint sh "$IMG" -c '[ -s /backups/.last_success ] && echo yes')" "last_success marker written"
 check 0 "$(docker run --rm -v "$VOL:/backups" --entrypoint sh "$IMG" -c 'stat -c %u /backups/orch-*.dump | grep -vc "^70$"' || true)" "dump owned by non-root uid 70"
+
+step "volume created by the previous service (root-owned, root-only files)"
+docker volume create "$OLDVOL" >/dev/null
+docker run --rm -v "$OLDVOL:/backups" --entrypoint sh "$IMG" -c \
+  'echo PGDMPold >/backups/orch-20200101T030000Z.dump; chmod 600 /backups/orch-20200101T030000Z.dump; chown 0:0 /backups /backups/*; chmod 755 /backups'
+VOLUME="$OLDVOL" backup_run "$IMG" once
+check 2 "$(docker run --rm -v "$OLDVOL:/backups" --entrypoint ls "$IMG" /backups | grep -c '^orch-')" "backup written into the old volume next to the old dump"
+check 0 "$(docker run --rm -v "$OLDVOL:/backups" --entrypoint sh "$IMG" -c 'stat -c %u /backups /backups/orch-* | grep -vc "^70$"' || true)" "old volume and files now owned by uid 70"
 
 step "healthcheck passes right after a backup"
 hc=failed
@@ -93,7 +105,12 @@ check no "$(docker run --rm -v "$VOL:/backups" --entrypoint sh "$IMG" -c "head -
 check 0 "$(docker run --rm -v "$VOL:/backups" --entrypoint sh "$IMG" -c 'ls -a /backups | grep -c "partial"' || true)" "no leftover .partial file"
 psql_pg -c 'drop database orch_restore' >/dev/null
 psql_pg -c 'create database orch_restore' >/dev/null
-docker run --rm -i -v "$VOL:/backups" -v "$PWD/$ID.key:/identity:ro" --entrypoint sh "$IMG" -c "age -d -i /identity /backups/$enc" |
+# Same as restore.sh: key (mode 0600, owned by the host user) in an env var, container as uid 70.
+chmod 600 "$ID.key"
+ORCH_AGE_IDENTITY="$(cat "$ID.key")"
+export ORCH_AGE_IDENTITY
+docker run --rm -i --user 70:70 --read-only --tmpfs /tmp --cap-drop ALL -v "$VOL:/backups" -e ORCH_AGE_IDENTITY --entrypoint sh "$IMG" -c \
+  "umask 077; printf '%s\\n' \"\$ORCH_AGE_IDENTITY\" >/tmp/identity; age -d -i /tmp/identity /backups/$enc" |
   docker exec -i -e PGPASSWORD=pw "$PG" pg_restore --no-owner --exit-on-error -U orch -d orch_restore
 check 250 "$(psql_pg -d orch_restore -c 'select count(*) from task')" "decrypted restore: task rows"
 check 700 "$(psql_pg -d orch_restore -c 'select count(*) from run')" "decrypted restore: run rows"

@@ -27,7 +27,7 @@ The server stores no uploaded files, so the database is the only state that need
 - **Format.** `pg_dump --format=custom --compress=6`, written as `orch-<UTC timestamp>.dump` (or `.dump.age` when encrypted) into the `backups` volume. A dump is written to a hidden `.partial` file first, so a crash never leaves a half-written backup under a real name.
 - **Rotation.** The newest backup of each of the last `BACKUP_KEEP_DAILY` days (default 7), `BACKUP_KEEP_WEEKLY` ISO weeks (4) and `BACKUP_KEEP_MONTHLY` months (6) is kept; everything else is deleted. With the defaults that is about 17 files covering six months. Only files named `orch-*` are ever deleted.
 - **Postgres version.** The backup image is built from `postgres:<POSTGRES_MAJOR>-alpine`, the same major as the database (16 by default), so `pg_dump` always matches the server. `POSTGRES_MAJOR` applies to both services; change it only as part of a dump/restore upgrade of the database.
-- **Security.** The container runs as the unprivileged `postgres` user (uid 70) with a read-only root filesystem, no capabilities and `no-new-privileges`. The database password and the S3 keys are only passed as environment variables and never appear in the logs.
+- **Security.** The container runs as the unprivileged `postgres` user (uid 70) with a read-only root filesystem, `no-new-privileges` and no capabilities beyond the three its entrypoint needs to take ownership of an older root-owned volume. The database password and the S3 keys are only passed as environment variables and never appear in the logs.
 - **Health.** `docker compose ps` shows `backup` as unhealthy when the last successful backup is older than twice the schedule interval (48 h for a daily schedule), or, before the first backup, when the container has been up that long. A failed upload counts as a failed backup.
 
 ```sh
@@ -37,7 +37,7 @@ docker compose exec backup orch-backup once    # take one now
 docker compose exec backup ls -lh /backups     # list
 ```
 
-To keep the dumps in a host directory instead of the volume, set `BACKUP_VOLUME=/srv/orch-backups` and `sudo chown 70:70 /srv/orch-backups`.
+To keep the dumps in a host directory instead of the volume, set `BACKUP_VOLUME=/srv/orch-backups` and `sudo mkdir -p /srv/orch-backups` (the container takes ownership of the directory at start, no `chown` needed).
 
 ## Encrypting backups
 

@@ -63,7 +63,8 @@ cd "$(dirname "$0")/.."
 
 dc() { docker compose "$@"; }
 # Run a command in the backup image without starting its dependencies. stdin stays attached.
-in_backup() { dc run --rm --no-deps -T "$@"; }
+# As uid 70, the owner of the dumps (the container has no capability to read other users' files).
+in_backup() { dc run --rm --no-deps -T --user 70:70 "$@"; }
 
 list_volume() { in_backup --entrypoint ls backup -1 /backups | sort; }
 
@@ -73,7 +74,18 @@ if $LIST; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+SERVER_STOPPED=false
+# Whatever happens after the server was stopped (failure, Ctrl-C), bring it back.
+cleanup() {
+  rm -rf "$TMP"
+  if $SERVER_STOPPED; then
+    printf 'restore: starting server again\n' >&2
+    dc up -d server >&2 || printf 'restore: could not start the server: docker compose start server\n' >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 umask 077
 
 # 1. Locate the dump and copy it to a private temp file on the host.
@@ -96,8 +108,15 @@ case "$NAME" in
   *.age)
     [ -n "$IDENTITY" ] || die "$NAME is encrypted: pass --identity AGE_KEY_FILE"
     [ -r "$IDENTITY" ] || die "cannot read identity file: $IDENTITY"
-    in_backup -v "$(cd "$(dirname "$IDENTITY")" && pwd)/$(basename "$IDENTITY"):/identity:ro" \
-      --entrypoint age backup -d -i /identity <"$TMP/src" >"$TMP/dump" || die "decryption failed (wrong key?)"
+    # The key travels in an environment variable (not in argv, not on a bind mount: a 0600 key of
+    # the host user would be unreadable for uid 70) and is written to the container's tmpfs.
+    ORCH_AGE_IDENTITY="$(cat "$IDENTITY")"
+    export ORCH_AGE_IDENTITY
+    # shellcheck disable=SC2016 # expanded inside the container
+    in_backup -e ORCH_AGE_IDENTITY --entrypoint sh backup -c \
+      'umask 077; printf "%s\n" "$ORCH_AGE_IDENTITY" >/tmp/identity; age -d -i /tmp/identity' \
+      <"$TMP/src" >"$TMP/dump" || die "decryption failed (wrong key?)"
+    unset ORCH_AGE_IDENTITY
     ;;
   *) mv "$TMP/src" "$TMP/dump" ;;
 esac
@@ -115,6 +134,7 @@ fi
 
 # 5. Restore. The server must not write while we do.
 printf 'restore: stopping server\n'
+SERVER_STOPPED=true
 dc stop server
 printf 'restore: restoring %s\n' "$NAME"
 # shellcheck disable=SC2016 # $POSTGRES_* must expand inside the container
@@ -122,11 +142,11 @@ if ! dc exec -T postgres sh -c \
   'pg_restore --clean --if-exists --no-owner --single-transaction --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
   <"$TMP/dump"; then
   printf 'restore: pg_restore FAILED, the database was left unchanged (single transaction).\n' >&2
-  printf 'restore: the server is still stopped; start it with: docker compose start server\n' >&2
   exit 1
 fi
 
 # 6. Start the server: its entrypoint runs `prisma migrate deploy`, which upgrades an older dump.
 printf 'restore: starting server (applies pending migrations)\n'
 dc up -d server
+SERVER_STOPPED=false
 printf 'restore: done. Check: docker compose logs -f server\n'

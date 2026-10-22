@@ -15,8 +15,8 @@ echo "docker $*" >>"$CALLS"
 case "$*" in
   *"--entrypoint ls"*) printf 'orch-20261020T030000Z.dump\norch-20261021T030000Z.dump\nnotes.txt\n' ;;
   *"--entrypoint cat"*) printf 'PGDMPfake' ;;
-  *"--entrypoint age"*) printf 'PGDMPdecrypted' ;;
-  *"exec -T postgres"*) cat >"$CALLS.stdin"; [ -z "${FAKE_RESTORE_FAIL:-}" ] || exit 1 ;;
+  *"age -d"*) printf 'PGDMPdecrypted' ;;
+  *"exec -T postgres"*) cat >"$CALLS.stdin"; [ -z "${FAKE_RESTORE_KILL:-}" ] || { kill -TERM "$PPID"; sleep 0.3; }; [ -z "${FAKE_RESTORE_FAIL:-}" ] || exit 1 ;;
 esac
 exit 0
 F
@@ -100,13 +100,25 @@ F
   echo AGE-SECRET-KEY-X >"$BATS_TEST_TMPDIR/key.txt"
   run sh "$R" --yes --identity "$BATS_TEST_TMPDIR/key.txt" orch-20261021T030000Z.dump.age
   [ "$status" -eq 0 ]
-  grep -q 'entrypoint age backup -d -i /identity' "$CALLS"
+  grep -q 'age -d -i' "$CALLS"
+  # the private key never appears in the docker command line
+  ! grep -q 'AGE-SECRET-KEY' "$CALLS" || false
+  grep -q -- '-e ORCH_AGE_IDENTITY' "$CALLS"
+  grep -q -- '--user 70:70' "$CALLS"
   [ "$(cat "$CALLS.stdin")" = "PGDMPdecrypted" ]
 }
 
-@test "a failed pg_restore leaves the server stopped and says so" {
+@test "a failed pg_restore says so and starts the server again" {
   FAKE_RESTORE_FAIL=1 run sh "$R" --yes
   [ "$status" -eq 1 ]
   [[ "$output" == *"FAILED"* ]]
-  ! grep -q 'up -d server' "$CALLS" || false
+  rest="$(grep -n 'exec -T postgres' "$CALLS" | cut -d: -f1)"
+  start="$(grep -n 'up -d server' "$CALLS" | cut -d: -f1)"
+  [ -n "$start" ] && [ "$rest" -lt "$start" ]
+}
+
+@test "an interrupted restore (TERM after the server was stopped) starts the server again" {
+  FAKE_RESTORE_KILL=1 run sh "$R" --yes
+  [ "$status" -ne 0 ]
+  grep -q 'up -d server' "$CALLS"
 }

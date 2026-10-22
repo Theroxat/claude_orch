@@ -2,21 +2,30 @@
 # Pure helpers for the backup service (sourced by backup.sh and healthcheck.sh, tested by bats).
 # POSIX sh + date(1) (GNU coreutils or busybox). Everything is UTC.
 
-# num STR: strip leading zeros so "08" is not read as octal by $(( )).
+# num STR: set NUM to STR without leading zeros, so "08" is not read as octal by $(( )).
+# (No command substitution: cron_next calls this in hot loops and forks are slow.)
 num() {
-  _n="${1#0}"
-  _n="${_n#0}"
-  printf '%s' "${_n:-0}"
+  NUM="$1"
+  while :; do
+    case "$NUM" in
+      0?*) NUM="${NUM#0}" ;;
+      *) break ;;
+    esac
+  done
 }
 
 # field_match FIELD VALUE MIN MAX: does one cron field (*, n, a-b, */s, a-b/s, lists) match VALUE?
 field_match() {
   _f="$1"
-  _v="$2"
+  num "$2"
+  _v="$NUM"
   _min="$3"
   _max="$4"
+  _ifs="$IFS"
+  IFS=,
   set -f
-  for _part in $(printf '%s' "$_f" | tr ',' ' '); do
+  for _part in $_f; do
+    IFS="$_ifs"
     _step=1
     _range="$_part"
     case "$_part" in
@@ -39,11 +48,19 @@ field_match() {
         if [ "$_step" -gt 1 ]; then _hi="$_max"; else _hi="$_range"; fi
         ;;
     esac
+    num "$_lo"
+    _lo="$NUM"
+    num "$_hi"
+    _hi="$NUM"
+    num "$_step"
+    _step="$NUM"
     if [ "$_v" -ge "$_lo" ] && [ "$_v" -le "$_hi" ] && [ $(((_v - _lo) % _step)) -eq 0 ]; then
       set +f
       return 0
     fi
+    IFS=,
   done
+  IFS="$_ifs"
   set +f
   return 1
 }
@@ -120,8 +137,10 @@ cron_next() {
     c_base=$((c_day * 86400))
     # shellcheck disable=SC2046
     set -- $(date -u -d "@$c_base" '+%m %d %w')
-    c_m=$(num "$1")
-    c_d=$(num "$2")
+    num "$1"
+    c_m="$NUM"
+    num "$2"
+    c_d="$NUM"
     c_w="$3"
     if field_match "$c_mon" "$c_m" 1 12; then
       d_ok=false
@@ -130,7 +149,9 @@ cron_next() {
       dow_match "$c_dow" "$c_w" && w_ok=true
       # Vixie cron: when both day fields are restricted, either one matching is enough.
       day_ok=false
-      if [ "$c_dom" != '*' ] && [ "$c_dow" != '*' ]; then
+      case "$c_dom" in '*'*) dom_star=true ;; *) dom_star=false ;; esac
+      case "$c_dow" in '*'*) dow_star=true ;; *) dow_star=false ;; esac
+      if ! $dom_star && ! $dow_star; then
         if $d_ok || $w_ok; then day_ok=true; fi
       elif $d_ok && $w_ok; then
         day_ok=true
@@ -158,11 +179,18 @@ cron_next() {
   return 1
 }
 
-# schedule_interval "EXPR" EPOCH: seconds between the next two runs after EPOCH.
+# schedule_interval "EXPR" EPOCH: longest gap (seconds) among the next 3 gaps after EPOCH.
 schedule_interval() {
   _a="$(cron_next "$1" "$2")" || return 1
-  _b="$(cron_next "$1" "$_a")" || return 1
-  printf '%s\n' $((_b - _a))
+  _max=0
+  _i=0
+  while [ "$_i" -lt 3 ]; do
+    _b="$(cron_next "$1" "$_a")" || return 1
+    [ $((_b - _a)) -le "$_max" ] || _max=$((_b - _a))
+    _a="$_b"
+    _i=$((_i + 1))
+  done
+  printf '%s\n' "$_max"
 }
 
 # backup_stamp NAME: "orch-20261022T030000Z.dump.age" -> 20261022T030000Z
@@ -180,7 +208,7 @@ week_key() {
 # Reads backup file names (orch-<stamp>.dump[.age]) on stdin and prints the ones to DELETE.
 # A backup is kept when it is the newest of one of the last KEEP_DAILY days, KEEP_WEEKLY ISO
 # weeks or KEEP_MONTHLY months that have at least one backup. Anything else is printed.
-# Other file names are ignored (never printed), so stray files are never deleted.
+# The newest backup is always kept. Other file names are ignored (never printed), so stray files are never deleted.
 rotation_select() {
   r_kd="$1"
   r_kw="$2"
@@ -191,6 +219,7 @@ rotation_select() {
   r_nd=0
   r_nw=0
   r_nm=0
+  r_first=true
   sort -r | while IFS= read -r r_name; do
     case "$r_name" in
       orch-*.dump | orch-*.dump.age) ;;
@@ -199,7 +228,9 @@ rotation_select() {
     r_stamp="$(backup_stamp "$r_name")"
     r_day="${r_stamp%%T*}"
     r_mon="${r_day%??}"
-    r_keep=false
+    # The newest backup is never rotated out, whatever the KEEP_* values (even all zero).
+    r_keep=$r_first
+    r_first=false
     case "$r_seen_d" in
       *" $r_day "*) ;;
       *)
@@ -232,5 +263,22 @@ rotation_select() {
         ;;
     esac
     $r_keep || printf '%s\n' "$r_name"
+  done
+}
+
+# split_recipients STR: one age recipient per line. Splits on commas and, for age1... keys, on
+# whitespace; an ssh public key ("ssh-ed25519 AAAA... comment") stays in one piece.
+split_recipients() {
+  printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r _it; do
+    _it="$(printf '%s' "$_it" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$_it" in
+      '') ;;
+      ssh-*) printf '%s\n' "$_it" ;;
+      *)
+        set -f
+        for _w in $_it; do printf '%s\n' "$_w"; done
+        set +f
+        ;;
+    esac
   done
 }

@@ -103,6 +103,8 @@ take_backup() {
   tmp="$DIR/.orch-${stamp}.dump.partial"
   out="$DIR/orch-${stamp}.dump"
   ok=true
+  # Leftovers of a run that was killed half-way (rotation never lists them).
+  rm -f "$DIR"/.orch-*.partial "$DIR"/orch-*.partial
   if ! pg_dump --format=custom --compress=6 --no-owner --file="$tmp"; then
     rm -f "$tmp"
     err "pg_dump FAILED"
@@ -110,7 +112,9 @@ take_backup() {
   fi
   if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
     set --
-    for r in $(printf '%s' "$BACKUP_AGE_RECIPIENT" | tr ',' ' '); do set -- "$@" -r "$r"; done
+    while IFS= read -r r; do set -- "$@" -r "$r"; done <<EOF
+$(split_recipients "$BACKUP_AGE_RECIPIENT")
+EOF
     out="$out.age"
     if age "$@" -o "$out.partial" "$tmp"; then
       mv "$out.partial" "$out"
@@ -121,7 +125,7 @@ take_backup() {
     fi
     rm -f "$tmp"
   else
-    mv "$tmp" "$out"
+    mv "$tmp" "$out" || { rm -f "$tmp"; err "cannot move the dump into place"; return 1; }
   fi
   $ok || return 1
   log "wrote $(basename "$out") ($(wc -c <"$out") bytes)"
@@ -142,7 +146,10 @@ take_backup() {
 
 run_loop() {
   now="$(date -u +%s)"
-  interval="$(schedule_interval "$SCHEDULE" "$now")"
+  interval="$(schedule_interval "$SCHEDULE" "$now")" || {
+    err "BACKUP_SCHEDULE never matches within a year: $SCHEDULE"
+    exit 2
+  }
   printf '%s\n' "$interval" >"$STATE/interval"
   printf '%s\n' "$now" >"$STATE/started"
   [ "${BACKUP_ON_START:-false}" = "true" ] && { take_backup || true; }

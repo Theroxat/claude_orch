@@ -8,6 +8,9 @@ setup() {
   . "$LIB"
 }
 
+# L CMD ARGS: run a lib function in a plain sh (bats traps every command, which makes the cron loops crawl).
+L() { sh -c '. "$0"; "$@"' "$LIB" "$@"; }
+
 # names for N consecutive days ending 2026-10-22, one backup per day at 03:00
 days() {
   n="$1"
@@ -54,9 +57,41 @@ days() {
   [ "$output" = "orch-20261021T030000Z.dump.age" ]
 }
 
-@test "zero everywhere deletes every backup" {
+@test "the newest backup is never rotated out, even with every KEEP_* at zero" {
+  run sh -c ". '$LIB'; printf '%s\n' orch-20261022T030000Z.dump orch-20261021T030000Z.dump | rotation_select 0 0 0"
+  [ "$status" -eq 0 ]
+  [ "$output" = "orch-20261021T030000Z.dump" ]
   run sh -c ". '$LIB'; printf '%s\n' orch-20261022T030000Z.dump | rotation_select 0 0 0"
-  [ "$output" = "orch-20261022T030000Z.dump" ]
+  [ -z "$output" ]
+}
+
+@test "cron: zero-padded fields (BACKUP_HOUR_UTC=08) do not break the parser" {
+  now="$(date -u -d '2026-10-22 00:00:00' +%s)"
+  [ "$(L cron_next '0 08 * * *' "$now")" = "$(date -u -d '2026-10-22 08:00:00' +%s)" ]
+  [ "$(L cron_next '05 09 08 11 *' "$now")" = "$(date -u -d '2026-11-08 09:05:00' +%s)" ]
+  [ "$(L cron_next '*/05 00 * * *' "$now")" = "$(date -u -d '2026-10-22 00:05:00' +%s)" ]
+}
+
+@test "cron: a day-of-month step is a star field, so day-of-week restricts (vixie)" {
+  # 2026-10-22 is a Thursday. "*/2" days of month AND Monday: a Monday on an odd day (1,3,...).
+  now="$(date -u -d '2026-10-22 00:00:00' +%s)"
+  [ "$(L cron_next '0 3 */2 * 1' "$now")" = "$(date -u -d '2026-11-09 03:00:00' +%s)" ]
+}
+
+@test "schedule_interval takes the longest gap of an irregular schedule" {
+  now="$(date -u -d '2026-10-22 12:00:00' +%s)"
+  # 1st and 2nd of the month: gaps of 1 day and ~29 days
+  [ "$(L schedule_interval '0 3 1,2 * *' "$now")" -ge $((28 * 86400)) ]
+}
+
+@test "split_recipients: commas and spaces for age keys, ssh keys stay whole" {
+  run split_recipients "age1aaa, age1bbb age1ccc,ssh-ed25519 AAAAC3 me@host"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | wc -l)" -eq 4 ]
+  [ "$(echo "$output" | sed -n 3p)" = "age1ccc" ]
+  [ "$(echo "$output" | sed -n 4p)" = "ssh-ed25519 AAAAC3 me@host" ]
+  run split_recipients "*"
+  [ "$output" = "*" ]
 }
 
 @test "cron_valid accepts normal expressions and rejects bad ones" {
@@ -73,29 +108,29 @@ days() {
 
 @test "cron_next: daily at 03:00 UTC" {
   now="$(date -u -d '2026-10-22 02:59:30' +%s)"
-  [ "$(cron_next '0 3 * * *' "$now")" = "$(date -u -d '2026-10-22 03:00:00' +%s)" ]
+  [ "$(L cron_next '0 3 * * *' "$now")" = "$(date -u -d '2026-10-22 03:00:00' +%s)" ]
   now="$(date -u -d '2026-10-22 03:00:00' +%s)"
-  [ "$(cron_next '0 3 * * *' "$now")" = "$(date -u -d '2026-10-23 03:00:00' +%s)" ]
+  [ "$(L cron_next '0 3 * * *' "$now")" = "$(date -u -d '2026-10-23 03:00:00' +%s)" ]
 }
 
 @test "cron_next: steps, lists and month rollover" {
   now="$(date -u -d '2026-10-22 10:07:00' +%s)"
-  [ "$(cron_next '*/15 * * * *' "$now")" = "$(date -u -d '2026-10-22 10:15:00' +%s)" ]
+  [ "$(L cron_next '*/15 * * * *' "$now")" = "$(date -u -d '2026-10-22 10:15:00' +%s)" ]
   now="$(date -u -d '2026-10-31 23:59:00' +%s)"
-  [ "$(cron_next '30 1 1 * *' "$now")" = "$(date -u -d '2026-11-01 01:30:00' +%s)" ]
+  [ "$(L cron_next '30 1 1 * *' "$now")" = "$(date -u -d '2026-11-01 01:30:00' +%s)" ]
 }
 
 @test "cron_next: day of week (Sunday at 04:00)" {
   now="$(date -u -d '2026-10-22 00:00:00' +%s)" # Thursday
-  [ "$(cron_next '0 4 * * 0' "$now")" = "$(date -u -d '2026-10-25 04:00:00' +%s)" ]
-  [ "$(cron_next '0 4 * * 7' "$now")" = "$(date -u -d '2026-10-25 04:00:00' +%s)" ]
+  [ "$(L cron_next '0 4 * * 0' "$now")" = "$(date -u -d '2026-10-25 04:00:00' +%s)" ]
+  [ "$(L cron_next '0 4 * * 7' "$now")" = "$(date -u -d '2026-10-25 04:00:00' +%s)" ]
 }
 
 @test "schedule_interval: daily, hourly and weekly" {
   now="$(date -u -d '2026-10-22 12:00:00' +%s)"
-  [ "$(schedule_interval '0 3 * * *' "$now")" = 86400 ]
-  [ "$(schedule_interval '0 * * * *' "$now")" = 3600 ]
-  [ "$(schedule_interval '0 3 * * 0' "$now")" = 604800 ]
+  [ "$(L schedule_interval '0 3 * * *' "$now")" = 86400 ]
+  [ "$(L schedule_interval '0 * * * *' "$now")" = 3600 ]
+  [ "$(L schedule_interval '0 3 * * 0' "$now")" = 604800 ]
 }
 
 @test "healthcheck: fresh backup is healthy, older than 2x interval is not" {
