@@ -74,9 +74,10 @@ function Breakdown<T extends UsageTotals>({
   rowKey: (r: T) => string;
 }) {
   const max = Math.max(0, ...rows.map((r) => r.weighted));
+  const id = `h-${title.toLowerCase().replace(/\s+/g, '-')}`;
   return (
-    <section className="usage-block" aria-labelledby={`h-${title}`}>
-      <h2 id={`h-${title}`}>{title}</h2>
+    <section className="usage-block" aria-labelledby={id}>
+      <h2 id={id}>{title}</h2>
       {rows.length === 0 ? (
         <p className="empty">Nothing to show for this range.</p>
       ) : (
@@ -184,7 +185,7 @@ function Split({ data }: { data: UsageDashboard }) {
         {data.scope === 'admin' ? '' : 's'}, personal use included. Kept {data.splitRetentionDays}{' '}
         days.
       </p>
-      <dl className="split">
+      <dl className="token-split">
         {rows.map(([label, v]) => (
           <div key={label}>
             <dt>{label}</dt>

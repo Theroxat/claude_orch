@@ -123,7 +123,8 @@ export function UsageChart({ series }: { series: UsageDayPoint[] }) {
         tabIndex={0}
         onKeyDown={onKey}
         onBlur={() => setActive(null)}
-        onPointerLeave={() => setActive(null)}
+        // A touch ends with a pointerleave: keep the tapped day readable until focus moves away.
+        onPointerLeave={(e) => e.pointerType !== 'touch' && setActive(null)}
       >
         {ticks.map((t) => (
           <g key={t}>

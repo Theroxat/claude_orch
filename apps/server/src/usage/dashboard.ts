@@ -83,7 +83,7 @@ export async function computeUsageDashboard(
 
   const [byDay, byMember, byProject, top, split, budgets] = await Promise.all([
     prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT to_char(date_trunc('day', a."finishedAt" AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, ${TOTALS}
+      SELECT to_char(date_trunc('day', a."finishedAt"), 'YYYY-MM-DD') AS day, ${TOTALS}
       FROM "Assignment" a JOIN "Task" t ON t."id" = a."taskId"
       WHERE ${where} GROUP BY 1`,
     prisma.$queryRaw<Array<Record<string, unknown>>>`
@@ -104,7 +104,7 @@ export async function computeUsageDashboard(
       ORDER BY weighted DESC, t."id" LIMIT ${TOP_TASKS}`,
     // One row per (agent, window): the latest report of a window is its running total.
     prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT to_char(date_trunc('day', "windowStart" AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      SELECT to_char(date_trunc('day', "windowStart"), 'YYYY-MM-DD') AS day,
              SUM("inputTokens")::float8 AS input, SUM("outputTokens")::float8 AS output,
              SUM("cacheWriteTokens")::float8 AS "cacheWrite", SUM("cacheReadTokens")::float8 AS "cacheRead"
       FROM (

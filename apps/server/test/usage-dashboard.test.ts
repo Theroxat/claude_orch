@@ -285,3 +285,40 @@ describe('authorization', () => {
     expect(d.tokenSplit!.input).toBeGreaterThanOrEqual(77);
   });
 });
+
+describe('day buckets', () => {
+  it('buckets by UTC day whatever the database session time zone is', async () => {
+    const dbName = new URL(process.env.DATABASE_URL!).pathname.slice(1);
+    await prisma.$executeRawUnsafe(
+      `ALTER DATABASE "${dbName}" SET timezone = 'America/Los_Angeles'`,
+    );
+    await prisma.$disconnect(); // new connections pick the setting up
+    try {
+      const u = await loginAs(app, gh);
+      const p = await project(u, 'tz');
+      const t = await task(p.id, u, 'Late');
+      const now = new Date();
+      // 01:30 UTC is still the previous evening in Los Angeles.
+      const at = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 1, 30),
+      );
+      if (at.getTime() > now.getTime()) at.setUTCDate(at.getUTCDate() - 1);
+      await run(t.id, u, 'SUCCEEDED', 700, at);
+      const agent = await agentOf(u);
+      await report(agent.id, u, at, at, 50);
+      const d = await computeUsageDashboard(
+        prisma,
+        { id: u.userId, isAdmin: false },
+        '7d',
+        0,
+        new Date(at.getTime() + HOUR),
+      );
+      const point = d.series.find((s) => s.day === at.toISOString().slice(0, 10))!;
+      expect(point.weighted).toBe(700);
+      expect(point.input).toBe(50);
+    } finally {
+      await prisma.$executeRawUnsafe(`ALTER DATABASE "${dbName}" RESET timezone`);
+      await prisma.$disconnect();
+    }
+  });
+});

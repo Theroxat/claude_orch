@@ -342,31 +342,31 @@ td.tokens {
 }
 
 /* Token types */
-.split {
+.token-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin: 12px 0 0;
   max-width: 520px;
 }
-.split > div {
+.token-split > div {
   display: grid;
   grid-template-columns: 110px 1fr;
   align-items: center;
   gap: 12px;
 }
-.split dt {
+.token-split dt {
   color: var(--ink-soft);
   font-weight: 600;
 }
-.split dd {
+.token-split dd {
   margin: 0;
   display: flex;
   align-items: center;
   gap: 10px;
   font-variant-numeric: tabular-nums;
 }
-.split .share {
+.token-split .share {
   flex: 1;
   width: auto;
   max-width: 280px;

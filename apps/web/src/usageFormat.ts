@@ -1,9 +1,10 @@
 /** Compact token count: 950, 12.3k, 4.1M. */
 export function formatTokens(n: number): string {
   const abs = Math.abs(n);
-  if (abs >= 1e9) return `${trim(n / 1e9)}B`;
-  if (abs >= 1e6) return `${trim(n / 1e6)}M`;
-  if (abs >= 1e3) return `${trim(n / 1e3)}k`;
+  // Thresholds sit half a displayed unit below each power so 999_999 reads 1M, not 1000k.
+  if (abs >= 999_500_000) return `${trim(n / 1e9)}B`;
+  if (abs >= 999_500) return `${trim(n / 1e6)}M`;
+  if (abs >= 999.5) return `${trim(n / 1e3)}k`;
   return String(Math.round(n));
 }
 const trim = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)).replace(/\.0$/, '');

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { me, mockApi, renderApp } from '../test/helpers';
@@ -95,6 +96,14 @@ describe('Usage', () => {
     expect(screen.getByText('Cache read')).toBeTruthy();
   });
 
+  it('labels each breakdown region by a valid single id', async () => {
+    mockApi({ ...base, 'GET /usage?range=30d': () => ({ json: dashboard('30d') }) });
+    renderApp('/usage');
+    await screen.findByRole('group', { name: 'Tokens' });
+    expect(screen.getByRole('region', { name: 'By project' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'By member' })).toBeTruthy();
+  });
+
   it('offers the chart as a table of the same numbers', async () => {
     mockApi({ ...base, 'GET /usage?range=30d': () => ({ json: dashboard('30d') }) });
     renderApp('/usage');
@@ -190,6 +199,18 @@ describe('helpers', () => {
     expect(formatTokens(12_300)).toBe('12.3k');
     expect(formatTokens(4_100_000)).toBe('4.1M');
     expect(formatTokens(1_000)).toBe('1k');
+    // Never "1000k" / "1000M": promote to the next unit once the display would round up.
+    expect(formatTokens(999_999)).toBe('1M');
+    expect(formatTokens(999_999_999)).toBe('1B');
+    expect(formatTokens(999.7)).toBe('1k');
+    expect(formatTokens(999_400)).toBe('999k');
+  });
+  it('does not restyle global classes from the lazy usage.css', () => {
+    const css = readFileSync('src/usage.css', 'utf8');
+    const global = readFileSync('src/styles.css', 'utf8');
+    const sel = (src: string) => new Set([...src.matchAll(/^\.([a-z][\w-]*)/gm)].map((m) => m[1]!));
+    const clash = [...sel(css)].filter((c) => sel(global).has(c));
+    expect(clash).toEqual([]);
   });
   it('rounds the axis top to a readable step', () => {
     expect(niceMax(0)).toBe(1);
