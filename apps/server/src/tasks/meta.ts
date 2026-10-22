@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from '../auth/crypto';
 import { Model, TaskSize } from '@orch/shared';
 import { z } from 'zod';
 
@@ -53,7 +53,7 @@ export function parseIssueBody(body: string | null | undefined): {
   return { description, meta };
 }
 
-export const bodyHash = (body: string) => createHash('sha256').update(body).digest('hex');
+export const bodyHash = (body: string) => sha256Hex(body);
 
 export function branchNameFor(issueNumber: number, title: string): string {
   const slug = title

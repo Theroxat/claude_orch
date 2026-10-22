@@ -17,10 +17,10 @@ cmd="${1:-help}"
 case "$cmd" in
   build-tools) dc --profile tools build tools ;;
   install) dc --profile tools build tools && tools pnpm install --no-frozen-lockfile "$@" ;;
-  lint) tools sh -c 'pnpm exec eslint . && pnpm exec prettier --check .' ;;
-  format) tools pnpm exec prettier --write . ;;
-  typecheck) tools pnpm -r typecheck ;;
-  test) tools pnpm -r test "$@" ;;
+  lint) tools pnpm lint ;;
+  format) tools pnpm format ;;
+  typecheck) tools pnpm typecheck ;;
+  test) tools pnpm test "$@" ;;
   test:install)
     docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install.sh
     docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install
@@ -29,7 +29,7 @@ case "$cmd" in
     dc --profile tools build tools
     exec ./test/ui/stack.sh test
     ;;
-  build) tools pnpm -r build ;;
+  build) tools pnpm build ;;
   prisma) tools pnpm --filter @orch/server exec prisma "$@" ;;
   pnpm) tools pnpm "$@" ;;
   sh) dc --profile tools run --rm tools sh ;;
