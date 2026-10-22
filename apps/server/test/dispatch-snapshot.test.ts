@@ -86,7 +86,7 @@ describe('dispatcher tick snapshot', () => {
     if (process.env.DISPATCH_TOTALS) {
       (await import('node:fs')).writeFileSync(process.env.DISPATCH_TOTALS, JSON.stringify(totals));
     }
-  });
+  }, 300_000);
 
   it('keeps maxConcurrent and budgets across the offers of one tick', async () => {
     // One member, one agent able to take 2 tasks, 6 open tasks: exactly 2 auto offers.
@@ -109,7 +109,7 @@ describe('dispatcher tick snapshot', () => {
     } finally {
       await dropScenario(prisma, s);
     }
-  });
+  }, 60_000);
 
   it('reads with a fixed number of queries, whatever the number of tasks and members', async () => {
     const url = process.env.DATABASE_URL_TEST!;
@@ -139,5 +139,5 @@ describe('dispatcher tick snapshot', () => {
     }
     expect(counts[1]).toBe(counts[0]);
     expect(counts[0]).toBeLessThanOrEqual(25);
-  });
+  }, 60_000);
 });

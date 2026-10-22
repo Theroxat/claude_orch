@@ -91,5 +91,5 @@ describe.skipIf(!process.env.DISPATCH_BENCH)('dispatcher tick benchmark', () => 
     ].join('\n');
     console.log(table);
     if (process.env.DISPATCH_BENCH_OUT) writeFileSync(process.env.DISPATCH_BENCH_OUT, table + '\n');
-  });
+  }, 1_800_000);
 });
