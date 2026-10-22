@@ -45,7 +45,6 @@ export const UpdateStateSchema = z.object({
   code: z.string().optional(),
   detail: z.string().optional(),
 });
-export type UpdateStateInfo = z.infer<typeof UpdateStateSchema>;
 
 export const StatusInfoSchema = z.object({
   agentId: z.string().nullable(),

@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { Prisma, type Agent, type Assignment, type Project, type User } from '@prisma/client';
+import { Prisma, type Agent, type Assignment, type User } from '@prisma/client';
 import {
   TASK_STATUSES,
   classifyFailure,
-  serverMessage,
   summarizeFailure,
   type FailureClass,
   type AckPayload,
   type GithubRole,
-  type ServerMessage,
   type ProjectTaskAccess,
   type TaskBoard,
   type TaskOfferPayload,
@@ -1624,6 +1622,3 @@ function buildPrBody(
   );
   return lines.join('\n');
 }
-
-export type { ServerMessage, Project };
-export { serverMessage };

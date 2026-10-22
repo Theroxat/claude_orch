@@ -17,6 +17,7 @@
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseAllDocuments } from 'yaml';
+import { errorMessage } from '../log.js';
 import { isInside, realPathLoose, resolveInside } from './paths.js';
 
 export class ComposeGuardError extends Error {
@@ -84,7 +85,7 @@ export function parseComposeText(text: string): { doc: unknown; problems: string
   try {
     docs = parseAllDocuments(text, { merge: true, uniqueKeys: true, prettyErrors: false });
   } catch (err) {
-    return fail(`invalid YAML: ${err instanceof Error ? err.message : String(err)}`);
+    return fail(`invalid YAML: ${errorMessage(err)}`);
   }
   if (docs.length === 0) return { doc: null, problems: [] };
   if (docs.length > 1) return fail('several YAML documents in one file are not supported');
@@ -98,7 +99,7 @@ export function parseComposeText(text: string): { doc: unknown; problems: string
   try {
     return { doc: d.toJS({ maxAliasCount: 1000 }) as unknown, problems: [] };
   } catch (err) {
-    return fail(`invalid YAML: ${err instanceof Error ? err.message : String(err)}`);
+    return fail(`invalid YAML: ${errorMessage(err)}`);
   }
 }
 
