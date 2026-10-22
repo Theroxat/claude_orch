@@ -197,6 +197,26 @@ describe('GET /api/tasks/history', () => {
     expect(await ids('status=DONE&model=OPUS')).toEqual([]);
   });
 
+  it('treats % and _ in the search as literal characters', async () => {
+    const { owner, p } = await world();
+    const a = await seed(p.id, owner, { title: 'Reach 100% coverage' });
+    const b = await seed(p.id, owner, { title: 'snake_case rename' });
+    await seed(p.id, owner, { title: 'snakeXcase other' });
+    const ids = async (q: string) =>
+      (await history(owner, `?project=${p.id}&q=${encodeURIComponent(q)}`)).items.map((i) => i.id);
+    expect(await ids('%')).toEqual([a.id]);
+    expect(await ids('snake_case')).toEqual([b.id]);
+    expect(await ids('_')).toEqual([b.id]);
+  });
+
+  it('a crafted cursor cannot widen visibility', async () => {
+    const { owner, p } = await world();
+    const stranger = await loginAs(app, gh);
+    const secret = await seed(p.id, owner, { title: 'secret' });
+    const cursor = Buffer.from(`2099-01-01T00:00:00.000Z|${secret.id}`).toString('base64url');
+    expect((await history(stranger, `?cursor=${cursor}`)).items).toEqual([]);
+  });
+
   it('rejects malformed filters', async () => {
     const { owner } = await world();
     for (const qs of [
@@ -205,6 +225,9 @@ describe('GET /api/tasks/history', () => {
       '?limit=0',
       '?limit=1000',
       '?cursor=%25',
+      `?cursor=${Buffer.from('2026-01-01|x').toString('base64url')}`,
+      `?cursor=${Buffer.from("2026-01-01T00:00:00.000Z|a'b").toString('base64url')}`,
+      `?cursor=${Buffer.from('2026-01-01T00:00:00.000Z|a|b').toString('base64url')}`,
     ]) {
       const res = await api(app, owner)('GET', `/api/tasks/history${qs}`);
       expect(res.statusCode, qs).toBe(400);

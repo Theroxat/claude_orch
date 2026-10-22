@@ -122,7 +122,9 @@ function buildWhere(f: HistoryFilters, projectIds: string[]): Prisma.TaskWhereIn
     and.push({ createdAt: { lt: new Date(Date.parse(`${f.to}T00:00:00.000Z`) + 86_400_000) } });
   }
   if (f.q) {
-    const or: Prisma.TaskWhereInput[] = [{ title: { contains: f.q, mode: 'insensitive' } }];
+    const or: Prisma.TaskWhereInput[] = [
+      { title: { contains: escapeLike(f.q), mode: 'insensitive' } },
+    ];
     const num = /^#?(\d{1,10})$/.exec(f.q);
     if (num && Number(num[1]) <= MAX_INT) {
       const n = Number(num[1]);
@@ -138,6 +140,9 @@ function buildWhere(f: HistoryFilters, projectIds: string[]): Prisma.TaskWhereIn
   }
   return { projectId: { in: projectIds }, AND: and };
 }
+
+/** Prisma passes `contains` straight to ILIKE: make `%`, `_` and `\\` literal. */
+const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 export interface HistoryContext {
   prisma: PrismaClient;
