@@ -1,10 +1,21 @@
+# Build context of docker/*.Dockerfile and apps/agent/Dockerfile (repository root). The images
+# only COPY package manifests, packages/, apps/, install.sh, deploy/ and docker/; everything
+# else is kept out of the context (smaller upload, fewer cache invalidations).
 **/node_modules
 .pnpm-store
 .git
+.github
 .claude
 **/.env
 **/.env.*
 !**/.env.example
 **/dist
 **/coverage
+**/*.tsbuildinfo
+**/*.log
 docs
+# Test suites build with their own context (test/e2e, test/e2e/runner) or none at all.
+test
+**/.DS_Store
+.idea
+.vscode
