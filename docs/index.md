@@ -51,6 +51,7 @@ mcp
 :caption: Reference
 
 configuration
+observability
 security
 ```
 

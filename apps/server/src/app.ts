@@ -17,6 +17,7 @@ import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
+import { Metrics, registerObservability } from './observability';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -59,6 +60,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     trustProxy: config.ORCH_TRUST_PROXY,
   });
   installErrorHandling(app);
+  const metrics = new Metrics(config.ORCH_VERSION);
+  registerObservability(app, { config, prisma, metrics });
 
   const version = config.ORCH_VERSION;
   const health = async () => ({ status: 'ok' as const, version });
@@ -66,10 +69,11 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
   app.get('/api/healthz', health);
 
   if (prisma) {
-    const deps = { config, prisma, github };
+    const deps = { config, prisma, github, metrics };
     const gateway = createAgentGateway(app, deps);
-    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
+    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics });
     gateway.setDispatcher(dispatcher);
+    metrics.attach({ prisma, log: app.log, agentVersions: () => gateway.connectedByVersion() });
     app.decorate('dispatcher', dispatcher);
     app.addHook('onReady', async () => dispatcher.start());
     // Runs before the gateway's onClose (hooks run in order): no tick sends on closed sockets.

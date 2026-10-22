@@ -111,6 +111,10 @@ Notes:
 - "Always Use HTTPS" is fine.
 - Update the GitHub App URLs as in {doc}`github-app`; they use your public `https` domain.
 
+## Monitoring
+
+The server exposes `/healthz` (liveness) and `/readyz` (database reachable), plus optional Prometheus metrics and OpenTelemetry traces. See {doc}`observability` for the metrics, the optional Prometheus and Grafana stack in `deploy/observability/`, and how `/metrics` stays off the public internet.
+
 ## Upgrading
 
 ```sh
