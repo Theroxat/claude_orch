@@ -132,6 +132,32 @@ describe('LiveLogStreamer', () => {
     expect(b!.text.length).toBe(4000);
   });
 
+  it('redacts before shortening: a token cut by the clip never leaks its first characters', () => {
+    const { s, sent } = streamer();
+    const gh = 'ghp_' + 'A1b2C3d4E5'.repeat(4);
+    const argPad = 'x'.repeat(225); // tool args are clipped at 240: the token straddles the cut
+    const resPad = 'y'.repeat(590); // tool results at 600
+    s.stdout(
+      assistant([
+        { type: 'tool_use', name: 'Bash', input: { command: `${argPad} ${gh}` } },
+        { type: 'tool_use', name: 'Bash', input: { command: `${argPad} ${PLAIN_SECRET}` } },
+        { type: 'tool_result', content: `${resPad} ${gh}` },
+      ]),
+    );
+    s.stdout(
+      JSON.stringify({ type: 'result', subtype: 'success', result: `${'z'.repeat(1190)} ${gh}` }),
+    );
+    s.close();
+    const texts = sent.flatMap((b) => b.entries.map((e) => e.text));
+    expect(texts).toHaveLength(4);
+    for (const t of texts) {
+      expect(t).not.toContain('ghp_');
+      expect(t).not.toContain('A1b2');
+      expect(t).not.toContain('not-a-pattern');
+    }
+    expect(texts[0]).toContain('[REDACTED]');
+  });
+
   it('counts what could not be sent and reports it with the next batch', () => {
     let online = false;
     const sent: TaskLogPayload[] = [];

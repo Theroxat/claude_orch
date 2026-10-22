@@ -49,13 +49,17 @@ const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
+/** Sanitizes a raw string BEFORE it is shortened (see `entriesFromStreamLine`). */
+type Clean = (s: string) => string;
+const keep: Clean = (s) => s;
+
 /** The one argument that says what a tool call does (command, path, pattern...), shortened. */
-export function toolArgs(name: string, input: unknown): string {
+export function toolArgs(name: string, input: unknown, clean: Clean = keep): string {
   if (!input || typeof input !== 'object') return '';
   const i = input as Record<string, unknown>;
   if ((name === 'Grep' || name === 'Glob') && typeof i.pattern === 'string') {
     const where = typeof i.path === 'string' ? ` in ${i.path}` : '';
-    return clip(oneLine(i.pattern + where), ARGS_MAX);
+    return clip(oneLine(clean(i.pattern + where)), ARGS_MAX);
   }
   const pick =
     str(i.command) ??
@@ -67,7 +71,7 @@ export function toolArgs(name: string, input: unknown): string {
     str(i.query) ??
     str(i.description) ??
     str(i.prompt);
-  if (pick !== undefined) return clip(oneLine(pick), ARGS_MAX);
+  if (pick !== undefined) return clip(oneLine(clean(pick)), ARGS_MAX);
   if (name === 'TodoWrite' && Array.isArray(i.todos)) return `${i.todos.length} todos`;
   let json: string;
   try {
@@ -75,7 +79,7 @@ export function toolArgs(name: string, input: unknown): string {
   } catch {
     return '';
   }
-  return clip(json === '{}' ? '' : json, ARGS_MAX);
+  return clip(json === '{}' ? '' : clean(json), ARGS_MAX);
 }
 
 function resultText(content: unknown): string {
@@ -92,12 +96,17 @@ function resultText(content: unknown): string {
 }
 
 /**
- * Compact entries for one stream-json line (unredacted: the streamer redacts). Lines that are
- * not JSON are shown as plain text; usage-only and unknown events give nothing.
+ * Compact entries for one stream-json line. Lines that are not JSON are shown as plain text;
+ * usage-only and unknown events give nothing.
+ *
+ * `clean` (the streamer passes its redactor) runs on every raw string BEFORE it is clipped:
+ * clipping first could cut a token in the middle, and a partial token no longer matches the
+ * literal secret nor the token patterns (`ghp_` + fewer than 20 chars), so its start would leak.
  */
 export function entriesFromStreamLine(
   line: string,
   ts: number,
+  clean: Clean = keep,
 ): Array<Omit<TaskLogEntry, 'ts'> & { ts: number }> {
   let ev: unknown;
   try {
@@ -109,7 +118,7 @@ export function entriesFromStreamLine(
   const e = ev as Record<string, unknown>;
   const out: TaskLogEntry[] = [];
   if (e.type === 'system' && e.subtype === 'init') {
-    const model = str(e.model);
+    const model = str(e.model) && clean(str(e.model) as string);
     out.push({ ts, kind: 'system', text: `session started${model ? ` (${model})` : ''}` });
   } else if (e.type === 'assistant' || e.type === 'user') {
     const msg =
@@ -119,12 +128,17 @@ export function entriesFromStreamLine(
       if (!c || typeof c !== 'object') continue;
       const b = c as Record<string, unknown>;
       if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-        out.push({ ts, kind: 'text', text: b.text.trim() });
+        out.push({ ts, kind: 'text', text: clean(b.text).trim() });
       } else if (b.type === 'tool_use') {
         const name = str(b.name) ?? 'tool';
-        out.push({ ts, kind: 'tool', tool: clip(name, 80), text: toolArgs(name, b.input) });
+        out.push({
+          ts,
+          kind: 'tool',
+          tool: clip(clean(name), 80),
+          text: toolArgs(name, b.input, clean),
+        });
       } else if (b.type === 'tool_result') {
-        const text = clip(resultText(b.content).trim(), RESULT_TEXT_MAX);
+        const text = clip(clean(resultText(b.content)).trim(), RESULT_TEXT_MAX);
         out.push({
           ts,
           kind: 'tool_result',
@@ -138,7 +152,8 @@ export function entriesFromStreamLine(
       e.is_error === true || (typeof e.subtype === 'string' && e.subtype !== 'success');
     const turns = typeof e.num_turns === 'number' ? `, ${e.num_turns} turns` : '';
     const head = `${str(e.subtype) ?? 'done'}${turns}`;
-    const body = str(e.result)?.trim();
+    const raw = str(e.result);
+    const body = raw === undefined ? undefined : clean(raw).trim();
     out.push({
       ts,
       kind: 'result',
@@ -185,7 +200,8 @@ export class LiveLogStreamer {
 
   stdout(line: string): void {
     this.guard(() => {
-      for (const e of entriesFromStreamLine(line, this.now())) this.push(e);
+      const clean = (s: string) => this.o.redact(stripAnsi(s));
+      for (const e of entriesFromStreamLine(line, this.now(), clean)) this.push(e);
     });
   }
 
