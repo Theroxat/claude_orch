@@ -19,6 +19,7 @@ import type { Logger } from './log';
 import { ConfigError, loadConfig } from './config';
 import { CredentialError, resolveCredential } from './credential';
 import { createLogger, errorMessage, redact } from './log';
+import { taskLedgerPath } from './usage';
 import { jsonlUsageSource } from './usage-loop';
 import { AGENT_VERSION } from './version';
 
@@ -144,6 +145,7 @@ async function main(): Promise<void> {
     usageSource: jsonlUsageSource({
       root: cfg.claudeUsageRoot,
       plan: cfg.plan,
+      taskLedger: taskLedgerPath(cfg.dataDir),
       ...(cfg.usageLimit !== undefined ? { limitWeighted: cfg.usageLimit } : {}),
     }),
     logger: log,

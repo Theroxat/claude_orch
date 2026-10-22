@@ -53,6 +53,11 @@ export interface MarginInput {
   reserve: number;
   /** Weighted usage of finished orch attempts for this project in the window (server side). */
   orchUsedInWindow: number;
+  /**
+   * Same, every project. Older agents never see task runs in their report (the containers log
+   * elsewhere): the whole-plan figure is at least personal use plus these runs.
+   */
+  orchUsedAllInWindow?: number;
   /** Estimates of the member's accepted/running/offered tasks of this project. */
   reservedProject: number;
   /** Same, every project. */
@@ -68,14 +73,26 @@ export interface Margin {
   globalMargin: number;
 }
 
+/** Reported use outside orch tasks: `byProject.personal`, else the total minus the projects. */
+function personalUse(u: UsageSnapshot): number {
+  const p = u.byProject.personal;
+  if (p !== undefined) return p;
+  let projects = 0;
+  for (const [k, v] of Object.entries(u.byProject)) if (k !== 'personal') projects += v;
+  return Math.max(0, u.weighted - projects);
+}
+
 /** Null when the capacity is unknown. */
 export function computeMargin(i: MarginInput): Margin | null {
   const cap = i.usage.capacity;
   if (cap === null || cap <= 0) return null;
   const over = windowOver(i.usage, i.now);
   const reported = over ? 0 : (i.usage.byProject[i.projectId] ?? 0);
-  const total = over ? 0 : i.usage.weighted;
   const used = Math.max(reported, i.orchUsedInWindow);
+  const personal = over ? 0 : personalUse(i.usage);
+  const total = over
+    ? 0
+    : Math.max(i.usage.weighted, personal + Math.max(i.orchUsedAllInWindow ?? 0, used));
   const budget = projectBudget(i.percent, cap, i.reserve);
   return {
     budget,

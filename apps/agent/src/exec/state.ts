@@ -66,6 +66,11 @@ export const TaskRecordSchema = z.object({
   logFile: z.string().nullable().default(null),
   /** Starting prompt built from the offer (issue snapshot, not secret); cleared once used. */
   prompt: z.string().nullable().default(null),
+  /**
+   * Git author of the run's commit: the task creator (v0.6.2, from `task.createdBy`). Null: the
+   * agent identity authors it (older servers, or a creator without a GitHub id).
+   */
+  author: z.object({ name: z.string(), email: z.string() }).nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

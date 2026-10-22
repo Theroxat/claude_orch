@@ -33,16 +33,19 @@ import type {
 import type { z } from 'zod';
 import { errorMessage, redact, type Logger } from '../log';
 import type { OutboxType } from '../outbox';
-import { modelFactor, parseLine, weigh } from '../usage';
+import { modelFactor, parseLine, recordTaskUsage, taskLedgerPath, weigh } from '../usage';
+import type { UsageEntry } from '../usage';
 import {
   DEFAULT_TIMEOUT_SEC,
   buildAutoArgv,
   isRateLimited,
+  parseAssistantUsage,
   parseResultEvent,
   spawnProcessOps,
   type ClaudeResult,
   type ProcessOps,
   type RunningProcess,
+  type StreamedUsage,
 } from './claude-run';
 import {
   ComposeGuardError,
@@ -689,6 +692,7 @@ export class ManualExecutor {
       projectFullName: task.project.fullName,
       issueNumber: task.issueNumber,
       title: task.title,
+      author: creatorIdentity(task.createdBy),
       model: task.model,
       size: task.size,
       baseBranch: task.baseBranch || task.project.defaultBranch,
@@ -1006,6 +1010,9 @@ export class ManualExecutor {
     this.log.info('auto run started', { issue: r.issueNumber, log: logFile });
     let result: ClaudeResult | null = null;
     let stderrTail = '';
+    // Usage seen on the stream (per assistant message): survives a timeout that removes the
+    // container before its own logs can be read.
+    const streamed = new Map<string, UsageEntry>();
     const proc = this.proc.spawnLines(
       argv,
       prompt,
@@ -1013,6 +1020,8 @@ export class ManualExecutor {
         out.write(`${redact(line)}\n`);
         const res = parseResultEvent(line);
         if (res) result = res;
+        const u = parseAssistantUsage(line);
+        if (u) streamed.set(u.id, streamedEntry(u, this.now()));
       },
       (line) => {
         const clean = redact(line);
@@ -1041,7 +1050,7 @@ export class ManualExecutor {
     }
     if (this.cancelled(id)) return; // cancel() already stopped and reported it
     const final = result as ClaudeResult | null;
-    const usage = final ? this.weighResult(final, r.model) : await this.collectUsage(r);
+    const usage = await this.taskUsage(r, [...streamed.values()], final, !timedOut);
     if (timedOut) {
       await this.fail(
         id,
@@ -1076,15 +1085,6 @@ export class ManualExecutor {
     this.log.info('auto run finished', { issue: r.issueNumber });
   }
 
-  private weighResult(res: ClaudeResult, model: string): Usage {
-    const factor = modelFactor(model, this.cfg.opusFactor ?? 5);
-    return {
-      weighted: Math.round(weigh(res.usage, factor)),
-      input: res.usage.input,
-      output: res.usage.output,
-    };
-  }
-
   /** Commits leftovers, pushes with a scoped token and sends task.pushed + task.finished. */
   private async pushAndReport(id: string, usage: Usage, claudeSummary = ''): Promise<void> {
     const rec = this.store.get(id) as TaskRecord;
@@ -1102,6 +1102,7 @@ export class ManualExecutor {
         repo,
         `orch: changes for #${rec.issueNumber}${body ? `\n\n${body}` : ''}`,
         this.cfg.identity,
+        rec.author ?? undefined,
       );
     } finally {
       for (const c of paused) await this.deps.docker.unpause(c).catch(() => undefined);
@@ -1258,7 +1259,7 @@ export class ManualExecutor {
     const id = rec.assignmentId;
     this.status(id, 'pushing');
     try {
-      const usage = await this.collectUsage(rec);
+      const usage = await this.taskUsage(rec, [], null, true);
       await this.pushAndReport(id, usage);
     } catch (err) {
       if (this.cancelled(id)) throw cancelledDuringDone(issueNumber);
@@ -1288,11 +1289,52 @@ export class ManualExecutor {
     return this.view(after);
   }
 
-  /** Sums the task's Claude usage from its config dir (an estimate, PLAN 5.7). */
-  private async collectUsage(
+  /**
+   * The run's Claude usage (an estimate, PLAN 5.7), read BEFORE the container is removed: the
+   * task's own transcripts (`/tmp/.claude`, tmpfs), the usage seen on the stream and the final
+   * `result` event. The largest of them wins (each may miss part of the run). The entries are
+   * recorded in the task ledger so the usage loop counts them in the member's 5-hour window.
+   */
+  private async taskUsage(
     rec: TaskRecord,
-  ): Promise<{ weighted: number; input: number; output: number }> {
-    const usage = { weighted: 0, input: 0, output: 0 };
+    streamed: UsageEntry[],
+    final: ClaudeResult | null,
+    containerAlive: boolean,
+  ): Promise<Usage> {
+    const now = this.now();
+    const opus = this.cfg.opusFactor ?? 5;
+    const fromResult: UsageEntry[] = final
+      ? final.byModel.length > 0
+        ? final.byModel.map((m) => ({ timestamp: now, ...m }))
+        : [{ timestamp: now, model: claudeModel(rec.model), ...final.usage }]
+      : [];
+    const candidates = [containerAlive ? await this.collectUsage(rec) : [], streamed, fromResult];
+    const weighOf = (es: UsageEntry[]) =>
+      es.reduce((w, e) => w + weigh(e, modelFactor(e.model, opus)), 0);
+    let best: UsageEntry[] = [];
+    for (const c of candidates) if (weighOf(c) > weighOf(best)) best = c;
+    const usage: Usage = {
+      weighted: Math.round(weighOf(best)),
+      input: Math.round(best.reduce((n, e) => n + e.input, 0)),
+      output: Math.round(best.reduce((n, e) => n + e.output, 0)),
+    };
+    if (usage.weighted === 0) {
+      this.log.warn('task usage is 0: the run will not count toward the budget', {
+        issue: rec.issueNumber,
+      });
+    } else {
+      recordTaskUsage(
+        taskLedgerPath(this.cfg.dataDir),
+        { assignmentId: rec.assignmentId, projectId: rec.projectId, entries: best },
+        now,
+      );
+    }
+    return usage;
+  }
+
+  /** The task's Claude usage entries from its config dir (`/tmp/.claude` in the container). */
+  private async collectUsage(rec: TaskRecord): Promise<UsageEntry[]> {
+    const entries: UsageEntry[] = [];
     try {
       const res = await this.deps.docker.exec(rec.container, [
         'sh',
@@ -1313,19 +1355,12 @@ export class ManualExecutor {
           if (seen.has(parsed.key)) continue;
           seen.add(parsed.key);
         }
-        const e = parsed.entry;
-        usage.input += e.input;
-        usage.output += e.output;
-        usage.weighted += weigh(e, modelFactor(e.model, this.cfg.opusFactor ?? 5));
+        entries.push(parsed.entry);
       }
     } catch (err) {
       this.log.warn('could not read task usage', { error: errorMessage(err) });
     }
-    // The task writes these logs itself: the protocol wants integer token counts.
-    usage.weighted = Math.round(usage.weighted);
-    usage.input = Math.round(usage.input);
-    usage.output = Math.round(usage.output);
-    return usage;
+    return entries;
   }
 
   // ---------- attach / shell ----------
@@ -1591,4 +1626,26 @@ export function sidecarError(file: string, step: 'config' | 'up', err: unknown):
     hint = `a service of ${file} did not start; check it with "docker compose -f ${file} up".`;
   }
   return new Error(`Sidecars (${file}) failed at "docker compose ${step}": ${hint} [${raw}]`);
+}
+
+const streamedEntry = (u: StreamedUsage, now: number): UsageEntry => ({
+  timestamp: now,
+  model: u.model,
+  input: u.input,
+  output: u.output,
+  cacheWrite: u.cacheWrite,
+  cacheRead: u.cacheRead,
+});
+
+/** GitHub's noreply address for a user: commits made with it are linked to their profile. */
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
+
+/**
+ * Git author for the task creator (`createdBy`), or null to keep the agent identity: older
+ * servers send no `githubId`, and an unexpected login is never put in a commit header.
+ */
+export function creatorIdentity(c: { login: string; githubId?: number }): GitIdentity | null {
+  if (c.githubId === undefined || !Number.isSafeInteger(c.githubId) || c.githubId <= 0) return null;
+  if (!LOGIN_RE.test(c.login)) return null;
+  return { name: c.login, email: `${c.githubId}+${c.login}@users.noreply.github.com` };
 }

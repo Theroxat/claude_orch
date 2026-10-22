@@ -46,6 +46,8 @@ export interface EstimateOptions {
   safetyMargin?: number;
   /** Weight applied to opus models. Default 5. */
   opusFactor?: number;
+  /** Ledger of orch task runs' usage (`task-ledger.ts`), merged into the window. */
+  taskLedger?: string;
 }
 
 export interface UsageEstimate {
@@ -58,6 +60,11 @@ export interface UsageEstimate {
   tokens: TokenTotals;
   byModel: Record<string, TokenTotals & { weighted: number }>;
   weighted: number;
+  /**
+   * Weighted tokens of the current window per orch projectId (task runs from the ledger), plus
+   * "personal" (everything else). Absent in older sources: all of it is personal.
+   */
+  byProject?: Record<string, number>;
   weekly: { since: number; tokens: TokenTotals; weighted: number; informationalOnly: true };
   budget: {
     plan: PlanName | 'custom';

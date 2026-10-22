@@ -55,6 +55,37 @@ describe('budget', () => {
     expect(m.globalMargin).toBe(80_000);
   });
 
+  it('whole-plan margin counts finished task runs an older agent never reports', () => {
+    // Older agent: the report only sees personal use (task containers log elsewhere).
+    const m = computeMargin({
+      usage: usage({ weighted: 10_000, byProject: { personal: 10_000 } }),
+      now,
+      projectId: 'p',
+      percent: 50,
+      reserve: 0,
+      orchUsedInWindow: 4_000,
+      orchUsedAllInWindow: 7_000,
+      reservedProject: 0,
+      reservedAll: 0,
+    })!;
+    expect(m.used).toBe(4_000);
+    expect(m.globalMargin).toBe(100_000 - 17_000);
+    // v0.6.2 agent: task runs are in the report (per project): never counted twice.
+    const n = computeMargin({
+      usage: usage({ weighted: 17_000, byProject: { personal: 10_000, p: 4_000, q: 3_000 } }),
+      now,
+      projectId: 'p',
+      percent: 50,
+      reserve: 0,
+      orchUsedInWindow: 4_000,
+      orchUsedAllInWindow: 7_000,
+      reservedProject: 0,
+      reservedAll: 0,
+    })!;
+    expect(n.used).toBe(4_000);
+    expect(n.globalMargin).toBe(100_000 - 17_000);
+  });
+
   it('uses the server-side orch usage when the report lags behind', () => {
     const m = computeMargin({
       usage: usage({ byProject: { p: 1_000 } }),

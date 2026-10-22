@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildBlocks, currentBlock, BLOCK_MS } from '../../src/usage/blocks';
 import { estimateUsage } from '../../src/usage/estimate';
+import { readTaskUsage, recordTaskUsage } from '../../src/usage/task-ledger';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { UsageEntry } from '../../src/usage/types';
 
 const fx = (n: string): string => join(dirname(fileURLToPath(import.meta.url)), 'fixtures', n);
@@ -116,5 +119,72 @@ describe('buildBlocks', () => {
   it('currentBlock is null for empty input', () => {
     expect(currentBlock([], 0)).toBeNull();
     expect(BLOCK_MS).toBe(18_000_000);
+  });
+});
+
+describe('task usage ledger (v0.6.2)', () => {
+  const withLedger = async (fn: (file: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-ledger-'));
+    try {
+      await fn(join(dir, 'sub', 'task-usage.jsonl'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const e = (ts: string, model: string, input: number): UsageEntry => ({
+    timestamp: t(ts),
+    model,
+    input,
+    output: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+  });
+
+  it('merges task runs into the window: total, byModel and byProject', async () => {
+    await withLedger(async (file) => {
+      recordTaskUsage(file, {
+        assignmentId: 'asg_1',
+        projectId: 'prj_1',
+        entries: [e('2026-10-21T11:00:00Z', 'claude-sonnet-4', 1_000)],
+      });
+      const base = await estimateUsage({ root: fx('basic'), now: NOW });
+      const r = await estimateUsage({ root: fx('basic'), now: NOW, taskLedger: file });
+      expect(r.weighted).toBe(base.weighted + 1_000);
+      expect(r.byProject).toEqual({ personal: base.weighted, prj_1: 1_000 });
+      expect(r.byModel['claude-sonnet-4']?.weighted).toBe(
+        (base.byModel['claude-sonnet-4']?.weighted ?? 0) + 1_000,
+      );
+    });
+  });
+
+  it('a later record of the same run replaces the earlier one; bad lines are skipped', async () => {
+    await withLedger(async (file) => {
+      const rec = (input: number) => ({
+        assignmentId: 'asg_1',
+        projectId: 'prj_1',
+        entries: [e('2026-10-21T11:00:00Z', 'sonnet', input)],
+      });
+      recordTaskUsage(file, rec(10));
+      writeFileSync(file, 'garbage\n{"assignmentId":1}\n', { flag: 'a' });
+      recordTaskUsage(file, rec(30));
+      expect(readTaskUsage(file, 0).map((x) => x.input)).toEqual([30]);
+      expect(readTaskUsage(file, t('2026-10-21T12:00:00Z'))).toEqual([]);
+    });
+  });
+
+  it('a task run alone opens a window', async () => {
+    await withLedger(async (file) => {
+      recordTaskUsage(file, {
+        assignmentId: 'asg_2',
+        projectId: 'prj_9',
+        entries: [e('2026-10-21T12:30:00Z', 'claude-opus-4', 100)],
+      });
+      const r = await estimateUsage({ root: fx('missing-root'), now: NOW, taskLedger: file });
+      expect(r.window).toEqual({
+        start: t('2026-10-21T12:00:00Z'),
+        resetAt: t('2026-10-21T17:00:00Z'),
+      });
+      expect(r.byProject).toEqual({ personal: 0, prj_9: 500 });
+    });
   });
 });

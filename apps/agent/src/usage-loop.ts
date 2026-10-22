@@ -31,7 +31,7 @@ export function toUsageReport(e: UsageEstimate): UsageReportPayload {
     },
     weighted: e.weighted,
     byModel,
-    byProject: { personal: e.weighted },
+    byProject: e.byProject ?? { personal: e.weighted },
     capacityEstimate: e.budget.usableWeighted,
     ...(e.rateLimitedUntil !== null ? { rateLimitedUntil: iso(e.rateLimitedUntil) } : {}),
     source: 'jsonl',

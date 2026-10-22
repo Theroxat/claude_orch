@@ -54,6 +54,14 @@ export interface ClaudeResult {
   text: string;
   numTurns: number | null;
   usage: { input: number; output: number; cacheWrite: number; cacheRead: number };
+  /** Per-model totals (`modelUsage`), when the CLI reports them. */
+  byModel: Array<{
+    model: string;
+    input: number;
+    output: number;
+    cacheWrite: number;
+    cacheRead: number;
+  }>;
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
@@ -70,6 +78,20 @@ export function parseResultEvent(line: string): ClaudeResult | null {
   const e = ev as Record<string, unknown>;
   if (e.type !== 'result') return null;
   const u = (e.usage && typeof e.usage === 'object' ? e.usage : {}) as Record<string, unknown>;
+  const byModel: ClaudeResult['byModel'] = [];
+  if (e.modelUsage && typeof e.modelUsage === 'object') {
+    for (const [model, v] of Object.entries(e.modelUsage as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue;
+      const m = v as Record<string, unknown>;
+      byModel.push({
+        model,
+        input: Math.round(num(m.inputTokens)),
+        output: Math.round(num(m.outputTokens)),
+        cacheWrite: Math.round(num(m.cacheCreationInputTokens)),
+        cacheRead: Math.round(num(m.cacheReadInputTokens)),
+      });
+    }
+  }
   return {
     isError: e.is_error === true || (typeof e.subtype === 'string' && e.subtype !== 'success'),
     subtype: typeof e.subtype === 'string' ? e.subtype : 'unknown',
@@ -81,6 +103,43 @@ export function parseResultEvent(line: string): ClaudeResult | null {
       cacheWrite: Math.round(num(u.cache_creation_input_tokens)),
       cacheRead: Math.round(num(u.cache_read_input_tokens)),
     },
+    byModel,
+  };
+}
+
+export interface StreamedUsage {
+  /** `message.id`: Claude repeats an assistant message once per content block. */
+  id: string;
+  model: string;
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+}
+
+/** Usage of one stream-json `assistant` event, or null for anything else. */
+export function parseAssistantUsage(line: string): StreamedUsage | null {
+  let ev: unknown;
+  try {
+    ev = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!ev || typeof ev !== 'object') return null;
+  const e = ev as Record<string, unknown>;
+  if (e.type !== 'assistant' || !e.message || typeof e.message !== 'object') return null;
+  const m = e.message as Record<string, unknown>;
+  if (typeof m.id !== 'string' || !m.usage || typeof m.usage !== 'object') return null;
+  const model = typeof m.model === 'string' ? m.model : 'unknown';
+  if (model === '<synthetic>') return null;
+  const u = m.usage as Record<string, unknown>;
+  return {
+    id: m.id,
+    model,
+    input: Math.round(num(u.input_tokens)),
+    output: Math.round(num(u.output_tokens)),
+    cacheWrite: Math.round(num(u.cache_creation_input_tokens)),
+    cacheRead: Math.round(num(u.cache_read_input_tokens)),
   };
 }
 

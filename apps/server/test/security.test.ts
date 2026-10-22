@@ -193,6 +193,43 @@ describe('logging', () => {
   });
 });
 
+describe('webhook signature failure log', () => {
+  it('warns with the delivery id and event only, never the signature or the body', async () => {
+    const lines: string[] = [];
+    const logApp = makeApp(gh, {
+      env: { LOG_LEVEL: 'warn' },
+      logStream: { write: (s: string) => void lines.push(s) },
+    });
+    try {
+      const body = JSON.stringify({ zen: 'BODYMARKER789' });
+      const delivery = `dlv-${uid()}`;
+      const sig = signBody('not-the-secret', body);
+      const res = await logApp.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        payload: body,
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'ping',
+          'x-github-delivery': delivery,
+          'x-hub-signature-256': sig,
+        },
+      });
+      expect(res.statusCode).toBe(401);
+      const warn = lines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .find((l) => l.msg === 'webhook signature verification failed');
+      expect(warn).toMatchObject({ deliveryId: delivery, event: 'ping', level: 40 });
+      const all = lines.join('\n');
+      expect(all).not.toContain(sig.slice('sha256='.length));
+      expect(all).not.toContain(TEST_WEBHOOK_SECRET);
+      expect(all).not.toContain('BODYMARKER789');
+    } finally {
+      await logApp.close();
+    }
+  });
+});
+
 describe('sign-in allowlist', () => {
   const login = async (
     a: ReturnType<typeof makeApp>,

@@ -226,6 +226,15 @@ describe('git auth and hygiene', () => {
       expect(filesContaining(dir, B64)).toEqual([]);
     }
   });
+
+  it('real git: the task creator is the author, the agent stays the committer', async () => {
+    const { git, repo } = await realRepo();
+    writeFileSync(join(repo.workTree, 'credited.txt'), 'work\n');
+    const author = { name: 'alice', email: '4242+alice@users.noreply.github.com' };
+    expect(await git.commitAll(repo, 'feat: credited', ID, author)).toBe(true);
+    const who = sh(['--git-dir', repo.gitDir, 'log', '-1', '--format=%an <%ae>|%cn <%ce>']).trim();
+    expect(who).toBe(`alice <4242+alice@users.noreply.github.com>|${ID.name} <${ID.email}>`);
+  });
 });
 
 describe('push of a task branch', () => {
