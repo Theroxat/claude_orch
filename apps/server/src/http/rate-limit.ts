@@ -1,0 +1,116 @@
+import { createHash } from 'node:crypto';
+import rateLimit from '@fastify/rate-limit';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { Config } from '../config';
+import { HttpError } from './errors';
+
+/**
+ * HTTP rate limiting (in-memory store: orch runs as a single server instance, so no shared
+ * store is needed; limits reset on restart).
+ *
+ * Every route falls in exactly one tier. Counters are per tier and per key:
+ * - `api`: everything else, keyed by the signed-in user, else by client IP.
+ * - `auth`: sign-in start/callback, access requests, OAuth authorize/token/register/revoke,
+ *   agent enrollment, invite links. Keyed by client IP (the caller is not known yet).
+ * - `webhook`: GitHub webhook deliveries, by client IP.
+ * - `mcp`: the MCP endpoint, by bearer token (hashed), else by IP.
+ * - `heavy`: expensive reads (the pool view), by user.
+ * - `agent-connect`: new agent WebSocket connections, by IP.
+ * - exempt: health checks and the static files the server hands out (install.sh, compose.yaml).
+ *
+ * The client IP is `req.ip`, which Fastify derives from X-Forwarded-For only when the peer is in
+ * ORCH_TRUST_PROXY (default: private networks, i.e. Caddy). A direct client cannot spoof it.
+ */
+export type Tier = 'exempt' | 'api' | 'auth' | 'webhook' | 'mcp' | 'heavy' | 'agent-connect';
+
+const EXEMPT = new Set(['/healthz', '/api/healthz', '/install.sh', '/agent/compose.yaml']);
+const AUTH = new Set([
+  '/api/auth/github/login',
+  '/api/auth/github/callback',
+  '/api/auth/access-request',
+  '/api/oauth/authorize',
+  '/api/oauth/register',
+  '/api/oauth/token',
+  '/api/oauth/revoke',
+  '/api/agents/enroll',
+  '/agent/enroll',
+  '/invite/:token',
+]);
+
+export function tierOf(req: FastifyRequest): Tier {
+  const url = req.routeOptions?.url ?? '';
+  if (EXEMPT.has(url)) return 'exempt';
+  if (AUTH.has(url)) return 'auth';
+  if (url === '/api/github/webhook') return 'webhook';
+  if (url === '/mcp') return 'mcp';
+  if (url === '/agent/ws') return 'agent-connect';
+  if (url === '/api/pool') return 'heavy';
+  return 'api';
+}
+
+function bearerKey(req: FastifyRequest): string | null {
+  const h = req.headers.authorization;
+  if (!h || !h.startsWith('Bearer ')) return null;
+  return `tok:${createHash('sha256').update(h.slice(7).trim()).digest('hex').slice(0, 32)}`;
+}
+
+/** Counter key for a request: `<tier>:<subject>`. */
+export function rateLimitKey(req: FastifyRequest): string {
+  const tier = tierOf(req);
+  let subject = `ip:${req.ip}`;
+  if (tier === 'api' || tier === 'heavy') {
+    if (req.user) subject = `user:${req.user.id}`;
+  } else if (tier === 'mcp') {
+    subject = bearerKey(req) ?? subject;
+  }
+  return `${tier}:${subject}`;
+}
+
+/**
+ * Call right after the session lookup hook is registered (so req.user is known) and before the
+ * other plugins/scopes are registered (they inherit the hook).
+ */
+export function registerRateLimit(app: FastifyInstance, config: Config): void {
+  if (!config.RATE_LIMIT_ENABLED) {
+    app.log.warn('RATE_LIMIT_ENABLED=false: HTTP rate limiting is off');
+    return;
+  }
+  const max: Record<Exclude<Tier, 'exempt'>, number> = {
+    api: config.RATE_LIMIT_API_MAX,
+    auth: config.RATE_LIMIT_AUTH_MAX,
+    webhook: config.RATE_LIMIT_WEBHOOK_MAX,
+    mcp: config.RATE_LIMIT_MCP_MAX,
+    heavy: config.RATE_LIMIT_HEAVY_MAX,
+    'agent-connect': config.RATE_LIMIT_AGENT_CONNECT_MAX,
+  };
+  app.register(rateLimit, {
+    global: false,
+    max: (req: FastifyRequest) => {
+      const t = tierOf(req);
+      return t === 'exempt' ? Number.MAX_SAFE_INTEGER : max[t];
+    },
+    timeWindow: config.RATE_LIMIT_WINDOW_SEC * 1000,
+    keyGenerator: rateLimitKey,
+    allowList: (req: FastifyRequest) => tierOf(req) === 'exempt',
+    // IETF draft headers: RateLimit-Limit / -Remaining / -Reset, plus Retry-After on 429.
+    enableDraftSpec: true,
+    // Thrown, then rendered by the app error handler in the API's { error: { code, message } } shape.
+    errorResponseBuilder: (_req: FastifyRequest, ctx: { ttl: number }) =>
+      new HttpError(
+        429,
+        'rate_limited',
+        `Too many requests. Retry in ${Math.max(1, Math.ceil(ctx.ttl / 1000))} s.`,
+      ),
+  });
+  // Once the plugin is loaded (before any later-registered scope is created), add the hook.
+  app.after(() => {
+    app.addHook('onRequest', app.rateLimit());
+    // A refused WebSocket upgrade must not keep its socket open. @fastify/websocket destroys it
+    // in its own onResponse hook, but flags the request in an onRequest hook that runs after the
+    // limiter, so a 429 thrown here would otherwise leave the socket dangling. (A successful
+    // upgrade is hijacked and never reaches onResponse.)
+    app.addHook('onResponse', async (req) => {
+      if (req.headers.upgrade?.toLowerCase() === 'websocket') req.raw.socket.destroy();
+    });
+  });
+}

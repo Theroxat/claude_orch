@@ -8,6 +8,7 @@ import type { PrismaClient } from './db';
 import type { GithubClient } from './github';
 import { Dispatcher } from './dispatch/dispatcher';
 import { installErrorHandling } from './http/errors';
+import { registerRateLimit } from './http/rate-limit';
 import { registerOffers } from './offers';
 import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
@@ -57,6 +58,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
       ...(logStream ? { stream: logStream } : {}),
     },
     trustProxy: config.ORCH_TRUST_PROXY,
+    // Explicit default (1 MiB); routes that take less set their own lower limit.
+    bodyLimit: 1024 * 1024,
   });
   installErrorHandling(app);
 
@@ -76,6 +79,8 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
     app.addHook('preClose', async () => dispatcher.stop());
     const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
+    // After the session lookup hook: requests are keyed by user id when signed in.
+    registerRateLimit(app, config);
     registerAccess(app, deps);
     registerProjects(app, m4);
     registerParticipation(app, m4);

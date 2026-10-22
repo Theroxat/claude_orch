@@ -177,6 +177,14 @@ export function makeApp(
     // M1-M3 suites drive tasks by hand; the M4 suite turns the dispatcher on.
     DISPATCHER_ENABLED: 'false',
     GITHUB_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
+    // The limiter stays ON in every suite, but with limits no suite approaches. Suites that
+    // test the limiter itself override these (see ratelimit.test.ts).
+    RATE_LIMIT_API_MAX: '1000000',
+    RATE_LIMIT_AUTH_MAX: '1000000',
+    RATE_LIMIT_WEBHOOK_MAX: '1000000',
+    RATE_LIMIT_MCP_MAX: '1000000',
+    RATE_LIMIT_HEAVY_MAX: '1000000',
+    RATE_LIMIT_AGENT_CONNECT_MAX: '1000000',
     ...opts.env,
   });
   return buildApp({ config, prisma, github, logStream: opts.logStream });

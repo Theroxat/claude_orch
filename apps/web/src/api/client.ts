@@ -11,6 +11,9 @@ export class ApiError extends Error {
   }
 }
 
+/** Fired on `window` when the server answers 429; the toast host shows a friendly notice. */
+export const RATE_LIMITED_EVENT = 'orch:rate-limited';
+
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** Typed fetch wrapper: cookie session, JSON body, response parsed with a zod schema. */
@@ -30,6 +33,14 @@ export async function api<T>(
   const text = await res.text();
   const json: unknown = text ? safeJson(text) : undefined;
   if (!res.ok) {
+    if (res.status === 429 && typeof window !== 'undefined') {
+      const secs = Number(res.headers.get('Retry-After'));
+      window.dispatchEvent(
+        new CustomEvent(RATE_LIMITED_EVENT, {
+          detail: { retryAfterSec: Number.isFinite(secs) && secs > 0 ? secs : undefined },
+        }),
+      );
+    }
     const e = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
     throw new ApiError(
       res.status,
