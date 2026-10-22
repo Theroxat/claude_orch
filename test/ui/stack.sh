@@ -37,7 +37,7 @@ pw() { # run node in the Playwright image on the stack network
   docker run --rm --init --ipc=host --network "$NET" -u "$HOST_UID:$HOST_GID" -e HOME=/tmp \
     -e ORCH_UI_BASE -e ORCH_UI_GH -e ORCH_UI_VERSION -v "$PWD:/repo" -v "$WORK:/work" -v "$BASE/shots:/shots" -w /repo/test/ui "$PW_IMAGE" "$@"
 }
-export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.6.2}" ORCH_VERSION="${ORCH_UI_VERSION:-0.6.2}"
+export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.7.0}" ORCH_VERSION="${ORCH_UI_VERSION:-0.7.0}"
 export ORCH_UI_BASE="${ORCH_UI_BASE:-http://web}" ORCH_UI_GH="${ORCH_UI_GH:-http://fake-github:8080}"
 
 case "${1:-up}" in

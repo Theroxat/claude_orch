@@ -4,7 +4,7 @@ services:
   server:
     environment:
       ORCH_BASE_URL: http://web
-      ORCH_VERSION: ${ORCH_VERSION:-0.6.2}
+      ORCH_VERSION: ${ORCH_VERSION:-0.7.0}
   web:
     image: caddy:2-alpine
     volumes:
