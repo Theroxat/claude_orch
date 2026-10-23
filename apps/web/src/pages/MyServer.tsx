@@ -6,6 +6,7 @@ import { fetchMyAgents, pauseAgent, resumeAgent, revokeAgent } from '../api/endp
 import { AgentCard } from '../components/AgentCard';
 import { NotificationSettings } from '../components/NotificationSettings';
 import { InstallAgentCard } from '../components/InstallAgentCard';
+import { TemplatesManager } from '../components/TemplatesManager';
 import { Modal, closeModal } from '../ui/Modal';
 import { usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
@@ -78,6 +79,7 @@ export function MyServer() {
           onRevoke={setToRevoke}
         />
       ))}
+      <TemplatesManager scope="personal" />
       <NotificationSettings />
       {toRevoke && (
         <Modal

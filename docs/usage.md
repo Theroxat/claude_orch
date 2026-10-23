@@ -14,6 +14,19 @@ Issues carrying the project's pool label (default `pool`) become tasks.
 - **Claude Code** shows the MCP command for your domain and the connected apps ({doc}`mcp`).
 - **Access** (`/admin/access`, admins only) manages who can sign in.
 
+## Task templates
+
+A template is a reusable task skeleton: a title, a Markdown description, acceptance criteria, a default size, model and GitHub labels. Write `{{placeholders}}` where the author of a task fills in a value, for example `Upgrade {{package}} to {{version}}`.
+
+- **Start from a template**: in **New task**, open _Start from a template_, search, pick one. The dialog shows one field per placeholder and a live preview; empty placeholders stay highlighted until you fill them. _Edit as plain text_ turns the result into ordinary fields.
+- **Built-in templates** (read-only): _Fix a bug_, _Upgrade a dependency_, _Add tests_, _Refactor module_. Copy one from **My server** to adapt it.
+- **Personal templates** are managed in **My server**, under _My templates_. Only you see them.
+- **Shared templates** belong to a project. The project owner creates, edits and deletes them from **My projects** (_Shared templates_ on the project card); everyone who can see the project can use them. Private repositories keep their templates private.
+
+Values are inserted as plain text: HTML comments are neutralised (the issue body carries hidden orch metadata), the title is kept on one line and a value is never expanded a second time. Limits: 50 templates per user and per project, 20 placeholders per template, 5 000 characters per value, 5 labels. Labels may contain letters, digits, spaces and `. _ : / -`; they are added to the GitHub issue next to the pool label. GitHub creates a label that does not exist yet in the repository, so use labels the repository already has; the pool label and `orch-aborted` are never added twice or by a template.
+
+Claude Code can use the same templates through MCP ({doc}`mcp`).
+
 ## Task history
 
 The **History** page lists every task that has started, finished or been cancelled, newest first, in the projects you see on the Backlog (you own them or participate in them; private repositories stay hidden from everyone else). A task that went back to the queue after a failed run is included; tasks that never ran are not.

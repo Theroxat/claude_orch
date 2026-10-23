@@ -15,6 +15,7 @@ export * from './protocol';
 export * from './api/m5';
 export * from './api/onboarding';
 export * from './api/oauth';
+export * from './api/templates';
 export * from './api/history';
 export * from './api/usage';
 export * from './api/notifications';

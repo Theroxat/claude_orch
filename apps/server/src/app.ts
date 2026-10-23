@@ -13,6 +13,7 @@ import { registerOffers } from './offers';
 import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
 import { registerTasks } from './tasks';
+import { registerTemplates } from './templates';
 import { registerWebhooks } from './webhooks';
 import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
@@ -115,6 +116,7 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
     registerProjects(app, m4);
     registerParticipation(app, m4);
     registerTasks(app, m4);
+    registerTemplates(app, deps);
     registerLiveLogs(app, { ...deps, liveLogs });
     registerOffers(app, m4);
     registerWebhooks(app, m4);

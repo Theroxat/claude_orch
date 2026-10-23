@@ -13,6 +13,7 @@ import {
   TaskBoardSchema,
   UsageDashboardSchema,
   TaskViewSchema,
+  TaskTemplateViewSchema,
   WhyNotRunningResponseSchema,
   OfferListResponseSchema,
   OnboardingResponseSchema,
@@ -33,6 +34,8 @@ import {
   type UpdateNotificationSettingsRequest,
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
+  type CreateTemplateRequest,
+  type UpdateTemplateRequest,
   type UpdateProjectRequest,
   type UsageRange,
   type UndoRejectionRequest,
@@ -180,6 +183,15 @@ export const revokeInvite = (id: string) =>
     schema: z.object({ invite: InviteSchema }),
   });
 
+export const fetchTemplates = (projectId?: string) =>
+  api('GET', projectId ? `/templates?projectId=${encodeURIComponent(projectId)}` : '/templates', {
+    schema: z.array(TaskTemplateViewSchema),
+  });
+export const createTemplate = (body: CreateTemplateRequest) =>
+  api('POST', '/templates', { body, schema: TaskTemplateViewSchema });
+export const updateTemplate = (id: string, body: UpdateTemplateRequest) =>
+  api('PATCH', `/templates/${id}`, { body, schema: TaskTemplateViewSchema });
+export const deleteTemplate = (id: string) => api<unknown>('DELETE', `/templates/${id}`);
 /** One page of the task history; `params` is the filter query string (cursor excluded). */
 export const fetchHistory = (params: URLSearchParams, cursor?: string) => {
   const qs = new URLSearchParams(params);
