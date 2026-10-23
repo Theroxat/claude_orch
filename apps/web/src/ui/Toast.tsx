@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { RATE_LIMITED_EVENT } from '../api/client';
 import { EXIT_MS, motionAllowed } from './motion';
 
 type Tone = 'ok' | 'info';
@@ -21,6 +30,24 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setTimeout(() => setToasts((l) => l.filter((t) => t.id !== id)), exit);
     }, SHOW_MS);
   }, []);
+  // The API client reports 429s here: one friendly notice, not one per failed request.
+  const lastLimited = useRef(0);
+  useEffect(() => {
+    const onLimited = (e: Event) => {
+      const now = Date.now();
+      if (now - lastLimited.current < SHOW_MS) return;
+      lastLimited.current = now;
+      const secs = (e as CustomEvent<{ retryAfterSec?: number }>).detail?.retryAfterSec;
+      push(
+        secs
+          ? `Too many requests. Please wait ${secs} s and try again.`
+          : 'Too many requests. Please wait a moment and try again.',
+        'info',
+      );
+    };
+    window.addEventListener(RATE_LIMITED_EVENT, onLimited);
+    return () => window.removeEventListener(RATE_LIMITED_EVENT, onLimited);
+  }, [push]);
   return (
     <ToastContext value={push}>
       {children}

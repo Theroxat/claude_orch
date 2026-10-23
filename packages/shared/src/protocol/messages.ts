@@ -185,6 +185,39 @@ export const TaskStatusPayloadSchema = z.object({
   progress: z.number().min(0).max(1).optional(),
 });
 
+/**
+ * Live task output (v0.8, best effort). One entry is one compact line of a `claude -p` run:
+ * assistant text, a tool call (`tool` = its name, `text` = short arguments), a tool result, a
+ * stderr line, the final result. Entries are redacted by the agent before they leave the machine
+ * (and again by the server). Never acked, never retried: a lost batch is just a gap.
+ */
+export const TASK_LOG_TEXT_MAX = 4000;
+export const TASK_LOG_MAX_ENTRIES = 500;
+export const TaskLogKind = z.enum(['system', 'text', 'tool', 'tool_result', 'stderr', 'result']);
+export type TaskLogKind = z.infer<typeof TaskLogKind>;
+export const TaskLogEntrySchema = z.object({
+  /** Epoch milliseconds on the agent's clock. */
+  ts: z.number().int().nonnegative(),
+  kind: TaskLogKind,
+  text: z.string().max(TASK_LOG_TEXT_MAX),
+  /** `tool` entries: the tool name (Bash, Edit, ...). */
+  tool: z.string().max(80).optional(),
+  /** `tool_result` / `result` entries that report an error. */
+  error: z.boolean().optional(),
+});
+export type TaskLogEntry = z.infer<typeof TaskLogEntrySchema>;
+
+/** `task.log` (no ack): a batch of live output for one running assignment. */
+export const TaskLogPayloadSchema = z.object({
+  assignmentId: z.string().max(128),
+  /** Per-assignment batch counter, from 1 (gaps mean lost batches). */
+  chunk: z.number().int().positive(),
+  entries: z.array(TaskLogEntrySchema).max(TASK_LOG_MAX_ENTRIES),
+  /** Entries the agent dropped since the previous batch (offline, back-pressure, overflow). */
+  dropped: z.number().int().nonnegative().optional(),
+});
+export type TaskLogPayload = z.infer<typeof TaskLogPayloadSchema>;
+
 export const TaskPushedPayloadSchema = z.object({
   assignmentId: z.string(),
   seq: z.number().int().positive(),
@@ -265,6 +298,8 @@ export const WelcomePayloadSchema = AgentConfigPayloadSchema.extend({
   serverTime: IsoDateTime,
   /** Version the server recommends for agents (its own release version). Absent when `dev`. */
   latestAgentVersion: z.string().max(64).optional(),
+  /** v0.8: the server accepts `task.log` (live output). Absent = older server: do not send it. */
+  liveLogs: z.boolean().optional(),
 });
 export type WelcomePayload = z.infer<typeof WelcomePayloadSchema>;
 
@@ -428,6 +463,7 @@ export const AgentMessageSchemas = {
   'config.request': envelopeOf('config.request', ConfigRequestPayloadSchema),
   'update.status': envelopeOf('update.status', UpdateStatusPayloadSchema),
   'claude.auth': envelopeOf('claude.auth', ClaudeAuthPayloadSchema),
+  'task.log': envelopeOf('task.log', TaskLogPayloadSchema),
   ack: AckMessageSchema,
 } as const;
 
@@ -465,6 +501,7 @@ export const AgentMessageSchema = z.discriminatedUnion('type', [
   AgentMessageSchemas['config.request'],
   AgentMessageSchemas['update.status'],
   AgentMessageSchemas['claude.auth'],
+  AgentMessageSchemas['task.log'],
   AgentMessageSchemas.ack,
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;

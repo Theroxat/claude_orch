@@ -1,7 +1,12 @@
-import { buildApp } from './app';
-import { assertSignInPolicy, loadConfig } from './config';
-import { createPrisma } from './db';
-import { OctokitGithubClient } from './github';
+import { startTracing } from './observability/tracing';
+
+// Tracing first, and only when OTEL_EXPORTER_OTLP_ENDPOINT is set: the instrumentations patch
+// http and pg, so the application modules are imported after it starts.
+const stopTracing = await startTracing();
+const { buildApp } = await import('./app');
+const { assertSignInPolicy, loadConfig } = await import('./config');
+const { createPrisma } = await import('./db');
+const { OctokitGithubClient } = await import('./github');
 
 const config = loadConfig();
 const prisma = createPrisma(config.DATABASE_URL);
@@ -23,6 +28,7 @@ const app = buildApp({ config, prisma, github });
 const shutdown = async () => {
   await app.close();
   await prisma.$disconnect();
+  await stopTracing?.().catch(() => undefined);
   process.exit(0);
 };
 process.on('SIGTERM', shutdown);

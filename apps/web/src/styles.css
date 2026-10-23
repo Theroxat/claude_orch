@@ -2518,3 +2518,188 @@ details.card > summary {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---------- Live task logs ---------- */
+/* A sheet docked to the right edge; on phones it becomes the usual bottom sheet. */
+.modal-backdrop.side {
+  place-items: stretch end;
+  padding: 0;
+}
+.modal.side {
+  width: min(760px, 100%);
+  max-height: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px 0 0 16px;
+  border-right: 0;
+}
+.modal.side .modal-body {
+  flex: 1;
+  min-height: 0;
+  grid-template-rows: auto 1fr;
+}
+@starting-style {
+  .modal.side {
+    opacity: 1;
+    transform: translateX(48px);
+  }
+}
+@media (max-width: 560px) {
+  .modal-backdrop.side {
+    place-items: end stretch;
+  }
+  .modal.side {
+    height: 92vh;
+    border-radius: 18px 18px 0 0;
+    border-right: 1px solid var(--rule);
+  }
+  @starting-style {
+    .modal.side {
+      transform: translateY(40px);
+    }
+  }
+}
+.task-logs-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-logs {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 10px;
+  min-height: 0;
+}
+.task-logs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.task-logs-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.task-logs-bar .badge[data-live]::before {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+.log-view {
+  min-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  border-radius: var(--r-md);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  outline: none;
+}
+.log-view:focus-visible {
+  box-shadow: 0 0 0 2px var(--route);
+}
+.log-empty {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--code-muted);
+  font-family: var(--font);
+  font-size: 0.9rem;
+}
+/* The rail: one lamp per line, colored by what the line is. */
+.log-lines {
+  list-style: none;
+  margin: 0;
+  padding: 10px 0;
+}
+.log-line {
+  --lamp: var(--code-muted);
+  position: relative;
+  display: grid;
+  grid-template-columns: 4.6rem 1fr;
+  gap: 10px;
+  padding: 1px 14px 1px 22px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-line::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lamp);
+}
+.log-line[data-kind='tool'] {
+  --lamp: var(--route);
+}
+.log-line[data-kind='stderr'] {
+  --lamp: var(--caution);
+}
+.log-line[data-kind='result'] {
+  --lamp: var(--proceed);
+  margin-top: 6px;
+  font-weight: 600;
+}
+.log-line[data-error] {
+  --lamp: var(--stop);
+}
+.log-line[data-kind='text'] .log-body {
+  font-family: var(--font);
+  font-size: 0.9rem;
+}
+.log-line[data-kind='tool_result'] .log-body,
+.log-line[data-kind='system'] .log-body {
+  color: var(--code-muted);
+}
+.log-line[data-kind='tool_result'] .log-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.log-line[data-kind='stderr'] .log-body {
+  color: color-mix(in srgb, var(--caution) 70%, var(--code-ink));
+}
+.log-line[data-error] .log-body {
+  color: color-mix(in srgb, var(--stop) 65%, var(--code-ink));
+}
+.log-time {
+  color: var(--code-muted);
+  font-variant-numeric: tabular-nums;
+}
+.log-tool {
+  color: color-mix(in srgb, var(--route) 70%, var(--code-ink));
+  font-weight: 650;
+}
+.log-args {
+  color: var(--code-ink);
+}
+.log-jump {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 0.82rem;
+  box-shadow: var(--lift);
+  animation: item-in 220ms var(--ease-out);
+}
+.task-logs-open .lamp {
+  --lamp: var(--proceed);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+@media (max-width: 560px) {
+  .log-line {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .log-time {
+    font-size: 0.72rem;
+  }
+}

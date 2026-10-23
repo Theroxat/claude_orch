@@ -10,6 +10,13 @@ header {
 	-Server
 }
 
+# Operations endpoints are never public: Prometheus scrapes server:3000/metrics on the internal
+# Docker network (deploy/observability). This stays first, whatever METRICS_ENABLED says.
+@internal path /metrics /metrics/* /readyz /api/metrics /api/readyz
+handle @internal {
+	respond 404
+}
+
 # GitHub webhook, REST API, GitHub sign-in. Real-time agent link (WebSocket) is proxied as-is.
 handle /api/* {
 	reverse_proxy server:3000
