@@ -29,6 +29,14 @@ test('olivia (owner): first visit goes to /welcome once; "own repo" branch, ever
   await expect(page.getByRole('button', { name: 'Back' })).toBeDisabled();
   await page.getByRole('button', { name: /add my own repository/ }).click();
   await expect(heading(page)).toHaveText('Add your repository');
+  // focus moves to the new title as soon as the step is shown, not after its view transition:
+  // otherwise a Tab pressed during the animation is undone when focus jumps back to the title
+  expect
+    .soft(
+      await page.evaluate(() => document.activeElement?.tagName),
+      'step title takes focus while the step animation runs',
+    )
+    .toBe('H1');
   await expect(step(page)).toHaveText('Step 2 of 7');
   await expect(page.getByText('You already have a repository in orch.')).toBeVisible();
   await auditPage(page, 'welcome-2-repo');

@@ -5,6 +5,7 @@ import {
   addTransitionType,
   startTransition,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -308,8 +309,11 @@ export function Welcome() {
   }, [screen, done, loaded, order.length]);
 
   // Focus the title on each step change (first render included: the page just opened).
+  // Layout effect, not a passive one: inside a <ViewTransition> React defers useEffect until the
+  // step animation has finished (~500 ms) although the new step is already live and focusable, so
+  // a keyboard user tabbing in that window had focus yanked back to the title.
   const title = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     title.current?.focus();
   }, [screen]);
 
