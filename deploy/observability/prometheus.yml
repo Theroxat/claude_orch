@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: orch-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['server:3000']
+    # Uncommented by prometheus-entrypoint.sh when METRICS_TOKEN is set.
+    #auth authorization:
+    #auth   credentials_file: /tmp/metrics-token

@@ -22,6 +22,7 @@ export function Modal({
   closeButton = true,
   tone,
   wide,
+  side,
   children,
 }: {
   label: string;
@@ -30,6 +31,8 @@ export function Modal({
   closeButton?: boolean;
   tone?: 'danger';
   wide?: boolean;
+  /** A tall sheet docked to the right edge (a bottom sheet on phones), e.g. a log viewer. */
+  side?: boolean;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -70,14 +73,14 @@ export function Modal({
   return (
     <ViewTransition enter="none" exit="modal-out" update="none" default="none">
       <div
-        className="modal-backdrop"
+        className={`modal-backdrop${side ? ' side' : ''}`}
         onMouseDown={(e) => {
           if (e.target === e.currentTarget) close();
         }}
       >
         <div
           ref={panel}
-          className={`modal${wide ? ' wide' : ''}`}
+          className={`modal${wide ? ' wide' : ''}${side ? ' side' : ''}`}
           data-tone={tone}
           role="dialog"
           aria-modal="true"

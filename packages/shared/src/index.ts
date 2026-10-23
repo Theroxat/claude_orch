@@ -16,3 +16,4 @@ export * from './api/m5';
 export * from './api/onboarding';
 export * from './api/oauth';
 export * from './api/notifications';
+export * from './api/logs';

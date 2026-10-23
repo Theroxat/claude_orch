@@ -5,7 +5,7 @@ import { chromium } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { BASE, GH } from './lib/api.mjs';
 
-export const STATE_DIR = '/work/state';
+export const STATE_DIR = process.env.ORCH_UI_STATE ?? '/work/state';
 export const statePath = (login) => `${STATE_DIR}/${login}.json`;
 
 export async function apiLogin(context, login) {
