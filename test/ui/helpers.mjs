@@ -54,8 +54,12 @@ export async function checkDialog(page, name, openButton, { vp = 'desktop' } = {
   await openButton.press('Enter');
   const dlg = page.getByRole('dialog');
   await expect(dlg, `${name}: dialog opens`).toBeVisible();
-  await page.waitForTimeout(400);
   const inside = () => page.evaluate(() => !!document.activeElement?.closest('[role=dialog]'));
+  // focus moves in once the opening animation ends: poll instead of a fixed wait
+  await expect
+    .poll(inside, { timeout: 2_000 })
+    .toBe(true)
+    .catch(() => undefined);
   expect.soft(await inside(), `${name}: focus moves into the dialog`).toBe(true);
   const stray = [];
   for (let i = 0; i < 14; i++) {
@@ -97,8 +101,13 @@ export async function checkDialog(page, name, openButton, { vp = 'desktop' } = {
 export async function closeDialogWithEscape(page, name, opener) {
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog'), `${name}: Escape closes`).toHaveCount(0);
-  await page.waitForTimeout(900);
-  const back = await opener.evaluate((el) => el === document.activeElement);
+  const isBack = () => opener.evaluate((el) => el === document.activeElement);
+  // focus returns once the closing animation ends: poll instead of a fixed wait
+  await expect
+    .poll(isBack, { timeout: 2_000 })
+    .toBe(true)
+    .catch(() => undefined);
+  const back = await isBack();
   const now = await page.evaluate(() => {
     const e = document.activeElement;
     return e

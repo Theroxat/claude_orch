@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { AGENTS_KEY } from '../components/AgentUpdate';
 import { fetchMyAgents, pauseAgent, resumeAgent, revokeAgent } from '../api/endpoints';
 import { AgentCard } from '../components/AgentCard';
+import { NotificationSettings } from '../components/NotificationSettings';
 import { InstallAgentCard } from '../components/InstallAgentCard';
 import { TemplatesManager } from '../components/TemplatesManager';
 import { Modal, closeModal } from '../ui/Modal';
@@ -79,6 +80,7 @@ export function MyServer() {
         />
       ))}
       <TemplatesManager scope="personal" />
+      <NotificationSettings />
       {toRevoke && (
         <Modal
           label="Revoke machine"

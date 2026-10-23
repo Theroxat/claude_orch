@@ -6,6 +6,10 @@
  *   2. declares LOST the accepted runs whose lease lapsed (S/M/L timeout, or agent gone),
  *   3. offers every open TODO task (dependencies DONE) to the best eligible member.
  *
+ * Step 3 reads a per-tick snapshot (./snapshot: a fixed number of batched queries for all the
+ * tasks and members) and decides in memory; each offer it creates is recorded into the snapshot
+ * so the later tasks of the tick see the slot and budget it holds.
+ *
  * Safe across restarts and instances: nothing is kept in memory but the live sockets. Offers are
  * created inside a transaction that locks the task row with `FOR UPDATE SKIP LOCKED`, the partial
  * unique indexes `one_live_assignment` and `one_pending_auto_offer` arbitrate races, and expiry is
@@ -15,7 +19,7 @@
  * and the gateway checks it again before sending. Approval-mode members only ever receive
  * CONSENT_REQUESTs; their task starts after they accept.
  */
-import { Prisma, type Assignment, type TaskSize, type Model } from '@prisma/client';
+import { Prisma, type Assignment } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
 import {
   SHUT_OUT_FAILURE_CLASSES,
@@ -28,6 +32,7 @@ import {
 import type { AgentGateway } from '../agents/gateway';
 import { OfferRefusedError } from '../agents/gateway';
 import { audit } from '../audit';
+import type { Metrics } from '../observability';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import { participationStatus } from '../projects/service';
@@ -36,32 +41,34 @@ import { branchNameFor, creatorOf } from '../tasks/meta';
 import {
   EXEC_TIMEOUT_MIN,
   compareCandidates,
-  computeMargin,
-  median,
-  taskEstimate,
   usageState,
-  windowStartOf,
   type Margin,
   type UsageSnapshot,
 } from './budget';
 import { ConsentError, assertAutoConsent, assertParticipates } from './consent';
 import { CLAUDE_AUTH_REJECT_PREFIX, beforeRetry, failureClassOf } from './failures';
+import {
+  BudgetLedger,
+  HOLDS_SLOT,
+  SHUT_OUT_MS,
+  TickSnapshot,
+  toSnapshot,
+  type EstimateConfig,
+  type Participant,
+  type SlotCounts,
+} from './snapshot';
+
+export { toSnapshot };
 
 export interface DispatcherDeps {
   prisma: PrismaClient;
   config: Config;
   gateway: AgentGateway;
   log: FastifyBaseLogger;
+  metrics?: Metrics;
 }
 
-const HOLDS_SLOT = ['ACCEPTED', 'RUNNING'] as const;
 const LIVE = ['ACCEPTED', 'RUNNING', 'PUSHED'] as const;
-/**
- * A member who rejected, let expire or lost a task is not asked again for 24 h (except a
- * `not_participating` rejection by the agent's guard or a failed run: see the backoff below).
- */
-const SHUT_OUT = ['REJECTED', 'EXPIRED', 'FAILED', 'LOST'] as const;
-const SHUT_OUT_MS = 24 * 3600_000;
 /**
  * A `not_participating` rejection is the agent's local guard disagreeing with the server (stale
  * participation list), not a decision of the member: the member may be asked again for that task
@@ -99,7 +106,7 @@ const isClaudeAuthRefusal = (a: { status: string; reason: string | null }) =>
 const isRetryable = (a: { status: string; reason: string | null }) =>
   isNotParticipating(a) || a.status === 'FAILED';
 
-const dispatchTaskInclude = {
+export const dispatchTaskInclude = {
   project: { include: { installation: true } },
   createdBy: true,
   targets: true,
@@ -164,30 +171,6 @@ class Refusal extends Error {
 
 const refusal = (code: string, message: string): ActResult => ({ ok: false, code, message });
 
-export function toSnapshot(r: {
-  reportedAt: Date;
-  windowStart: Date | null;
-  windowResetAt: Date | null;
-  weightedTokens: bigint;
-  capacityEstimate: bigint | null;
-  byProject: Prisma.JsonValue;
-  rateLimitedUntil: Date | null;
-}): UsageSnapshot {
-  const byProject: Record<string, number> = {};
-  if (r.byProject && typeof r.byProject === 'object' && !Array.isArray(r.byProject)) {
-    for (const [k, v] of Object.entries(r.byProject)) if (typeof v === 'number') byProject[k] = v;
-  }
-  return {
-    reportedAt: r.reportedAt,
-    windowStart: r.windowStart,
-    windowResetAt: r.windowResetAt,
-    weighted: Number(r.weightedTokens),
-    capacity: r.capacityEstimate === null ? null : Number(r.capacityEstimate),
-    byProject,
-    rateLimitedUntil: r.rateLimitedUntil,
-  };
-}
-
 export class Dispatcher {
   private timer: NodeJS.Timeout | undefined;
   private chain: Promise<unknown> = Promise.resolve();
@@ -249,41 +232,30 @@ export class Dispatcher {
 
   private async runTick(now: Date): Promise<void> {
     if (this.stopped) return;
-    await this.expireOffers(now);
-    await this.expireLeases(now);
-    await this.dispatchOpenTasks(now);
+    const stop = this.deps.metrics?.dispatcherTick.startTimer();
+    try {
+      await this.expireOffers(now);
+      await this.expireLeases(now);
+      await this.dispatchOpenTasks(now);
+    } finally {
+      stop?.();
+    }
   }
 
-  // ---------- estimates ----------
+  // ---------- snapshot and estimates ----------
 
-  private medianCache = new Map<string, number | null>();
+  private get estimateConfig(): EstimateConfig {
+    const c = this.deps.config;
+    return {
+      proWindow: c.PRO_WINDOW_WEIGHTED,
+      opusFactor: c.OPUS_FACTOR,
+      reserve: c.BUDGET_SAFETY_RESERVE,
+    };
+  }
 
-  private async estimateFor(
-    t: { projectId: string; size: TaskSize; model: Model },
-    sizeBudgets: unknown,
-  ): Promise<number> {
-    const key = `${t.projectId}:${t.size}:${t.model}`;
-    let med = this.medianCache.get(key);
-    if (med === undefined) {
-      const samples = await this.prisma.assignment.findMany({
-        where: {
-          status: 'SUCCEEDED',
-          usageWeighted: { gt: 0 },
-          task: { projectId: t.projectId, size: t.size, model: t.model },
-        },
-        select: { usageWeighted: true },
-        orderBy: { finishedAt: 'desc' },
-        take: 50,
-      });
-      med = samples.length >= 5 ? median(samples.map((s) => Number(s.usageWeighted))) : null;
-      this.medianCache.set(key, med);
-    }
-    return taskEstimate(t.size, t.model, {
-      proWindow: this.deps.config.PRO_WINDOW_WEIGHTED,
-      opusFactor: this.deps.config.OPUS_FACTOR,
-      sizeBudgets,
-      median: med,
-    });
+  /** Loads, in a fixed number of queries, everything the offer path reads for these tasks. */
+  snapshot(tasks: DispatchTask[], now: Date): Promise<TickSnapshot> {
+    return TickSnapshot.load(this.prisma, this.estimateConfig, now, tasks);
   }
 
   async latestUsage(userId: string): Promise<UsageSnapshot | null> {
@@ -306,54 +278,28 @@ export class Dispatcher {
     now: Date,
     excludeTaskId?: string,
   ): Promise<Margin | null> {
-    const held = await this.prisma.assignment.findMany({
-      where: {
-        userId,
-        ...(excludeTaskId ? { taskId: { not: excludeTaskId } } : {}),
-        OR: [
-          // A pushed run is not over yet (its usage is only known at task.finished): still held.
-          { status: { in: [...HOLDS_SLOT, 'PUSHED'] } },
-          { status: 'PENDING', kind: 'AUTO_OFFER', expiresAt: { gt: now } },
-        ],
-      },
-      include: { task: { include: { project: true } } },
-    });
-    let reservedProject = 0;
-    let reservedAll = 0;
-    for (const a of held) {
-      const e = await this.estimateFor(a.task, a.task.project.sizeBudgets);
-      reservedAll += e;
-      if (a.task.projectId === projectId) reservedProject += e;
-    }
-    const since = windowStartOf(usage, now);
-    const [finished, finishedAll] = await Promise.all([
-      this.prisma.assignment.aggregate({
-        where: { userId, task: { projectId }, finishedAt: { gte: since } },
-        _sum: { usageWeighted: true },
-      }),
-      this.prisma.assignment.aggregate({
-        where: { userId, finishedAt: { gte: since } },
-        _sum: { usageWeighted: true },
-      }),
-    ]);
-    return computeMargin({
-      usage,
-      now,
-      projectId,
-      percent,
-      reserve: this.deps.config.BUDGET_SAFETY_RESERVE,
-      orchUsedInWindow: Number(finished._sum.usageWeighted ?? 0),
-      orchUsedAllInWindow: Number(finishedAll._sum.usageWeighted ?? 0),
-      reservedProject,
-      reservedAll,
+    const ledger = await this.budgetLedger(userId, usage, now);
+    return ledger.marginOf(userId, projectId, percent, usage, excludeTaskId);
+  }
+
+  /** One member's ledger: `marginOf` on any of their projects without reading again. */
+  budgetLedger(userId: string, usage: UsageSnapshot, now: Date): Promise<BudgetLedger> {
+    return BudgetLedger.load(this.prisma, this.estimateConfig, now, {
+      userIds: [userId],
+      usage: new Map([[userId, usage]]),
+      tasks: [],
     });
   }
 
   // ---------- eligibility ----------
 
-  /** Slots used per agent and per user: accepted/running runs plus live auto offers. */
-  private async slotCounts(userId: string, now: Date) {
-    const rows = await this.prisma.assignment.findMany({
+  /** Slots used per agent and per user, read now: accepted/running runs plus live auto offers. */
+  private async slotCounts(
+    db: PrismaClient | Prisma.TransactionClient,
+    userId: string,
+    now: Date,
+  ): Promise<SlotCounts> {
+    const rows = await db.assignment.findMany({
       where: {
         userId,
         OR: [
@@ -373,11 +319,10 @@ export class Dispatcher {
    * The member's agent that can take one more task now, or why none can: offline, paused, busy,
    * or its Claude login is invalid (no offer until `orch login`; every run is a Claude run).
    */
-  private async freeAgentOrReason(
+  private freeAgentOrReason(
     user: FreeAgentUser,
-    now: Date,
-  ): Promise<{ agentId: string; running: number } | { reason: BlockReason }> {
-    const counts = await this.slotCounts(user.id, now);
+    counts: SlotCounts,
+  ): { agentId: string; running: number } | { reason: BlockReason } {
     if (counts.total >= user.maxConcurrent) {
       return {
         reason: block('concurrency', `Already running ${counts.total} task(s), the maximum`),
@@ -436,52 +381,31 @@ export class Dispatcher {
   }
 
   /** Eligible members for a task, best first (PLAN section 6). */
-  async candidatesFor(task: DispatchTask, now: Date): Promise<Candidate[]> {
-    const members = await this.evaluateMembers(task, now);
+  async candidatesFor(task: DispatchTask, snap: TickSnapshot, now: Date): Promise<Candidate[]> {
+    const members = await this.evaluateMembers(task, snap, now);
     return members.flatMap((m) => (m.candidate ? [m.candidate] : [])).sort(compareCandidates);
   }
 
   /**
    * Every active participant with either a candidate (eligible now) or the first reason that
    * keeps them out. This is THE eligibility check: the dispatcher offers from it and
-   * `GET /api/tasks/:id/why-not-running` explains from it.
+   * `GET /api/tasks/:id/why-not-running` explains from it. Reads only the snapshot (and the
+   * gateway's live connections).
    */
-  async evaluateMembers(task: DispatchTask, now: Date): Promise<MemberEligibility[]> {
-    const { prisma } = this;
+  async evaluateMembers(
+    task: DispatchTask,
+    snap: TickSnapshot,
+    now: Date,
+  ): Promise<MemberEligibility[]> {
     const staleMs = this.deps.config.USAGE_STALE_SEC * 1000;
-    const parts = await prisma.participation.findMany({
-      where: { projectId: task.projectId, active: true },
-      include: { user: { include: { agents: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
+    const parts = snap.participantsOf(task.projectId);
     const targets = new Set(task.targets.map((t) => t.userId));
-    const previous = await prisma.assignment.findMany({
-      where: {
-        taskId: task.id,
-        OR: [
-          { status: 'PENDING' },
-          {
-            status: { in: [...SHUT_OUT] },
-            updatedAt: { gt: new Date(now.getTime() - SHUT_OUT_MS) },
-          },
-        ],
-      },
-      select: {
-        userId: true,
-        status: true,
-        reason: true,
-        failureClass: true,
-        respondedAt: true,
-        finishedAt: true,
-        updatedAt: true,
-      },
-    });
     // Declined, let expire or lost (24 h): the latest one, for the "until".
     const excluded = new Map<string, Date>();
     const pendingFor = new Set<string>();
     // Retryable failures per user: backoff count, shut-out count (task/timeout), latest one.
     const retries = new Map<string, { n: number; failed: Date[]; last: Date }>();
-    for (const a of previous) {
+    for (const a of snap.historyOf(task.id)) {
       // A retry by the owner or the creator wipes the earlier failures (history is kept).
       if ((a.status === 'FAILED' || a.status === 'LOST') && beforeRetry(a, task.retryResetAt)) {
         continue;
@@ -506,7 +430,7 @@ export class Dispatcher {
       if (cur.last < at) cur.last = at;
       retries.set(a.userId, cur);
     }
-    const estimate = await this.estimateFor(task, task.project.sizeBudgets);
+    const estimate = snap.ledger.estimate(task, task.project.sizeBudgets);
     const out: MemberEligibility[] = [];
     for (const p of parts) {
       if (participationStatus(p, task.project.requireParticipantApproval) !== 'active') continue;
@@ -518,7 +442,7 @@ export class Dispatcher {
         reason: null,
       };
       out.push(row);
-      row.reason = await this.memberBlocker(task, p, now, {
+      row.reason = await this.memberBlocker(task, p, snap, now, {
         estimate,
         staleMs,
         targets,
@@ -531,10 +455,21 @@ export class Dispatcher {
     return out;
   }
 
+  /** Owner access, asked once per member and snapshot (the gateway caches it anyway). */
+  private async ownerAllowed(snap: TickSnapshot, user: Participant['user']): Promise<boolean> {
+    let ok = snap.ownerAllowed.get(user.id);
+    if (ok === undefined) {
+      ok = await this.gateway.ownerAllowed(user);
+      snap.ownerAllowed.set(user.id, ok);
+    }
+    return ok;
+  }
+
   /** The first check that keeps one member out, or null after reporting the candidate. */
   private async memberBlocker(
     task: DispatchTask,
-    p: Prisma.ParticipationGetPayload<{ include: { user: { include: { agents: true } } } }>,
+    p: Participant,
+    snap: TickSnapshot,
     now: Date,
     ctx: {
       estimate: number;
@@ -584,21 +519,21 @@ export class Dispatcher {
         new Date(np.last.getTime() + notParticipatingBackoffMs(np.n)),
       );
     }
-    const agent = await this.freeAgentOrReason(p.user, now);
+    const agent = this.freeAgentOrReason(p.user, snap.ledger.slotCounts(p.userId));
     if (!('agentId' in agent)) return agent.reason;
     // Consent invariant: a member whose access was removed (or cannot be verified past the
     // GitHub outage grace period) gets no offer. Checked late: the decision is cached.
-    if (!(await this.gateway.ownerAllowed(p.user))) {
+    if (!(await this.ownerAllowed(snap, p.user))) {
       return block('access_denied', 'Their access to this server could not be confirmed');
     }
-    const usage = await this.latestUsage(p.userId);
+    const usage = snap.latestUsage(p.userId);
     const state = usageState(usage, now, ctx.staleMs);
     let margin: Margin | null = null;
     if (usage && state === 'fresh') {
       if (usage.rateLimitedUntil && usage.rateLimitedUntil.getTime() > now.getTime()) {
         return block('rate_limited', 'Claude usage limit reached', usage.rateLimitedUntil);
       }
-      margin = await this.marginOf(p.userId, task.projectId, p.percent, usage, now, task.id);
+      margin = snap.ledger.marginOf(p.userId, task.projectId, p.percent, usage, task.id);
       if (margin && (margin.margin < estimate || margin.globalMargin < estimate)) {
         return block(
           'budget_exhausted',
@@ -611,15 +546,6 @@ export class Dispatcher {
     if (p.mode === 'AUTO' && margin === null) {
       return block('no_usage_report', 'No recent usage report with a known capacity');
     }
-    const last = await this.prisma.assignment.findFirst({
-      where: {
-        userId: p.userId,
-        respondedAt: { not: null },
-        status: { notIn: ['PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED'] },
-      },
-      orderBy: { respondedAt: 'desc' },
-      select: { respondedAt: true },
-    });
     ctx.found({
       userId: p.userId,
       login: p.user.login,
@@ -630,7 +556,7 @@ export class Dispatcher {
       marginFraction: margin && margin.budget > 0 ? margin.margin / margin.budget : null,
       running: agent.running,
       resetAt: usage?.windowResetAt ?? null,
-      lastAssignedAt: last?.respondedAt ?? null,
+      lastAssignedAt: snap.lastAssignedAt(p.userId),
     });
     return null;
   }
@@ -640,7 +566,6 @@ export class Dispatcher {
    * reason that keeps them out, from the same checks the dispatcher uses to make offers.
    */
   async whyNotRunning(taskId: string, now = new Date()): Promise<WhyNotRunningResponse> {
-    this.medianCache.clear();
     const task = await this.loadTask(taskId);
     const taskReasons = this.taskBlockers(task);
     const pending = await this.prisma.assignment.count({
@@ -649,7 +574,10 @@ export class Dispatcher {
     if (task.status === 'TODO' && pending > 0) {
       taskReasons.push(block('pending_offer', 'Offered: waiting for an answer'));
     }
-    const members = task.status === 'TODO' ? await this.evaluateMembers(task, now) : [];
+    const members =
+      task.status === 'TODO'
+        ? await this.evaluateMembers(task, await this.snapshot([task], now), now)
+        : [];
     if (task.status === 'TODO' && members.length === 0) {
       taskReasons.push(block('no_member', 'Nobody participates in this project yet'));
     }
@@ -668,7 +596,6 @@ export class Dispatcher {
   // ---------- dispatch ----------
 
   private async dispatchOpenTasks(now: Date): Promise<void> {
-    this.medianCache.clear();
     // Only members with a connected machine can be candidates: skip the other projects early.
     const online = this.gateway.connectedUserIds();
     if (online.length === 0) return;
@@ -686,42 +613,45 @@ export class Dispatcher {
       include: dispatchTaskInclude,
       orderBy: { createdAt: 'asc' },
     });
+    if (tasks.length === 0) return;
+    // One batched read for the whole tick; offers created below are recorded into it, so each
+    // task sees the slots and budget taken by the offers made for the tasks before it.
+    const snap = await this.snapshot(tasks, now);
     for (const task of tasks) {
       if (this.stopped) return;
       try {
-        await this.dispatchTask(task, now);
+        await this.dispatchTask(task, snap, now);
       } catch (err) {
         this.deps.log.error({ err, taskId: task.id }, 'dispatch failed');
       }
     }
   }
 
-  private async dispatchTask(task: DispatchTask, now: Date): Promise<void> {
+  private async dispatchTask(task: DispatchTask, snap: TickSnapshot, now: Date): Promise<void> {
     if (this.taskBlockers(task).length > 0) return;
-    const pending = await this.prisma.assignment.findMany({
-      where: { taskId: task.id, status: 'PENDING' },
-    });
+    const pending = snap.pendingOf(task.id);
     if (task.dispatchMode !== 'BROADCAST') {
       if (pending.length > 0) return;
-      const [best] = await this.candidatesFor(task, now);
+      const [best] = await this.candidatesFor(task, snap, now);
       if (best)
         await this.createOffer(
           task,
           best,
           best.mode === 'AUTO' ? 'AUTO_OFFER' : 'CONSENT_REQUEST',
+          snap,
           now,
         );
       return;
     }
     // Broadcast: one auto offer at a time (best auto candidate) plus a request to every
     // eligible approval-mode member, all at once. The first acceptance wins.
-    const cands = await this.candidatesFor(task, now);
+    const cands = await this.candidatesFor(task, snap, now);
     if (!pending.some((a) => a.kind === 'AUTO_OFFER')) {
       const bestAuto = cands.find((c) => c.mode === 'AUTO');
-      if (bestAuto) await this.createOffer(task, bestAuto, 'AUTO_OFFER', now);
+      if (bestAuto) await this.createOffer(task, bestAuto, 'AUTO_OFFER', snap, now);
     }
     for (const c of cands) {
-      if (c.mode === 'APPROVAL') await this.createOffer(task, c, 'CONSENT_REQUEST', now);
+      if (c.mode === 'APPROVAL') await this.createOffer(task, c, 'CONSENT_REQUEST', snap, now);
     }
   }
 
@@ -734,6 +664,7 @@ export class Dispatcher {
     task: DispatchTask,
     c: Candidate,
     kind: 'AUTO_OFFER' | 'CONSENT_REQUEST',
+    snap: TickSnapshot,
     now: Date,
   ): Promise<void> {
     // Consent by construction: approval-mode members never get an AUTO_OFFER.
@@ -761,8 +692,12 @@ export class Dispatcher {
           },
         });
         if (clash > 0) return null;
-        if (kind === 'AUTO_OFFER') await assertAutoConsent(tx, c.userId, task.projectId, c.agentId);
-        else await assertParticipates(tx, c.userId, task.projectId);
+        if (kind === 'AUTO_OFFER') {
+          const p = await assertAutoConsent(tx, c.userId, task.projectId, c.agentId);
+          // The candidate comes from the tick's snapshot: re-check slots and budget now, so a
+          // run accepted since then cannot push the member or the machine past its limit.
+          if (!(await this.hasRoom(tx, task, c, p.percent, snap))) return null;
+        } else await assertParticipates(tx, c.userId, task.projectId);
         return tx.assignment.create({
           data: {
             taskId: task.id,
@@ -787,6 +722,7 @@ export class Dispatcher {
       throw err;
     }
     if (!a) return;
+    snap.recordOffer(a, task);
     await audit(this.prisma, {
       actorType: 'SYSTEM',
       action: kind === 'AUTO_OFFER' ? 'offer.created' : 'offer.requested',
@@ -810,7 +746,15 @@ export class Dispatcher {
         await this.gateway.sendOffer(c.agentId, this.offerPayload(task, a, 'AUTO_OFFER'));
       } catch (err) {
         if (!(err instanceof OfferRefusedError)) throw err;
-        await this.closePending([a], 'CANCELLED', `undeliverable:${err.reason}`, now);
+        this.deps.metrics?.offersRefused.inc({ reason: `undeliverable_${err.reason}` });
+        const closed = await this.closePending(
+          [a],
+          'CANCELLED',
+          `undeliverable:${err.reason}`,
+          now,
+        );
+        if (closed.length > 0) snap.releaseOffer(a);
+        return;
       }
     } else {
       this.gateway.sendToUser(
@@ -818,6 +762,40 @@ export class Dispatcher {
         serverMessage('offer.request', this.requestPayload(task, a)),
       );
     }
+    this.deps.metrics?.offersSent.inc({ kind });
+  }
+
+  /**
+   * Live slot and budget check, inside the offer transaction, for an auto offer to `c`. The
+   * member's row is locked first: offer and accept transactions of one member (from this or
+   * another instance) are serialized, so two of them cannot both see the last free slot. Under
+   * READ COMMITTED a plain re-count is not enough. The held runs are re-read (and kept in the
+   * snapshot for the rest of the tick); the usage report and finished runs stay those of the
+   * tick, which is at most one tick old.
+   */
+  private async hasRoom(
+    tx: Prisma.TransactionClient,
+    task: DispatchTask,
+    c: Candidate,
+    percent: number,
+    snap: TickSnapshot,
+  ): Promise<boolean> {
+    const [user] = await tx.$queryRaw<Array<{ maxConcurrent: number }>>`
+      SELECT "maxConcurrent" FROM "User" WHERE "id" = ${c.userId} FOR UPDATE`;
+    if (!user) return false;
+    await snap.ledger.refreshHeld(tx, c.userId);
+    const counts = snap.ledger.slotCounts(c.userId);
+    if (
+      counts.total >= user.maxConcurrent ||
+      (counts.perAgent.get(c.agentId) ?? 0) >= this.gateway.maxConcurrentOf(c.agentId)
+    ) {
+      return false;
+    }
+    const usage = snap.latestUsage(c.userId);
+    const margin = usage
+      ? snap.ledger.marginOf(c.userId, task.projectId, percent, usage, task.id)
+      : null;
+    return !!margin && margin.margin >= c.estimate && margin.globalMargin >= c.estimate;
   }
 
   offerPayload(
@@ -1021,6 +999,7 @@ export class Dispatcher {
       return true;
     });
     if (!done) return;
+    this.deps.metrics?.assignmentsFinished.inc({ outcome: 'lost', failure_class: 'none' });
     await audit(this.prisma, {
       actorType: 'SYSTEM',
       action: 'task.lost',
@@ -1065,7 +1044,7 @@ export class Dispatcher {
       const anyAgent = user.agents.some(
         (x) => !x.revokedAt && !x.paused && this.gateway.isConnected(x.id),
       );
-      const free = await this.freeAgentOrReason(user, now);
+      const free = this.freeAgentOrReason(user, await this.slotCounts(prisma, user.id, now));
       if (!('agentId' in free)) {
         if (free.reason.code === 'claude_login_expired') {
           return refusal('claude_auth', CLAUDE_LOGIN_EXPIRED);
@@ -1083,6 +1062,9 @@ export class Dispatcher {
       accepted = await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ status: string }>>`
           SELECT "status"::text AS "status" FROM "Task" WHERE "id" = ${a.taskId} FOR UPDATE`;
+        // Serializes this member's accepts and auto offers (see hasRoom): the slot count
+        // below must not race another transaction taking the last slot.
+        await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${a.userId} FOR UPDATE`;
         const cur = await tx.assignment.findUniqueOrThrow({ where: { id: a.id } });
         if (
           cur.status !== 'PENDING' ||
@@ -1165,6 +1147,7 @@ export class Dispatcher {
       }
       throw err;
     }
+    this.deps.metrics?.offersAccepted.inc({ kind: a.kind });
     const task = await this.loadTask(a.taskId);
     await audit(prisma, {
       actorType: by.via === 'agent' ? 'AGENT' : 'USER',
@@ -1268,6 +1251,9 @@ export class Dispatcher {
     } else {
       return refusal('offer_closed', 'The offer is no longer open');
     }
+    this.deps.metrics?.offersRefused.inc({
+      reason: by.via === 'agent' ? 'agent_declined' : 'member_declined',
+    });
     await audit(prisma, {
       actorType: by.via === 'agent' ? 'AGENT' : 'USER',
       actorUserId: by.userId,

@@ -28,6 +28,7 @@ import type {
   ParticipationConfigSchema,
   PayloadOf,
   ServerMessage,
+  TaskLogPayload,
   TaskOfferPayload,
 } from '@orch/shared';
 import type { z } from 'zod';
@@ -55,6 +56,7 @@ import {
   scanComposeSources,
 } from './compose-guard';
 import { findComposeFile, postCreateArgvs, selectDevEnv } from './devcontainer';
+import { LiveLogStreamer, makeRedactor } from './live-log';
 import type { DockerOps } from './docker';
 import type { GitIdentity, GitOps, GitRepo } from './git';
 import {
@@ -129,6 +131,13 @@ export interface ExecutorDeps {
    * synced participation list, before rejecting it as `not_participating`.
    */
   refreshConfig?: () => Promise<boolean>;
+  /**
+   * Live output (best effort, v0.8): sends one `task.log` batch right now, false when it could
+   * not. Absent, or returning false, never affects the run. Not called for older servers.
+   */
+  sendLiveLog?: (payload: TaskLogPayload) => boolean;
+  /** Secret values the agent knows (its credential...), masked in live output. */
+  knownSecrets?: () => readonly string[];
   logger: Logger;
 }
 
@@ -188,6 +197,10 @@ export class ManualExecutor {
   private readonly userAccepts = new Map<string, (ack: AckPayload) => void>();
   /** Live `claude -p` processes by assignment. */
   private readonly runs = new Map<string, RunningProcess>();
+  /** Live output streamers of running `claude -p` processes. */
+  private readonly liveLogs = new Map<string, LiveLogStreamer>();
+  /** GitHub tokens handed to each run (masked in its live output). */
+  private readonly runTokens = new Map<string, Set<string>>();
   private readonly proc: ProcessOps;
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly log: Logger;
@@ -206,6 +219,48 @@ export class ManualExecutor {
 
   private now(): number {
     return this.cfg.now?.() ?? Date.now();
+  }
+
+  /** Scoped GitHub token, remembered so the run's live output can mask it. */
+  private async requestToken(id: string, purpose: TokenPurpose): Promise<string> {
+    const token = await this.deps.requestToken(id, purpose);
+    let set = this.runTokens.get(id);
+    if (!set) this.runTokens.set(id, (set = new Set()));
+    set.add(token);
+    return token;
+  }
+
+  /** Streamer for one auto run, or null when the server does not take live output. */
+  private openLiveLog(id: string): LiveLogStreamer | null {
+    const send = this.deps.sendLiveLog;
+    if (!send) return null;
+    const redact = makeRedactor(() => [
+      this.deps.readClaudeToken(),
+      ...(this.runTokens.get(id) ?? []),
+      ...(this.deps.knownSecrets?.() ?? []),
+    ]);
+    let warned = false;
+    const streamer = new LiveLogStreamer({
+      assignmentId: id,
+      send,
+      redact: (t) => redact(t),
+      now: () => this.now(),
+      onError: (err) => {
+        if (warned) return;
+        warned = true;
+        this.log.warn('live output disabled for this run', { error: errorMessage(err) });
+      },
+    });
+    this.liveLogs.set(id, streamer);
+    return streamer;
+  }
+
+  private closeLiveLog(id: string, opts: { drop?: boolean; note?: string } = {}): void {
+    const s = this.liveLogs.get(id);
+    if (!s) return;
+    this.liveLogs.delete(id);
+    if (opts.note) s.note(opts.note);
+    s.close({ drop: opts.drop });
   }
 
   // ---------- queries ----------
@@ -778,7 +833,7 @@ export class ManualExecutor {
       const mirror = join(this.cfg.dataDir, 'mirrors', `${safeName(r0.projectId)}.git`);
       this.deps.fs.mkdir(join(this.cfg.dataDir, 'mirrors'));
       {
-        const token = await this.deps.requestToken(id, 'clone');
+        const token = await this.requestToken(id, 'clone');
         await this.deps.git.syncMirror(mirror, remoteUrl, token);
         this.deps.fs.mkdir(join(this.cfg.dataDir, 'git'));
         await this.deps.git.clone(mirror, remoteUrl, repoOf(r0), token);
@@ -1013,11 +1068,13 @@ export class ManualExecutor {
     // Usage seen on the stream (per assistant message): survives a timeout that removes the
     // container before its own logs can be read.
     const streamed = new Map<string, UsageEntry>();
+    const live = this.openLiveLog(id);
     const proc = this.proc.spawnLines(
       argv,
       prompt,
       (line) => {
         out.write(`${redact(line)}\n`);
+        live?.stdout(line);
         const res = parseResultEvent(line);
         if (res) result = res;
         const u = parseAssistantUsage(line);
@@ -1026,6 +1083,7 @@ export class ManualExecutor {
       (line) => {
         const clean = redact(line);
         out.write(`[stderr] ${clean}\n`);
+        live?.stderr(line);
         stderrTail = `${stderrTail}\n${clean}`.slice(-1500);
       },
     );
@@ -1046,6 +1104,10 @@ export class ManualExecutor {
     } finally {
       clearTimeout(timer);
       this.runs.delete(id);
+      this.closeLiveLog(id, {
+        note: timedOut ? `timed out after ${Math.round(timeoutSec / 60)} min` : undefined,
+      });
+      this.runTokens.delete(id);
       await new Promise<void>((res) => out.end(() => res()));
     }
     if (this.cancelled(id)) return; // cancel() already stopped and reported it
@@ -1119,7 +1181,7 @@ export class ManualExecutor {
       });
       return;
     }
-    const token = await this.deps.requestToken(id, 'push');
+    const token = await this.requestToken(id, 'push');
     if (this.cancelled(id)) return;
     await git.push(repo, rec.branch, token);
     const [headSha, changedFiles, subjects] = await Promise.all([
@@ -1422,6 +1484,8 @@ export class ManualExecutor {
       error: `cancelled: ${reason}`,
       prompt: null,
     });
+    // Nothing more goes out for a cancelled run: pending live output is dropped.
+    this.closeLiveLog(id, { drop: true });
     this.runs.get(id)?.kill();
     this.deps.enqueue('task.finished', {
       assignmentId: id,
@@ -1460,6 +1524,7 @@ export class ManualExecutor {
     const rec = this.store.get(id);
     if (rec) {
       this.store.update(id, { cleanupRequested: true });
+      this.closeLiveLog(id, { drop: true });
       await this.teardown(rec);
       this.runs.get(id)?.kill();
       if (rec.builtImage) await this.deps.docker.removeImage(rec.builtImage).catch(() => undefined);

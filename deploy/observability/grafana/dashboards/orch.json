@@ -1,0 +1,487 @@
+{
+  "uid": "orch-overview",
+  "title": "orch overview",
+  "tags": ["orch"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Server up",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "up{job=\"orch-server\"}",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Agents connected",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum(orch_agents_connected{job=\"orch-server\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Tasks by status",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 16,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "orch_tasks{job=\"orch-server\"}",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "HTTP requests/s by status class",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (status_class) (rate(orch_http_request_duration_seconds_count{job=\"orch-server\"}[5m]))",
+          "legendFormat": "{{status_class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "HTTP latency p95 by route",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(orch_http_request_duration_seconds_bucket{job=\"orch-server\"}[5m])))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Connected agents by version",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (version) (orch_agents_connected{job=\"orch-server\"})",
+          "legendFormat": "{{version}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Dispatcher tick duration (p50 / p95)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(orch_dispatcher_tick_duration_seconds_bucket{job=\"orch-server\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(orch_dispatcher_tick_duration_seconds_bucket{job=\"orch-server\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Offers per minute (sent / accepted / refused)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (kind) (rate(orch_offers_sent_total{job=\"orch-server\"}[5m])) * 60",
+          "legendFormat": "sent {{kind}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (kind) (rate(orch_offers_accepted_total{job=\"orch-server\"}[5m])) * 60",
+          "legendFormat": "accepted {{kind}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (reason) (rate(orch_offers_refused_total{job=\"orch-server\"}[5m])) * 60",
+          "legendFormat": "refused {{reason}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Assignment outcomes per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (outcome, failure_class) (increase(orch_assignments_finished_total{job=\"orch-server\"}[1h]))",
+          "legendFormat": "{{outcome}} {{failure_class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "title": "Agent WebSocket messages/s by type",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (type) (rate(orch_ws_messages_total{job=\"orch-server\"}[5m]))",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "GitHub webhook deliveries per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "sum by (event, result) (increase(orch_webhook_deliveries_total{job=\"orch-server\"}[1h]))",
+          "legendFormat": "{{event}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Process CPU (cores)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "rate(process_cpu_seconds_total{job=\"orch-server\"}[5m])",
+          "legendFormat": "cpu",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "Memory (RSS / heap used)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "process_resident_memory_bytes{job=\"orch-server\"}",
+          "legendFormat": "rss",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "nodejs_heap_size_used_bytes{job=\"orch-server\"}",
+          "legendFormat": "heap used",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "Event loop lag p99",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "orch-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "orch-prometheus"
+          },
+          "expr": "nodejs_eventloop_lag_p99_seconds{job=\"orch-server\"}",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

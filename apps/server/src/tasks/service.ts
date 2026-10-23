@@ -7,6 +7,7 @@ import {
   type FailureClass,
   type AckPayload,
   type GithubRole,
+  type HistoryResponse,
   type ProjectTaskAccess,
   type TaskBoard,
   type TaskOfferPayload,
@@ -22,6 +23,8 @@ import type { GithubClient, GithubIssue } from '../github';
 import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
 import { getRoleInfo, participationStatus } from '../projects/service';
+import { listHistory, type HistoryFilters } from './history';
+import type { Metrics } from '../observability';
 import { bodyHash, branchNameFor, buildIssueBody, creatorOf, parseIssueBody } from './meta';
 import {
   ENV_FAILURES_BEFORE_ATTENTION,
@@ -35,6 +38,7 @@ export interface TaskDeps {
   prisma: PrismaClient;
   config: Config;
   github?: GithubClient;
+  metrics?: Metrics;
 }
 
 export type ProjectWithInstallation = Prisma.ProjectGetPayload<{ include: { installation: true } }>;
@@ -354,8 +358,8 @@ export class TaskService {
     );
   }
 
-  /** Tasks of every project the user owns or actively participates in. */
-  async listMine(user: User): Promise<TaskBoard> {
+  /** Projects the user owns or actively participates in, with their access (the Backlog scope). */
+  async visibleProjects(user: User) {
     const projects = await this.prisma.project.findMany({
       where: {
         archivedAt: null,
@@ -363,7 +367,7 @@ export class TaskService {
       },
       include: { installation: true },
     });
-    const visible: { id: string; access: Access }[] = [];
+    const visible: { id: string; fullName: string; access: Access }[] = [];
     const accessMap: Record<string, ProjectTaskAccess> = {};
     for (const p of projects) {
       let access: Access;
@@ -373,8 +377,14 @@ export class TaskService {
         continue; // pending, rejected or inactive participation: not visible
       }
       accessMap[p.id] = toProjectAccess(access);
-      visible.push({ id: p.id, access });
+      visible.push({ id: p.id, fullName: p.fullName, access });
     }
+    return { visible, accessMap };
+  }
+
+  /** Tasks of every project the user owns or actively participates in. */
+  async listMine(user: User): Promise<TaskBoard> {
+    const { visible, accessMap } = await this.visibleProjects(user);
     if (visible.length === 0) return groupBoard([], accessMap);
     // One query for every visible project, then project by project in `projects` order.
     const rows = await this.prisma.task.findMany({
@@ -408,6 +418,16 @@ export class TaskService {
     const t = await this.getRow(id);
     const [, access] = await this.visibleProject(t.projectId, user);
     return [t, access];
+  }
+
+  /** Searchable history of the tasks in the projects the user sees (same scope as the Backlog). */
+  async history(user: User, filters: HistoryFilters): Promise<HistoryResponse> {
+    const { visible } = await this.visibleProjects(user);
+    return listHistory(
+      { prisma: this.prisma, webUrl: this.deps.config.GITHUB_WEB_URL },
+      visible,
+      filters,
+    );
   }
 
   view(t: TaskRow, access: Access, user: User) {
@@ -1508,6 +1528,10 @@ export class TaskService {
       ...(p.error ? { error: summarizeFailure(p.error, 500) } : {}),
       ...(failureClass ? { failureClass } : {}),
       returnedToPool: returned.count === 1,
+    });
+    this.deps.metrics?.assignmentsFinished.inc({
+      outcome: status.toLowerCase(),
+      failure_class: failureClass ?? 'none',
     });
     await this.afterRun(agent, a, status, failureClass, p, now);
     return { ok: true };
