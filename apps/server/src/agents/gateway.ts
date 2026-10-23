@@ -21,6 +21,7 @@ import type { Dispatcher } from '../dispatch/dispatcher';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
+import type { LiveLogStore } from '../logs/store';
 import { participationStatus } from '../projects/service';
 import { versionLabel, type Metrics } from '../observability';
 import { TaskService } from '../tasks/service';
@@ -65,6 +66,8 @@ export interface GatewayDeps {
    * offer and every manual claim, so removing someone's access also cuts off their agents.
    */
   isAllowed?: (user: User) => Promise<boolean>;
+  /** Live task output buffers (`task.log`). Absent: live output is not offered to agents. */
+  liveLogs?: LiveLogStore;
   metrics?: Metrics;
 }
 
@@ -532,6 +535,7 @@ export class AgentGateway {
       this.send(c, serverMessage('tasks.list', list, { replyTo: m.id }));
       return;
     }
+    if (m.type === 'task.log') return this.onTaskLog(c, m.payload);
     if (!AGENT_ACKED_TYPES.includes(m.type)) return;
 
     const { prisma } = this.deps;
@@ -576,6 +580,28 @@ export class AgentGateway {
     }
     if (seen && Date.now() - seen.seenAt.getTime() < DUPLICATE_IN_FLIGHT_MS) return;
     this.ack(c, messageId, { ok: true, duplicate: true });
+  }
+
+  /**
+   * Best-effort live output: kept only for a running assignment of THIS agent (checked in the
+   * database once per run), dropped silently otherwise. Never acked, never stored on disk.
+   */
+  private async onTaskLog(c: Conn, p: Extract<AgentMessage, { type: 'task.log' }>['payload']) {
+    const store = this.deps.liveLogs;
+    if (!store) return;
+    const known = store.owner(p.assignmentId);
+    if (known) {
+      if (known.agentId !== c.agentId || known.finished) return;
+    } else {
+      const a = await this.deps.prisma.assignment.findUnique({
+        where: { id: p.assignmentId },
+        select: { agentId: true, taskId: true, status: true },
+      });
+      if (!a || a.agentId !== c.agentId) return;
+      if (a.status !== 'ACCEPTED' && a.status !== 'RUNNING') return;
+      store.start(p.assignmentId, a.taskId, c.agentId);
+    }
+    store.append(p.assignmentId, p.entries, p.dropped ?? 0);
   }
 
   private loadAgent(c: Conn) {
@@ -661,6 +687,7 @@ export class AgentGateway {
           agentId: c.agentId,
           serverTime: new Date().toISOString(),
           ...(latest && { latestAgentVersion: latest }),
+          ...(this.deps.liveLogs && { liveLogs: true }),
         },
         { replyTo: m.id },
       ),
@@ -769,6 +796,9 @@ export class AgentGateway {
       }
       case 'task.finished': {
         const r = await this.tasks.onFinished(await this.loadAgent(c), m.payload);
+        const logs = this.deps.liveLogs;
+        const finishedId = m.payload.assignmentId;
+        if (logs && r.ok) after.push(() => logs.finish(finishedId));
         const d = this.dispatcher;
         if (d) after.push(() => d.kick());
         return r;

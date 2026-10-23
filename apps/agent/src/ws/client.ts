@@ -90,6 +90,19 @@ export class WsClient extends EventEmitter<WsClientEvents> {
     return true;
   }
 
+  /**
+   * Best-effort send (live output): refused when not ready or when more than `maxBuffered`
+   * bytes are still queued on the socket, so a slow link never piles up memory or delays
+   * the acked messages behind it.
+   */
+  sendBestEffort(msg: AgentMessage, maxBuffered = 256 * 1024): boolean {
+    const ws = this.ws;
+    if (this.state !== 'ready' || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (ws.bufferedAmount > maxBuffered) return false;
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+
   async stop(): Promise<void> {
     if (this.state === 'stopped') return;
     this.setState('stopped');

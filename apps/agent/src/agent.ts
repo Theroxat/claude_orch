@@ -109,6 +109,8 @@ export class Agent {
   readonly tokens: TokenBroker;
   readonly executor: ManualExecutor | undefined;
   readonly updater: Updater | undefined;
+  /** The server accepts `task.log` (from `welcome`). */
+  private liveLogs = false;
   /** Version the server recommends (from `welcome`). */
   private latestAgentVersion: string | null = null;
   private participations: AgentConfigPayload['participations'] = [];
@@ -178,6 +180,9 @@ export class Agent {
           isPaused: () => this.pause.isPaused(),
           participations: () => this.participations,
           refreshConfig: () => this.refreshConfig(),
+          sendLiveLog: (payload) =>
+            this.liveLogs && this.client.sendBestEffort(agentMessage('task.log', payload)),
+          knownSecrets: () => [opts.credential],
           logger: this.log,
         })
       : undefined;
@@ -209,6 +214,7 @@ export class Agent {
     this.client.on('welcome', (w) => {
       this.agentId = w.agentId;
       this.latestAgentVersion = normalizeVersion(w.latestAgentVersion);
+      this.liveLogs = w.liveLogs === true;
       this.log.info('connected', { agentId: w.agentId, paused: w.paused });
       this.applyConfig(w);
       this.startHeartbeat(w.heartbeatSec);
