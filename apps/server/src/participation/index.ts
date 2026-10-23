@@ -78,6 +78,9 @@ export function registerParticipation(
     // The budget check and the write run in one transaction that locks the member's user row,
     // so concurrent PUTs on different projects cannot each see the old total and overshoot 100%.
     let reapplied = false;
+    // Whether this write turns the row into a pending request (owners are told once, not on every
+    // budget change of a request that is already pending).
+    let requested = false;
     const part = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${user.id} FOR UPDATE`;
       const before = await tx.participation.findUnique({
@@ -97,7 +100,7 @@ export function registerParticipation(
         );
       }
 
-      return tx.participation.upsert({
+      const after = await tx.participation.upsert({
         where: { userId_projectId: { userId: user.id, projectId: project.id } },
         create: {
           userId: user.id,
@@ -117,6 +120,11 @@ export function registerParticipation(
           ...(approvedAt ? { approvedAt } : {}),
         },
       });
+      const needsApproval = project.requireParticipantApproval;
+      requested =
+        participationStatus(after, needsApproval) === 'pending' &&
+        (!before || participationStatus(before, needsApproval) !== 'pending');
+      return after;
     });
     await audit(prisma, {
       actorUserId: user.id,
@@ -127,6 +135,7 @@ export function registerParticipation(
         percent: part.percent,
         mode: part.mode,
         reapplied,
+        requested,
         ownerAutoApproved: isOwner && part.active,
       },
       ip: req.ip,

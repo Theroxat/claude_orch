@@ -35,6 +35,8 @@ export const CloseCode = {
    * owner is approved again.
    */
   ACCESS_SUSPENDED: 4403,
+  /** The agent sent messages too fast and was cut off. NOT fatal: it reconnects with backoff. */
+  RATE_LIMITED: 4429,
 } as const;
 export type CloseCode = (typeof CloseCode)[keyof typeof CloseCode];
 

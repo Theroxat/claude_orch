@@ -79,10 +79,9 @@ test('owner: project settings (selects, approval checkbox) save + help text', as
   ).toBeVisible();
   await card.getByLabel('Who can submit').selectOption('ALLOWLIST');
   await card.getByRole('checkbox', { name: /Require participant approval/ }).click();
-  await page.waitForTimeout(800);
   await expect(card.getByText('Approval is off')).toBeVisible();
   await card.getByRole('checkbox', { name: /Require participant approval/ }).click();
-  await page.waitForTimeout(800);
+  await expect(card.getByText('Approval is off')).toBeHidden();
   await card.getByLabel('Who can submit').selectOption('GITHUB');
   await card.getByLabel('Visibility').selectOption('COLLABORATORS');
   await card.getByLabel('Who can participate').selectOption('ALLOWLIST');

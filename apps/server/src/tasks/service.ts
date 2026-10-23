@@ -24,6 +24,7 @@ import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
 import { getRoleInfo, participationStatus } from '../projects/service';
 import { listHistory, type HistoryFilters } from './history';
+import type { Metrics } from '../observability';
 import { bodyHash, branchNameFor, buildIssueBody, creatorOf, parseIssueBody } from './meta';
 import {
   ENV_FAILURES_BEFORE_ATTENTION,
@@ -37,6 +38,7 @@ export interface TaskDeps {
   prisma: PrismaClient;
   config: Config;
   github?: GithubClient;
+  metrics?: Metrics;
 }
 
 export type ProjectWithInstallation = Prisma.ProjectGetPayload<{ include: { installation: true } }>;
@@ -1510,6 +1512,10 @@ export class TaskService {
       ...(p.error ? { error: summarizeFailure(p.error, 500) } : {}),
       ...(failureClass ? { failureClass } : {}),
       returnedToPool: returned.count === 1,
+    });
+    this.deps.metrics?.assignmentsFinished.inc({
+      outcome: status.toLowerCase(),
+      failure_class: failureClass ?? 'none',
     });
     await this.afterRun(agent, a, status, failureClass, p, now);
     return { ok: true };

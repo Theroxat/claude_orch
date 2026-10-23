@@ -130,6 +130,9 @@ model User {
   personalTokens   PersonalToken[]
   oauthGrants      OAuthGrant[]
   oauthCodes       OAuthCode[]
+  notifications    Notification[]
+  notificationSettings NotificationSettings?
+  pushSubscriptions PushSubscription[]
 }
 
 model Session {
@@ -604,4 +607,62 @@ model AccessInvite {
   createdBy  String // admin login
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
+}
+
+/// One in-app notification (see apps/server/src/notifications).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  /// NotificationEvent of @orch/shared (task_done, task_failed, ...).
+  event     String
+  title     String
+  body      String
+  /// App path (`/backlog`) or absolute URL (a PR).
+  url       String?
+  projectId String?
+  taskId    String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  /// Retention purge.
+  @@index([createdAt])
+}
+
+/// Per-user notification channels and preferences. Webhook URLs are secrets: AES-256-GCM encrypted.
+model NotificationSettings {
+  userId        String   @id
+  slackUrlEnc   Bytes?
+  slackHint     String?
+  discordUrlEnc Bytes?
+  discordHint   String?
+  webhookUrlEnc Bytes?
+  webhookHint   String?
+  email         String?
+  /// { [event]: channel[] }; events missing here use the defaults.
+  preferences   Json     @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// A browser registered for Web Push (one row per browser). The endpoint is a capability URL of the
+/// browser vendor's push service: it is only ever used to deliver that user's notifications.
+model PushSubscription {
+  id         String    @id @default(cuid())
+  userId     String
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
