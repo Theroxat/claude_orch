@@ -166,11 +166,11 @@ export async function buildPool(
     const usage = await dispatcher.latestUsage(userId);
     const state = usageState(usage, now, staleMs);
     const fresh = usage && state === 'fresh' ? usage : null;
+    // One ledger per member (a few batched reads), then every project's margin in memory.
+    const ledger = fresh ? await dispatcher.budgetLedger(userId, fresh, now) : null;
     const projectsOut = [];
     for (const p of list) {
-      const m = fresh
-        ? await dispatcher.marginOf(userId, p.projectId, p.percent, fresh, now)
-        : null;
+      const m = fresh && ledger ? ledger.marginOf(userId, p.projectId, p.percent, fresh) : null;
       projectsOut.push({
         projectId: p.projectId,
         fullName: p.project.fullName,
