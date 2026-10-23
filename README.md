@@ -251,7 +251,7 @@ The first run copies `.env.example` to `.env`. GitHub sign-in needs a developmen
 - Repos must build from a `Dockerfile` or a simple `.devcontainer.json`.
 - Manual-mode `screen` sessions end if the agent container restarts; `orch attach <n>` reopens one.
 - GitHub only, English UI only.
-- Images run TypeScript through `tsx` rather than a compiled build, so the server image is large (about 900 MB).
+- Images run TypeScript through `tsx` rather than a compiled build, and the server image weighs about 380 MB (Alpine, trimmed Prisma CLI).
 
 ## License
 
