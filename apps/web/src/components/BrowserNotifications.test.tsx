@@ -231,4 +231,23 @@ describe('keyBytes', () => {
   it('decodes a base64url VAPID key', () => {
     expect(Array.from(keyBytes('AQID_-4'))).toEqual([1, 2, 3, 255, 238]);
   });
+
+  it('detaches this browser from the member on log out', async () => {
+    supportBrowser();
+    current = subscription();
+    const calls = mockApi({
+      ...base(settings({ subscriptions: 1 })),
+      'POST /notifications/push/unsubscribe': () => ({ json: { subscriptions: 0 } }),
+      'POST /auth/logout': () => ({ status: 204 }),
+    });
+    renderApp('/my-server');
+    fireEvent.click(await screen.findByRole('button', { name: 'Log out' }));
+    const sub = current;
+    await waitFor(() => expect(sub?.unsubscribe).toHaveBeenCalled());
+    const paths = calls.map((c) => `${c.method} ${c.path}`);
+    expect(paths).toContain('POST /notifications/push/unsubscribe');
+    expect(paths.indexOf('POST /notifications/push/unsubscribe')).toBeLessThan(
+      paths.indexOf('POST /auth/logout'),
+    );
+  });
 });

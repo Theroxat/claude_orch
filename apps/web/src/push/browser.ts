@@ -64,3 +64,21 @@ export async function subscribeBrowser(publicKey: string): Promise<PushSubscript
     return reg.pushManager.subscribe(options);
   }
 }
+
+/**
+ * Detaches this browser from the signed-in member (on log out): a shared device must not keep
+ * showing the previous member's notifications. Best effort, never blocks the log out.
+ */
+export async function dropBrowserSubscription(
+  forget: (endpoint: string) => Promise<unknown>,
+): Promise<void> {
+  try {
+    if (!pushSupported()) return;
+    const sub = await currentSubscription();
+    if (!sub) return;
+    await forget(sub.endpoint).catch(() => undefined);
+    await sub.unsubscribe();
+  } catch {
+    // ignore: the log out goes on
+  }
+}

@@ -322,7 +322,7 @@ export class Notifier {
 
 /** What a browser shows: short text and an app path, never an external link. */
 export function pushPayload(n: OutgoingNotification): PushPayload {
-  const url = n.url?.startsWith('/') ? n.url : n.taskId ? `/backlog?task=${n.taskId}` : null;
+  const url = isAppPath(n.url) ? n.url : n.taskId ? `/backlog?task=${n.taskId}` : null;
   return {
     title: n.title.slice(0, 120),
     body: n.body.slice(0, 200),
@@ -339,3 +339,8 @@ export const TEST_DRAFT: NotificationDraft = {
   projectId: null,
   taskId: null,
 };
+
+/** A short in-app path: `//host` and `/\host` are protocol-relative URLs, not paths. */
+function isAppPath(url: string | null | undefined): url is string {
+  return !!url && url.length <= 512 && /^\/(?![/\\])/.test(url);
+}

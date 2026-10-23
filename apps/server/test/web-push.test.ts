@@ -224,6 +224,13 @@ describe('delivery', () => {
     const base = { ...draft(), id: 'n1', link: null, createdAt: new Date() };
     expect(pushPayload({ ...base, url: '/requests' }).url).toBe('/requests');
     expect(pushPayload({ ...base, url: 'https://evil.example/x', taskId: null }).url).toBeNull();
+    // protocol-relative URLs are not app paths
+    expect(pushPayload({ ...base, url: '//evil.example/x', taskId: null }).url).toBeNull();
+    expect(pushPayload({ ...base, url: '/\\evil.example/x', taskId: null }).url).toBeNull();
+    // a path too long for a push payload falls back to the task page
+    expect(pushPayload({ ...base, url: `/${'a'.repeat(600)}`, taskId: 't1' }).url).toBe(
+      '/backlog?task=t1',
+    );
   });
 
   it('follows the preferences: only the selected events, nothing by default', async () => {
