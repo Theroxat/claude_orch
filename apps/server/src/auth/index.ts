@@ -3,6 +3,7 @@ import type { AccessGrant, AccessGrantStatus, User } from '@prisma/client';
 import type { ApiUser } from '@orch/shared';
 import { audit } from '../audit';
 import { signInIsRestricted, type Config } from '../config';
+import type { Metrics } from '../observability';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { HttpError } from '../http/errors';
@@ -83,6 +84,8 @@ export interface AuthDeps {
   config: Config;
   prisma: PrismaClient;
   github?: GithubClient;
+  /** Prometheus instruments (see observability/). */
+  metrics?: Metrics;
 }
 
 export function toApiUser(u: User, isAdmin = false): ApiUser {

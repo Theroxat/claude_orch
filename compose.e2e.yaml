@@ -92,6 +92,9 @@ services:
     environment:
       NODE_ENV: production
       ORCH_ALLOW_ANY_GITHUB_USER: 'false' # access-grants flow: only the lists below + approved strangers
+      # The seed and the UI tests sign in dozens of times from one IP: keep the limiter on, but high.
+      RATE_LIMIT_AUTH_MAX: '100000'
+      RATE_LIMIT_API_MAX: '100000'
       ORCH_ADMIN_GITHUB_LOGINS: olivia
       ORCH_ALLOWED_GITHUB_LOGINS: alice,bob,rita
       HOST: 0.0.0.0
