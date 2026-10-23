@@ -68,6 +68,10 @@ services:
       ORCH_ACCESS_GRACE_SEC: ${ORCH_ACCESS_GRACE_SEC:-900}
       ORCH_ALLOW_ANY_GITHUB_USER: ${ORCH_ALLOW_ANY_GITHUB_USER:-false}
       ORCH_ADMIN_GITHUB_LOGINS: ${ORCH_ADMIN_GITHUB_LOGINS:-}
+      # Observability, off by default (see docs/observability.md and deploy/observability).
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       ORCH_ENCRYPTION_KEY: ${ORCH_ENCRYPTION_KEY:?set ORCH_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
     volumes:
       # GitHub App private key (read-only). See README: Creating the GitHub App.

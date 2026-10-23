@@ -25,4 +25,4 @@ Report vulnerabilities privately through GitHub security advisories on the repos
 - Manual-mode `screen` sessions end if the agent container restarts; the task container survives and `orch attach <n>` reopens a session.
 - One concurrent task per machine by default.
 - GitHub only. English UI only.
-- The production images run TypeScript through `tsx` rather than a compiled build; the server image is therefore large (~900 MB).
+- The production images run TypeScript through `tsx` rather than a compiled build; the server image is still about 380 MB (Alpine, trimmed Prisma CLI).

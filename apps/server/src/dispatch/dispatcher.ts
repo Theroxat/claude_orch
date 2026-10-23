@@ -28,6 +28,7 @@ import {
 import type { AgentGateway } from '../agents/gateway';
 import { OfferRefusedError } from '../agents/gateway';
 import { audit } from '../audit';
+import type { Metrics } from '../observability';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import { participationStatus } from '../projects/service';
@@ -52,6 +53,7 @@ export interface DispatcherDeps {
   config: Config;
   gateway: AgentGateway;
   log: FastifyBaseLogger;
+  metrics?: Metrics;
 }
 
 const HOLDS_SLOT = ['ACCEPTED', 'RUNNING'] as const;
@@ -249,9 +251,14 @@ export class Dispatcher {
 
   private async runTick(now: Date): Promise<void> {
     if (this.stopped) return;
-    await this.expireOffers(now);
-    await this.expireLeases(now);
-    await this.dispatchOpenTasks(now);
+    const stop = this.deps.metrics?.dispatcherTick.startTimer();
+    try {
+      await this.expireOffers(now);
+      await this.expireLeases(now);
+      await this.dispatchOpenTasks(now);
+    } finally {
+      stop?.();
+    }
   }
 
   // ---------- estimates ----------
@@ -810,7 +817,9 @@ export class Dispatcher {
         await this.gateway.sendOffer(c.agentId, this.offerPayload(task, a, 'AUTO_OFFER'));
       } catch (err) {
         if (!(err instanceof OfferRefusedError)) throw err;
+        this.deps.metrics?.offersRefused.inc({ reason: `undeliverable_${err.reason}` });
         await this.closePending([a], 'CANCELLED', `undeliverable:${err.reason}`, now);
+        return;
       }
     } else {
       this.gateway.sendToUser(
@@ -818,6 +827,7 @@ export class Dispatcher {
         serverMessage('offer.request', this.requestPayload(task, a)),
       );
     }
+    this.deps.metrics?.offersSent.inc({ kind });
   }
 
   offerPayload(
@@ -1021,6 +1031,7 @@ export class Dispatcher {
       return true;
     });
     if (!done) return;
+    this.deps.metrics?.assignmentsFinished.inc({ outcome: 'lost', failure_class: 'none' });
     await audit(this.prisma, {
       actorType: 'SYSTEM',
       action: 'task.lost',
@@ -1165,6 +1176,7 @@ export class Dispatcher {
       }
       throw err;
     }
+    this.deps.metrics?.offersAccepted.inc({ kind: a.kind });
     const task = await this.loadTask(a.taskId);
     await audit(prisma, {
       actorType: by.via === 'agent' ? 'AGENT' : 'USER',
@@ -1268,6 +1280,9 @@ export class Dispatcher {
     } else {
       return refusal('offer_closed', 'The offer is no longer open');
     }
+    this.deps.metrics?.offersRefused.inc({
+      reason: by.via === 'agent' ? 'agent_declined' : 'member_declined',
+    });
     await audit(prisma, {
       actorType: by.via === 'agent' ? 'AGENT' : 'USER',
       actorUserId: by.userId,

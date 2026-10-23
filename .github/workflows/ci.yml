@@ -97,8 +97,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           push: false
-          # Only the agent image is loaded into the local daemon, for the smoke test below.
-          load: ${{ matrix.image == 'agent' }}
+          # The agent and server images are loaded into the local daemon, for the smoke tests below.
+          load: ${{ matrix.image == 'agent' || matrix.image == 'server' }}
           tags: orch-${{ matrix.image }}:ci
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
@@ -107,6 +107,21 @@ jobs:
         run: |
           docker run --rm --entrypoint sh orch-agent:ci -c \
             'test -x "$ORCH_CLAUDE_BIN" && "$ORCH_CLAUDE_BIN" --version && "$ORCH_CLAUDE_BIN" setup-token --help >/dev/null && command -v script && orch help >/dev/null'
+      - name: Server image smoke test (node ABI, ICU, CA certificates, crypto, tsx, Prisma CLI)
+        if: matrix.image == 'server'
+        run: |
+          # The node binary is copied from node:*-alpine onto a plain alpine: fail fast if their
+          # musl/libstdc++ ever drift apart (a missing shared library shows up as "not found").
+          docker run --rm --entrypoint sh orch-server:ci -c '! ldd /usr/local/bin/node | grep -i "not found" && tsx --version >/dev/null && prisma --version >/dev/null && test "$(id -u)" != 0'
+          docker run --rm --entrypoint node orch-server:ci -e "
+            const c = require('crypto');
+            const k = c.randomBytes(32), iv = c.randomBytes(12);
+            const e = c.createCipheriv('aes-256-gcm', k, iv); const ct = Buffer.concat([e.update('x'), e.final()]);
+            const d = c.createDecipheriv('aes-256-gcm', k, iv); d.setAuthTag(e.getAuthTag());
+            if (Buffer.concat([d.update(ct), d.final()]).toString() !== 'x') process.exit(1);
+            if (new Intl.DateTimeFormat('fr-FR', { dateStyle: 'full', timeZone: 'Europe/Paris' }).format(new Date(0)) !== 'jeudi 1 janvier 1970') process.exit(1);
+            fetch('https://api.github.com/zen').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(e => { console.error(e); process.exit(1); });
+          "
 
   gitleaks:
     name: Secret scan (gitleaks)
