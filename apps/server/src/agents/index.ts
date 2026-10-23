@@ -49,6 +49,7 @@ export function createAgentGateway(app: FastifyInstance, deps: AuthDeps): AgentG
     config: deps.config,
     log: app.log,
     github: deps.github,
+    metrics: deps.metrics,
     // `app.allowlist` is registered later (registerAuth): resolved at call time.
     // `reauth` (GitHub token gone past the outage grace period) is a denial too.
     isAllowed: async (user) => (await app.allowlist.check(user)) === 'allowed',

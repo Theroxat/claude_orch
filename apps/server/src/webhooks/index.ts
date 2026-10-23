@@ -105,6 +105,8 @@ export function registerWebhooks(
       if (!event || !deliveryId) {
         throw new HttpError(400, 'invalid_request', 'Missing X-GitHub-Event or X-GitHub-Delivery');
       }
+      // Signature verified: GitHub's event name, still restricted to a short safe token.
+      const eventLabel = /^[a-z_]{1,40}$/.test(event) ? event : 'other';
       let payload: Payload;
       try {
         payload = JSON.parse(raw.toString('utf8')) as Payload;
@@ -117,6 +119,7 @@ export function registerWebhooks(
         });
       } catch (err) {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'duplicate' });
           return { ok: true, duplicate: true };
         }
         throw err;
@@ -125,6 +128,7 @@ export function registerWebhooks(
       try {
         result = await handle(event, payload);
       } catch (err) {
+        deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'failed' });
         await prisma.webhookDelivery.deleteMany({ where: { deliveryId } });
         throw err;
       }
@@ -132,6 +136,7 @@ export function registerWebhooks(
         where: { deliveryId },
         data: { processedAt: new Date() },
       });
+      deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'processed' });
       reply.status(200);
       return { ok: true, result };
     });
