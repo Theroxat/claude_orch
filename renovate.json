@@ -48,27 +48,13 @@
       "groupName": "Vitest"
     },
     {
-      "description": "Automerge minor and patch devDependencies once CI passes",
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true,
-      "platformAutomerge": true
-    },
-    {
-      "description": "Automerge minor and patch GitHub Actions once CI passes",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true,
-      "platformAutomerge": true
-    },
-    {
       "description": "Major updates are never automerged",
       "matchUpdateTypes": ["major"],
       "automerge": false
     },
     {
-      "description": "Pin digests for Docker images and GitHub Actions",
-      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "description": "Pin digests for Dockerfile base images and GitHub Actions",
+      "matchManagers": ["dockerfile", "github-actions"],
       "pinDigests": true
     }
   ]

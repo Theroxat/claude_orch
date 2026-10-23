@@ -40,7 +40,7 @@ CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests, installer tests, br
 
 ## Dependency updates
 
-Dependencies are kept up to date by [Renovate](https://docs.renovatebot.com/), configured in `renovate.json` at the repository root. Renovate opens grouped pull requests on Monday mornings (before 6am, Europe/Paris) for npm, GitHub Actions, Docker base images, the Sphinx requirements and Prisma, React and Vitest packages. A dependency dashboard issue lists all pending updates. Minor and patch updates to devDependencies and GitHub Actions merge automatically once CI passes; major updates always wait for a review.
+Dependencies are kept up to date by [Renovate](https://docs.renovatebot.com/), configured in `renovate.json` at the repository root. Renovate opens grouped pull requests on Monday mornings (before 6am, Europe/Paris) for npm, GitHub Actions, Docker base images, the Sphinx requirements and Prisma, React and Vitest packages. A dependency dashboard issue lists all pending updates. Nothing is merged automatically: every Renovate pull request waits for a review. Dockerfile base images and GitHub Actions are pinned by digest; images in the compose files are not (operators pull them by tag).
 
 Renovate only runs once its GitHub App is installed on the repository. The repository owner must install it at <https://github.com/apps/renovate> and grant access to `Theroxat/claude_orch`.
 
