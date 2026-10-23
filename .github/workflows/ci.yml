@@ -43,6 +43,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # pnpm store (repo-local, see docker/tools.Dockerfile): `pnpm install` becomes a link step.
+      - uses: actions/cache@v6
+        with:
+          path: .pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
       # Self-contained: builds the web app, starts the e2e stack behind the production Caddy CSP,
       # runs Playwright (pinned image), tears everything down. CSP violations and axe
       # serious/critical findings fail the job.
