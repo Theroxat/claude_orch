@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
+import { UpdatePrompt } from './pwa/UpdatePrompt';
 import { pages } from './routes';
 import { PageFallback } from './ui/PageFallback';
 import { ToastProvider } from './ui/Toast';
@@ -33,6 +34,7 @@ function NotFound() {
 export function App() {
   return (
     <ToastProvider>
+      <UpdatePrompt />
       <Suspense fallback={<PageFallback />}>
         <Routes>
           <Route path="/login" element={<Login />} />

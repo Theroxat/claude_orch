@@ -12,6 +12,19 @@ Issues carrying the project's pool label (default `pool`) become tasks.
 - **Claude Code** shows the MCP command for your domain and the connected apps ({doc}`mcp`).
 - **Access** (`/admin/access`, admins only) manages who can sign in.
 
+## Install as an app
+
+The web interface is an installable app (PWA): it opens in its own window, without browser chrome, and has its own icon.
+
+- **Chrome, Edge (desktop)**: click the install icon at the right of the address bar, or open the menu and choose _Install orch_.
+- **Chrome (Android)**: menu, then _Install app_.
+- **Safari (iOS and iPadOS)**: Share, then _Add to Home Screen_.
+- **Safari (macOS)**: File, then _Add to Dock_.
+
+The app needs HTTPS (or `localhost`) and your orch server to work: only the application shell is stored on the device. API responses and sign-in are never cached, so you always see live data. When the server cannot be reached, the app shows a "Server unreachable" page with a _Try again_ link.
+
+When a new version of orch is deployed, a "New version available" message appears with a _Reload_ button. The app keeps running the old version until you reload.
+
 ## Manual mode
 
 `orch take <n>` builds the dev container and starts an interactive Claude session in a `screen` named `issue-<n>` inside the agent container. Attach with `orch attach <n>` (detach with `Ctrl-a d`). When you are happy, `orch done <n>` commits, pushes, and the PR is opened ready for review.

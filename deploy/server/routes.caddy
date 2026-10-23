@@ -17,6 +17,11 @@ handle @internal {
 	respond 404
 }
 
+# The service worker and the files that describe the app must always be revalidated, otherwise
+# a stale /sw.js delays updates. Hashed files under /assets/ stay cacheable.
+@revalidate path /sw.js /push-sw.js /manifest.webmanifest /offline.html
+header @revalidate Cache-Control "no-cache"
+
 # GitHub webhook, REST API, GitHub sign-in. Real-time agent link (WebSocket) is proxied as-is.
 handle /api/* {
 	reverse_proxy server:3000

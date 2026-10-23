@@ -1214,6 +1214,25 @@ ul.plain li {
 .toast[data-tone='info'] .lamp {
   --lamp: var(--route);
 }
+.toast-action {
+  pointer-events: auto;
+  margin: -3px -8px -5px 4px;
+  padding: 6px 12px 4px;
+  border: 1px solid color-mix(in srgb, var(--on-ink) 35%, transparent);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+.toast-action:hover {
+  background: color-mix(in srgb, var(--on-ink) 14%, transparent);
+}
+.toast-action:focus-visible {
+  outline: 2px solid var(--proceed);
+  outline-offset: 2px;
+}
 .toast[data-leaving] {
   animation: toast-out 240ms var(--ease-in) forwards;
 }
