@@ -228,7 +228,24 @@ export class AgentGateway {
       queue: Promise.resolve(),
     };
     this.conns.set(agent.id, conn);
+    const maxPerSec = this.deps.config.RATE_LIMIT_ENABLED
+      ? this.deps.config.RATE_LIMIT_AGENT_MSG_PER_SEC
+      : 0;
+    let secStart = Date.now();
+    let secCount = 0;
     socket.on('message', (data, isBinary) => {
+      if (maxPerSec > 0) {
+        const now = Date.now();
+        if (now - secStart >= 1000) {
+          secStart = now;
+          secCount = 0;
+        }
+        if (++secCount > maxPerSec) {
+          this.deps.log.warn({ agentId: agent.id }, 'agent message flood; closing');
+          this.disconnect(agent.id, CloseCode.RATE_LIMITED, 'rate limited');
+          return;
+        }
+      }
       const raw = isBinary ? '' : data.toString();
       conn.queue = conn.queue
         .then(() => this.onFrame(conn, raw))

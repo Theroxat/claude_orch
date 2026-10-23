@@ -45,6 +45,8 @@ export interface WsClientOptions {
    * on upgrade). Default 60 s; the usual jittered backoff is added on top.
    */
   suspendedRetryMs?: number;
+  /** Extra wait after the server closed us for sending too fast (4429). Default 10 s. */
+  rateLimitedRetryMs?: number;
 }
 
 const FATAL_HINTS: Record<number, string> = {
@@ -167,7 +169,12 @@ export class WsClient extends EventEmitter<WsClientEvents> {
         );
         return;
       }
-      this.scheduleReconnect(code, reason);
+      // Cut off for flooding: wait before reconnecting even though the welcome reset the backoff.
+      this.scheduleReconnect(
+        code,
+        reason,
+        code === CloseCode.RATE_LIMITED ? (this.opts.rateLimitedRetryMs ?? 10_000) : 0,
+      );
     });
   }
 

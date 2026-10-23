@@ -27,6 +27,7 @@ function client(url: string, credential = CREDENTIAL, random = () => 0.999) {
     logger: silentLogger,
     backoff: { baseMs: 20, maxMs: 160, random },
     suspendedRetryMs: 200,
+    rateLimitedRetryMs: 150,
   });
   const delays: { attempt: number; delayMs: number }[] = [];
   c.on('reconnect', (r) => delays.push(r));
@@ -126,6 +127,19 @@ describe('WsClient', () => {
     s.suspended = false;
     await waitFor(() => c.ready && s.connections === 2, { what: 'reconnected after approval' });
     expect(s.rejectedAuth).toBe(0);
+  });
+
+  it('4429 (rate limited) is not fatal: it reconnects, but waits instead of a tight loop', async () => {
+    const s = await server();
+    const { c, delays } = client(s.url);
+    const fatal: number[] = [];
+    c.on('fatal', (f) => fatal.push(f.code));
+    c.start();
+    await waitFor(() => c.ready);
+    s.closeAll(4429, 'rate limited');
+    await waitFor(() => c.ready && s.connections === 2, { what: 'reconnected' });
+    expect(fatal).toEqual([]);
+    expect(delays.at(-1)?.delayMs).toBeGreaterThanOrEqual(150);
   });
 
   it('reconnects after a 4008 close', async () => {

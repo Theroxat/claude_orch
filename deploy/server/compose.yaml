@@ -56,6 +56,17 @@ services:
       ORCH_PUBLIC_URL: ${ORCH_PUBLIC_URL:-}
       # Peers allowed to set X-Forwarded-*: the Caddy container (private Docker network) only.
       ORCH_TRUST_PROXY: ${ORCH_TRUST_PROXY:-loopback,linklocal,uniquelocal}
+      # Rate limits: empty means "use the server default" (the server treats '' as unset).
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-}
+      RATE_LIMIT_WINDOW_SEC: ${RATE_LIMIT_WINDOW_SEC:-}
+      RATE_LIMIT_API_MAX: ${RATE_LIMIT_API_MAX:-}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-}
+      RATE_LIMIT_WEBHOOK_MAX: ${RATE_LIMIT_WEBHOOK_MAX:-}
+      RATE_LIMIT_MCP_MAX: ${RATE_LIMIT_MCP_MAX:-}
+      RATE_LIMIT_HEAVY_MAX: ${RATE_LIMIT_HEAVY_MAX:-}
+      RATE_LIMIT_STREAM_MAX: ${RATE_LIMIT_STREAM_MAX:-}
+      RATE_LIMIT_AGENT_CONNECT_MAX: ${RATE_LIMIT_AGENT_CONNECT_MAX:-}
+      RATE_LIMIT_AGENT_MSG_PER_SEC: ${RATE_LIMIT_AGENT_MSG_PER_SEC:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-orch}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-orch}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
