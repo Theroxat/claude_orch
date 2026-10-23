@@ -39,22 +39,25 @@ Org membership is checked at login with the user's own GitHub token, and again f
 
 These have defaults and are defined in `apps/server/src/config/index.ts`. To change one, add it to the `server` service `environment` in `compose.yaml`.
 
-| Variable                     | Default                     | Meaning                                                                  |
-| ---------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `DISPATCHER_ENABLED`         | `true`                      | Run the dispatcher                                                       |
-| `DISPATCHER_INTERVAL_MS`     | 5000                        | Dispatcher tick                                                          |
-| `AUTO_OFFER_TTL_SEC`         | 60                          | Pending auto offers expire after this                                    |
-| `CONSENT_REQUEST_TTL_SEC`    | 1800                        | Pending approval requests expire after this                              |
-| `USAGE_STALE_SEC`            | 900                         | A usage report older than this makes a member ineligible for auto offers |
-| `BUDGET_SAFETY_RESERVE`      | 0                           | Extra server-side reserve on top of the agent's own 20 %                 |
-| `OPUS_FACTOR`                | 5                           | Weight of Opus relative to Sonnet in estimates                           |
-| `PRO_WINDOW_WEIGHTED`        | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)         |
-| `EXEC_LEASE_GRACE_SEC`       | 900                         | Grace added to task timeouts before an auto run is declared lost         |
-| `AGENT_LEASE_SEC`            | 1800                        | Running assignments of an agent unseen this long become lost             |
-| `AGENT_HEARTBEAT_SEC`        | 30                          | Agent heartbeat interval                                                 |
-| `AGENT_HEARTBEAT_TIMEOUT_MS` | 90000                       | Agent considered offline after this                                      |
-| `AGENT_USAGE_SEC`            | 300                         | Usage report interval                                                    |
-| `ORCH_AGENT_IMAGE_REPO`      | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                     |
+| Variable                      | Default                     | Meaning                                                                          |
+| ----------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `DISPATCHER_ENABLED`          | `true`                      | Run the dispatcher                                                               |
+| `DISPATCHER_INTERVAL_MS`      | 5000                        | Dispatcher tick                                                                  |
+| `AUTO_OFFER_TTL_SEC`          | 60                          | Pending auto offers expire after this                                            |
+| `CONSENT_REQUEST_TTL_SEC`     | 1800                        | Pending approval requests expire after this                                      |
+| `USAGE_STALE_SEC`             | 900                         | A usage report older than this makes a member ineligible for auto offers         |
+| `BUDGET_SAFETY_RESERVE`       | 0                           | Extra server-side reserve on top of the agent's own 20 %                         |
+| `OPUS_FACTOR`                 | 5                           | Weight of Opus relative to Sonnet in estimates                                   |
+| `PRO_WINDOW_WEIGHTED`         | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)                 |
+| `EXEC_LEASE_GRACE_SEC`        | 900                         | Grace added to task timeouts before an auto run is declared lost                 |
+| `AGENT_LEASE_SEC`             | 1800                        | Running assignments of an agent unseen this long become lost                     |
+| `AGENT_HEARTBEAT_SEC`         | 30                          | Agent heartbeat interval                                                         |
+| `AGENT_HEARTBEAT_TIMEOUT_MS`  | 90000                       | Agent considered offline after this                                              |
+| `AGENT_USAGE_SEC`             | 300                         | Usage report interval                                                            |
+| `ORCH_AGENT_IMAGE_REPO`       | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                             |
+| `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability` |
+| `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset          |
 
 ## Agent environment
 
