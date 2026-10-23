@@ -4,26 +4,34 @@
 
 ## Server environment (`deploy/server/.env`)
 
-| Variable                                                                       | Required | Meaning                                                                               |
-| ------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------- |
-| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                       |
-| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                   |
-| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port          |
-| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [installation](installation.md#behind-cloudflare-tunnel)  |
-| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)          |
-| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                          |
-| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)               |
-| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up               |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App ({doc}`github-app`)                                              |
-| `ORCH_ADMIN_GITHUB_LOGINS`                                                     | yes (\*) | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page |
-| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | no (\*)  | Who may also sign in: GitHub logins and/or organizations, comma-separated             |
-| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public          |
-| `ORCH_ALLOWLIST_CACHE_SEC`                                                     | no       | How often org membership is re-checked for open sessions, default 300                 |
-| `ORCH_ACCESS_GRACE_SEC`                                                        | no       | GitHub outage grace for org-based access, default 900 (see {doc}`security`)           |
-| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                 |
-| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                     |
-| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start     |
+| Variable                                                                                               | Required    | Meaning                                                                                                           |
+| ------------------------------------------------------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ORCH_DOMAIN`                                                                                          | yes         | Public host name (example: `orch.selfhostr.io`)                                                                   |
+| `HTTP_PORT`, `HTTPS_PORT`                                                                              | no          | Host ports for Caddy (default 80 and 443). The only ports published                                               |
+| `ORCH_BASE_URL`                                                                                        | no          | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port                                      |
+| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`                                  | no          | Cloudflare Tunnel mode, see [installation](installation.md#behind-cloudflare-tunnel)                              |
+| `ORCH_TRUST_PROXY`                                                                                     | no          | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)                                      |
+| `ORCH_VERSION`                                                                                         | no          | Image tag of `orch-server` and `orch-web` (default `latest`)                                                      |
+| `POSTGRES_PASSWORD`                                                                                    | yes         | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                                           |
+| `ORCH_ENCRYPTION_KEY`                                                                                  | yes         | 32 random bytes, base64. Encrypts stored GitHub user tokens. Not in backups: store it separately ({doc}`backups`) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`                         | yes         | From your GitHub App ({doc}`github-app`)                                                                          |
+| `ORCH_ADMIN_GITHUB_LOGINS`                                                                             | yes (\*)    | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page                             |
+| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                                               | no (\*)     | Who may also sign in: GitHub logins and/or organizations, comma-separated                                         |
+| `ORCH_ALLOW_ANY_GITHUB_USER`                                                                           | no          | `true` lets any GitHub account sign in. Only for a server that is not public                                      |
+| `ORCH_ALLOWLIST_CACHE_SEC`                                                                             | no          | How often org membership is re-checked for open sessions, default 300                                             |
+| `ORCH_ACCESS_GRACE_SEC`                                                                                | no          | GitHub outage grace for org-based access, default 900 (see {doc}`security`)                                       |
+| `GITHUB_WEBHOOK_SECRET`                                                                                | yes         | Same value as the App's webhook secret                                                                            |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                                          | yes         | Host path of the App private key (default `./secrets/github-app.pem`)                                             |
+| `LOG_LEVEL`                                                                                            | no          | `info` by default                                                                                                 |
+| `BACKUP_SCHEDULE`                                                                                      | no          | Backup cron expression, UTC (default `0 3 * * *`). Replaces `BACKUP_HOUR_UTC`                                     |
+| `BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`, `BACKUP_KEEP_MONTHLY`                                       | no          | Rotation: days / ISO weeks / months kept (defaults 7, 4, 6). `BACKUP_RETENTION_DAYS` still sets the daily count   |
+| `BACKUP_ON_START`                                                                                      | no          | `true` also takes a backup when the container starts                                                              |
+| `BACKUP_VOLUME`                                                                                        | no          | Named volume (default `backups`) or host directory                                                                |
+| `BACKUP_AGE_RECIPIENT`                                                                                 | no          | age public key(s): dumps are encrypted to `.dump.age`. Keep the private key off-server                            |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_PREFIX`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_PROVIDER` | no          | Off-site upload target (S3-compatible), see {doc}`backups`                                                        |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`                                               | with bucket | Credentials of the bucket (never logged)                                                                          |
+| `BACKUP_S3_PRUNE`                                                                                      | no          | `true` also applies the rotation in the bucket (default: never delete remotely)                                   |
+| `POSTGRES_MAJOR`                                                                                       | no          | Postgres major for the database and the backup image (default 16)                                                 |
 
 (access-control)=
 

@@ -23,8 +23,10 @@ case "$cmd" in
   test) tools pnpm test "$@" ;;
   test:install)
     docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable install.sh
-    docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install
+    docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x -P deploy/server/backup deploy/server/backup/*.sh test/backup/integration.sh
+    docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install test/backup
     ;;
+  test:backup) exec ./test/backup/integration.sh ;;
   test:ui)
     dc --profile tools build tools
     exec ./test/ui/stack.sh test
@@ -44,6 +46,6 @@ case "$cmd" in
   logs) dc logs -f "$@" ;;
   ps) dc ps ;;
   help | *)
-    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|test:ui|e2e|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
+    echo "usage: ./dev <install|lint|format|typecheck|test|test:install|test:backup|test:ui|e2e|build|prisma ...|pnpm ...|sh|up|down|logs|ps>"
     ;;
 esac
