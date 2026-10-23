@@ -11,6 +11,7 @@ import {
   InstallUrlResponseSchema,
   TaskBoardSchema,
   TaskViewSchema,
+  TaskTemplateViewSchema,
   WhyNotRunningResponseSchema,
   OfferListResponseSchema,
   OnboardingResponseSchema,
@@ -22,6 +23,8 @@ import {
   type AddProjectRequest,
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
+  type CreateTemplateRequest,
+  type UpdateTemplateRequest,
   type UpdateProjectRequest,
   type UndoRejectionRequest,
   type UpsertParticipationRequest,
@@ -167,3 +170,13 @@ export const revokeInvite = (id: string) =>
   api('POST', `/admin/access/invites/${id}/revoke`, {
     schema: z.object({ invite: InviteSchema }),
   });
+
+export const fetchTemplates = (projectId?: string) =>
+  api('GET', projectId ? `/templates?projectId=${encodeURIComponent(projectId)}` : '/templates', {
+    schema: z.array(TaskTemplateViewSchema),
+  });
+export const createTemplate = (body: CreateTemplateRequest) =>
+  api('POST', '/templates', { body, schema: TaskTemplateViewSchema });
+export const updateTemplate = (id: string, body: UpdateTemplateRequest) =>
+  api('PATCH', `/templates/${id}`, { body, schema: TaskTemplateViewSchema });
+export const deleteTemplate = (id: string) => api<unknown>('DELETE', `/templates/${id}`);

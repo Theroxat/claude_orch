@@ -189,6 +189,8 @@ export interface CreateTaskInput {
   model: 'SONNET' | 'OPUS';
   dependsOn: string[];
   integrationBranch: string | null;
+  /** Extra GitHub labels (from a template), validated by the contract. */
+  labels?: string[];
   /** M4: who the dispatcher may offer the task to. */
   dispatch?: { mode: 'pool' | 'members' | 'broadcast'; memberIds?: string[] };
 }
@@ -202,6 +204,20 @@ export interface BatchItem {
   model: 'SONNET' | 'OPUS';
   /** Refs of this batch, or issue numbers (number, "12" or "#12") of existing tasks. */
   dependsOn: Array<string | number>;
+  /** Extra GitHub labels (from a template). */
+  labels?: string[];
+}
+
+/** The pool label first, then the extra labels (deduplicated, never the reserved ones). */
+export function issueLabels(poolLabel: string, extra: string[] = []): string[] {
+  const seen = new Set([poolLabel.toLowerCase(), 'orch-aborted']);
+  const out = [poolLabel];
+  for (const l of extra) {
+    if (seen.has(l.toLowerCase())) continue;
+    seen.add(l.toLowerCase());
+    out.push(l);
+  }
+  return out;
 }
 
 export interface BatchInput {
@@ -475,7 +491,7 @@ export class TaskService {
     const issue = await this.github().createIssue(
       Number(project.installation.githubInstallationId),
       project.fullName,
-      { title: input.title, body, labels: [project.poolLabel] },
+      { title: input.title, body, labels: issueLabels(project.poolLabel, input.labels) },
     );
     const snapshot = input.body.trim();
     const task = await this.prisma.task.create({
@@ -675,7 +691,7 @@ export class TaskService {
           await gh.createIssue(installationId, project.fullName, {
             title: it.title,
             body,
-            labels: [project.poolLabel],
+            labels: issueLabels(project.poolLabel, it.labels),
           }),
         );
       }

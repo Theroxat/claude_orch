@@ -69,6 +69,16 @@ enum DispatchMode {
   BROADCAST
 }
 
+enum TemplateScope {
+  PERSONAL
+  PROJECT
+}
+
+enum TemplateDependenciesMode {
+  NONE
+  ASK
+}
+
 enum TaskOrigin {
   PLATFORM
   LABEL_IMPORT
@@ -124,6 +134,7 @@ model User {
   agents           Agent[]
   enrollmentTokens EnrollmentToken[]
   createdTasks     Task[]              @relation("TaskCreator")
+  templates        TaskTemplate[]
   taskTargets      TaskTarget[]
   assignedTasks    Task[]              @relation("TaskAssignee")
   assignments      Assignment[]
@@ -180,6 +191,7 @@ model Project {
   permissions    ProjectPermission[]
   participations Participation[]
   tasks          Task[]
+  templates      TaskTemplate[]
 
   @@index([installationId])
 }
@@ -602,4 +614,30 @@ model AccessInvite {
   createdBy  String // admin login
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
+}
+
+/// Reusable task skeleton with `{{placeholders}}`. PERSONAL: visible to its creator only. PROJECT:
+/// shared with the project (managed by its owner). Built-in templates live in code, not here.
+model TaskTemplate {
+  id                 String                   @id @default(cuid())
+  scope              TemplateScope
+  projectId          String?
+  createdById        String
+  name               String
+  description        String                   @default("")
+  titleTemplate      String                   @default("")
+  bodyTemplate       String
+  acceptanceCriteria String[]
+  size               TaskSize                 @default(M)
+  model              Model                    @default(SONNET)
+  labels             String[]
+  dependenciesMode   TemplateDependenciesMode @default(NONE)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([createdById, scope])
+  @@index([projectId])
 }

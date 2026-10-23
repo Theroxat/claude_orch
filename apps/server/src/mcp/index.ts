@@ -16,12 +16,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   ListTasksInputSchema,
+  ListTemplatesInputSchema,
   SubmitTaskInputSchema,
   RetryTaskInputSchema,
   TakeTaskInputSchema,
   TaskStatusInputSchema,
   ViewPoolInputSchema,
   type ListTasksInput,
+  type ListTemplatesInput,
   type SubmitTaskInput,
   type TaskStatus,
   type TaskView,
@@ -35,10 +37,12 @@ import { buildPool } from '../offers';
 import {
   TaskService,
   effectiveStatus,
+  type BatchItem,
   issueUrlFor,
   taskInclude,
   type TaskRow,
 } from '../tasks/service';
+import { TemplateService } from '../templates';
 import { authenticateOAuthAccessToken, bearerOf, oauthUrls } from '../oauth';
 import { authenticatePat } from '../tokens';
 
@@ -98,6 +102,7 @@ function compactTask(v: TaskView) {
 /** Builds the MCP server for one authenticated request. */
 export function buildMcpServer(deps: McpDeps, user: User, ip?: string): McpServer {
   const svc = new TaskService(deps);
+  const templates = new TemplateService(deps);
   const { prisma } = deps;
 
   const projectByName = async (fullName: string) => {
@@ -170,6 +175,7 @@ export function buildMcpServer(deps: McpDeps, user: User, ip?: string): McpServe
       description: `Creates one or more tasks (one GitHub issue each) for the team's machines to run with Claude Code.
 BEFORE calling: read the relevant code and split large work into SMALL, INDEPENDENT subtasks, each one a single reviewable PR (prefer size S or M), with a self-contained description (context, files, approach: the runner does not see this conversation) and concrete acceptance criteria (tests to pass, observable behavior). Only add dependsOn when a subtask needs another merged first; independent subtasks run in parallel.
 Each subtask has a local "ref" (e.g. "a", "b"); dependsOn takes refs of this request or issue numbers of existing tasks. The whole request is validated first (unknown refs, cycles, rights, pending-task limit) and created atomically: all tasks or none. With integrationBranch, every PR targets that branch (created from the default branch if missing) and the project owner merges it at the end.
+For recurring kinds of work, give a task a "template" (see list_templates) and its "variables": the description, acceptance criteria, size, model and title are rendered from the template (explicit fields win). Every {{placeholder}} of the template needs a value.
 If you only have read access, the tasks are created as PROPOSED and wait for a maintainer. dispatch.mode: "pool" (default, best available member), "members" (only these GitHub logins), "broadcast" (project owner only).`,
       inputSchema: SubmitTaskInputSchema.shape,
     },
@@ -190,20 +196,31 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
           }
           memberIds = users.map((u) => u.id);
         }
+        const items: BatchItem[] = [];
+        for (const t of args.tasks) {
+          const tpl = t.template ? await templates.resolve(t.template, user, project.id) : null;
+          const r = tpl ? templates.render(tpl, t.variables ?? {}) : null;
+          if (!tpl && t.variables) {
+            throw new HttpError(400, 'invalid_request', `"${t.ref}": variables need a template`);
+          }
+          const model = t.model ?? (r ? (r.model === 'OPUS' ? 'opus' : 'sonnet') : undefined);
+          items.push({
+            ref: t.ref,
+            title: t.title ?? r?.title ?? '',
+            description: t.description ?? r?.body ?? '',
+            acceptanceCriteria: t.acceptanceCriteria ?? r?.acceptanceCriteria ?? [],
+            size: t.size ?? r?.size ?? 'M',
+            model: model === 'opus' ? 'OPUS' : 'SONNET',
+            dependsOn: t.dependsOn ?? [],
+            labels: r?.labels ?? [],
+          });
+        }
         const res = await svc.submitBatch(
           project,
           user,
           access,
           {
-            items: args.tasks.map((t) => ({
-              ref: t.ref,
-              title: t.title,
-              description: t.description,
-              acceptanceCriteria: t.acceptanceCriteria,
-              size: t.size,
-              model: t.model === 'opus' ? 'OPUS' : 'SONNET',
-              dependsOn: t.dependsOn ?? [],
-            })),
+            items,
             integrationBranch: args.integrationBranch ?? null,
             dispatch: { mode: dispatch.mode, memberIds },
           },
@@ -232,6 +249,39 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
             ),
             status: effectiveStatus(row),
             dependsOn: row.dependsOn.map((d) => d.dependsOn.githubIssueNumber),
+          })),
+        };
+      }),
+  );
+
+  server.registerTool(
+    'list_templates',
+    {
+      title: 'List task templates',
+      description:
+        'Lists the task templates you can use with submit_task: built-ins (fix a bug, upgrade a dependency, add tests, refactor a module), your personal ones and, with projectFullName, the ones shared by that project. Each template has an id, a name, the `placeholders` to fill (pass them as `variables`) and its default size, model and labels.',
+      inputSchema: ListTemplatesInputSchema.shape,
+      annotations: { readOnlyHint: true },
+    },
+    async (args: ListTemplatesInput) =>
+      run(async () => {
+        const projectId = args.projectFullName
+          ? (await projectByName(args.projectFullName))[0].id
+          : undefined;
+        const list = await templates.list(user, projectId);
+        return {
+          count: list.length,
+          templates: list.map((t) => ({
+            id: t.id,
+            name: t.name,
+            scope: t.scope,
+            description: t.description,
+            placeholders: t.placeholders,
+            size: t.size,
+            model: t.model.toLowerCase(),
+            labels: t.labels,
+            titleTemplate: t.titleTemplate,
+            acceptanceCriteria: t.acceptanceCriteria,
           })),
         };
       }),
