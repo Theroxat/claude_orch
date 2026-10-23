@@ -22,6 +22,7 @@ import {
   slackPayload,
   type OutgoingNotification,
 } from './format';
+import { PushError, createPushSender, type PushPayload, type PushSender } from './push';
 import { safePost, type WebhookPoster } from './ssrf';
 
 export type ExternalChannel = Exclude<NotificationChannel, 'in_app'>;
@@ -39,6 +40,8 @@ export interface NotifierDeps {
   post?: WebhookPoster;
   /** E-mail transport (default: nodemailer from SMTP_*, or none). */
   mailer?: Mailer | null;
+  /** Web Push sender (default: web-push from VAPID_*, or none). */
+  pusher?: PushSender | null;
   /** Drops recipients who lost access to orch or to the project (default: everyone receives). */
   canReceive?: RecipientCheck;
 }
@@ -93,6 +96,7 @@ export function channelTarget(
 ): string | null {
   if (!s) return null;
   if (channel === 'email') return hasMailer ? s.email : null;
+  if (channel === 'push') return null; // targets are the member's browsers, see PushSubscription
   const enc =
     channel === 'slack' ? s.slackUrlEnc : channel === 'discord' ? s.discordUrlEnc : s.webhookUrlEnc;
   if (!enc || !config.ORCH_ENCRYPTION_KEY) return null;
@@ -115,6 +119,8 @@ const RETRYABLE_STATUS = (status: number) => status === 408 || status === 429 ||
 export class Notifier {
   private readonly post: WebhookPoster;
   readonly mailer: Mailer | null;
+  /** Null when the server has no VAPID keys: the browser channel is unavailable. */
+  readonly pusher: PushSender | null;
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly timers = new Set<NodeJS.Timeout>();
   private purgeTimer: NodeJS.Timeout | undefined;
@@ -124,6 +130,7 @@ export class Notifier {
   constructor(private readonly deps: NotifierDeps) {
     this.post = deps.post ?? safePost;
     this.mailer = deps.mailer === undefined ? createMailer(deps.config) : deps.mailer;
+    this.pusher = deps.pusher === undefined ? createPushSender(deps.config) : deps.pusher;
   }
 
   start(): void {
@@ -198,6 +205,15 @@ export class Notifier {
     };
     for (const channel of channels) {
       if (channel === 'in_app') continue;
+      if (channel === 'push') {
+        if (!this.pusher) continue;
+        const subs = await prisma.pushSubscription.findMany({
+          where: { userId },
+          select: { endpoint: true },
+        });
+        for (const sub of subs) this.schedule(userId, 'push', sub.endpoint, out, 1, 0);
+        continue;
+      }
       const target = channelTarget(settings, channel, config, !!this.mailer);
       if (!target) continue;
       this.schedule(userId, channel, target, out, 1, 0);
@@ -253,6 +269,7 @@ export class Notifier {
       }
       return;
     }
+    if (channel === 'push') return this.sendPush(target, n);
     const body =
       channel === 'slack'
         ? slackPayload(n)
@@ -270,6 +287,29 @@ export class Notifier {
     if (!res.ok) throw new DeliveryError(`HTTP ${res.status}`, RETRYABLE_STATUS(res.status));
   }
 
+  /** One browser. `endpoint` identifies the subscription; a 404/410 means it is gone for good. */
+  private async sendPush(endpoint: string, n: OutgoingNotification): Promise<void> {
+    if (!this.pusher) throw new DeliveryError('push_not_configured', false);
+    const { prisma } = this.deps;
+    const sub = await prisma.pushSubscription.findUnique({ where: { endpoint } });
+    if (!sub) throw new DeliveryError('subscription_gone', false); // unsubscribed meanwhile
+    try {
+      await this.pusher(sub, pushPayload(n));
+    } catch (err) {
+      const status = err instanceof PushError ? err.status : undefined;
+      if (status === 404 || status === 410) {
+        await prisma.pushSubscription.deleteMany({ where: { endpoint } });
+        throw new DeliveryError(`HTTP ${status}: subscription expired`, false);
+      }
+      const reason = err instanceof Error ? err.message : 'push_error';
+      // 4xx other than 408/429 (bad VAPID, payload too large) will not pass on a retry.
+      throw new DeliveryError(reason, status === undefined || RETRYABLE_STATUS(status));
+    }
+    await prisma.pushSubscription
+      .updateMany({ where: { endpoint }, data: { lastUsedAt: new Date() } })
+      .catch(() => undefined);
+  }
+
   /** Deletes in-app notifications past the retention period. */
   async purge(now = new Date()): Promise<number> {
     const before = new Date(now.getTime() - this.deps.config.NOTIFY_RETENTION_DAYS * 86_400_000);
@@ -278,6 +318,17 @@ export class Notifier {
     });
     return r.count;
   }
+}
+
+/** What a browser shows: short text and an app path, never an external link. */
+export function pushPayload(n: OutgoingNotification): PushPayload {
+  const url = n.url?.startsWith('/') ? n.url : n.taskId ? `/backlog?task=${n.taskId}` : null;
+  return {
+    title: n.title.slice(0, 120),
+    body: n.body.slice(0, 200),
+    url,
+    tag: n.id,
+  };
 }
 
 export const TEST_DRAFT: NotificationDraft = {

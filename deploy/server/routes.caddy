@@ -45,6 +45,10 @@ handle /healthz {
 	reverse_proxy server:3000
 }
 
+# The Web Push worker is re-fetched when a browser checks for updates: never serve a stale copy.
+@pushsw path /push-sw.js
+header @pushsw Cache-Control "no-cache"
+
 # The single-page app, built at image build time.
 handle {
 	root * /srv

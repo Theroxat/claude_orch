@@ -21,11 +21,13 @@ import {
   ProjectViewSchema,
   NotificationListResponseSchema,
   NotificationSettingsViewSchema,
+  PushStatusSchema,
   SendTestNotificationResponseSchema,
   UnreadCountResponseSchema,
   type AddProjectRequest,
   type MarkNotificationsReadRequest,
   type NotificationChannel,
+  type PushSubscribeRequest,
   type UpdateNotificationSettingsRequest,
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
@@ -185,6 +187,10 @@ export const fetchNotificationSettings = () =>
   api('GET', '/notifications/settings', { schema: NotificationSettingsViewSchema });
 export const updateNotificationSettings = (body: UpdateNotificationSettingsRequest) =>
   api('PUT', '/notifications/settings', { body, schema: NotificationSettingsViewSchema });
+export const pushSubscribe = (body: PushSubscribeRequest) =>
+  api('POST', '/notifications/push/subscribe', { body, schema: PushStatusSchema });
+export const pushUnsubscribe = (endpoint: string) =>
+  api('POST', '/notifications/push/unsubscribe', { body: { endpoint }, schema: PushStatusSchema });
 export const sendTestNotification = (channel: NotificationChannel) =>
   api('POST', '/notifications/test', {
     body: { channel },

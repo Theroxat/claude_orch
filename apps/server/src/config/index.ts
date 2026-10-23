@@ -150,6 +150,14 @@ const ConfigSchema = z.object({
   SMTP_PASSWORD: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Sender, e.g. `orch <orch@example.com>`. Default: orch@<host of the public URL>. */
   SMTP_FROM: z.preprocess(emptyToUndefined, z.string().optional()),
+  /**
+   * Web Push (VAPID). Generate with `npx web-push generate-vapid-keys`. All three, or none: without
+   * them the browser channel is unavailable. SUBJECT is a `mailto:` address or an https URL that
+   * push services can contact.
+   */
+  VAPID_PUBLIC_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  VAPID_PRIVATE_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  VAPID_SUBJECT: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -162,6 +170,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
   const c = parsed.data;
+  const vapid = [c.VAPID_PUBLIC_KEY, c.VAPID_PRIVATE_KEY, c.VAPID_SUBJECT];
+  if (vapid.some(Boolean)) {
+    if (!vapid.every(Boolean)) {
+      throw new Error(
+        'Invalid configuration:\n  VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT must be set together',
+      );
+    }
+    if (!/^(mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/.test(c.VAPID_SUBJECT!)) {
+      throw new Error(
+        'Invalid configuration:\n  VAPID_SUBJECT: use a mailto: address or an https URL',
+      );
+    }
+  }
   if (c.ORCH_PUBLIC_URL) c.ORCH_BASE_URL = c.ORCH_PUBLIC_URL;
   return c;
 }

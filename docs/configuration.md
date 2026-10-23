@@ -36,6 +36,16 @@
 | `SMTP_PASSWORD` | (unset)              | SMTP password                                                                    |
 | `SMTP_FROM`     | `orch <orch@domain>` | Sender address; the default uses the host of the public URL                      |
 
+### Browser notifications (optional)
+
+| Variable            | Default | Meaning                                                                                         |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `VAPID_PUBLIC_KEY`  | (unset) | VAPID public key. Without the three variables the browser channel is unavailable                |
+| `VAPID_PRIVATE_KEY` | (unset) | VAPID private key. Keep it secret, and keep it: changing it unsubscribes every browser          |
+| `VAPID_SUBJECT`     | (unset) | Contact for push services: `mailto:you@example.com` or an `https://` URL ({doc}`notifications`) |
+
+Generate the pair once with `npx web-push generate-vapid-keys`.
+
 (access-control)=
 
 ### Who may sign in
