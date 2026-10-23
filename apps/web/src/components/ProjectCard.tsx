@@ -12,6 +12,7 @@ import { Modal, closeModal } from '../ui/Modal';
 import { presenceProps, usePresence, type Phase } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 import { OwnerParticipation } from './OwnerParticipation';
+import { TemplatesManager } from './TemplatesManager';
 
 const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
   GITHUB:
@@ -243,6 +244,7 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
       ]);
     },
   });
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const id = project.id;
   return (
     <article className="card" aria-label={project.fullName} {...presenceProps(phase)}>
@@ -323,6 +325,12 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
           <span className="hint">New participants stay pending until you approve them.</span>
         </label>
       </div>
+      <details className="tpl-details" onToggle={(e) => setTemplatesOpen(e.currentTarget.open)}>
+        <summary>Shared templates</summary>
+        {templatesOpen && (
+          <TemplatesManager scope="project" projectId={project.id} heading={false} />
+        )}
+      </details>
       <OwnerParticipation project={project} />
       <ParticipantsApproval project={project} />
     </article>

@@ -1,8 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { DispatchRequest, ProjectTaskAccess, TaskSize, TaskView } from '@orch/shared';
+import {
+  TemplateError,
+  previewTemplate,
+  renderTemplate,
+  type DispatchRequest,
+  type ProjectTaskAccess,
+  type TaskSize,
+  type TaskTemplateView,
+  type TaskView,
+} from '@orch/shared';
 import { useState } from 'react';
 import { createTask, fetchPool } from '../api/endpoints';
 import { Modal, closeModal } from '../ui/Modal';
+import { TemplateFill } from './TemplateFill';
+import { TemplatePicker } from './TemplatePicker';
 import { useToast } from '../ui/Toast';
 
 export type BoardProject = {
@@ -36,6 +47,8 @@ export function NewTaskDialog({
   const [sendTo, setSendTo] = useState<DispatchRequest['mode']>('pool');
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [invalid, setInvalid] = useState<string | null>(null);
+  const [template, setTemplate] = useState<TaskTemplateView | null>(null);
+  const [vars, setVars] = useState<Record<string, string>>({});
   const projectAccess = access[projectId];
   const pool = useQuery({
     queryKey: ['pool', projectId],
@@ -53,15 +66,35 @@ export function NewTaskDialog({
     m.projects.some((p) => p.projectId === projectId),
   );
   const projectTasks = tasks.filter((t) => t.projectId === projectId);
+  const pickTemplate = (t: TaskTemplateView) => {
+    setTemplate(t);
+    setVars({});
+    setSize(t.size);
+    setModel(t.model);
+    setInvalid(null);
+  };
+  /** Keeps what the template produced so far as plain text the user can edit freely. */
+  const detachTemplate = () => {
+    if (!template) return;
+    const p = previewTemplate(template, vars);
+    setTitle(p.title);
+    setBody(p.body);
+    setCriteria(p.acceptanceCriteria.join('\n'));
+    setTemplate(null);
+  };
   const create = useMutation({
-    mutationFn: () =>
-      createTask(projectId, {
-        title: title.trim(),
-        body: body.trim(),
-        acceptanceCriteria: criteria
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean),
+    mutationFn: () => {
+      const rendered = template ? renderTemplate(template, vars) : null;
+      return createTask(projectId, {
+        title: rendered ? rendered.title : title.trim(),
+        body: rendered ? rendered.body : body.trim(),
+        acceptanceCriteria: rendered
+          ? rendered.acceptanceCriteria
+          : criteria
+              .split('\n')
+              .map((l) => l.trim())
+              .filter(Boolean),
+        ...(rendered && rendered.labels.length > 0 ? { labels: rendered.labels } : {}),
         size,
         model,
         dependsOn: deps,
@@ -71,7 +104,8 @@ export function NewTaskDialog({
           : mode === 'broadcast'
             ? { dispatch: { mode } }
             : {}),
-      }),
+      });
+    },
     onSuccess: async (t) => {
       toast(`#${t.issueNumber} created`);
       await qc.invalidateQueries({ queryKey: ['tasks'] });
@@ -79,7 +113,21 @@ export function NewTaskDialog({
     },
   });
   const submit = () => {
-    if (title.trim() === '') {
+    if (template) {
+      try {
+        renderTemplate(template, vars);
+      } catch (err) {
+        if (err instanceof TemplateError) {
+          setInvalid(
+            err.code === 'missing_variables'
+              ? `Fill in every field of the template: ${err.names.join(', ')}.`
+              : err.message,
+          );
+          return;
+        }
+        throw err;
+      }
+    } else if (title.trim() === '') {
       setInvalid('Title is required.');
       return;
     }
@@ -100,6 +148,7 @@ export function NewTaskDialog({
             setProjectId(e.target.value);
             setDeps([]);
             setMemberIds([]);
+            if (template && template.scope === 'project') setTemplate(null);
           }}
         >
           {projects.map((p) => (
@@ -114,18 +163,54 @@ export function NewTaskDialog({
           This task will be created as Proposed until a maintainer approves it.
         </p>
       )}
-      <label className="field">
-        Title
-        <input value={title} onChange={(e) => setTitle(e.target.value)} />
-      </label>
-      <label className="field">
-        Description
-        <textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
-      </label>
-      <label className="field">
-        Acceptance criteria (one per line)
-        <textarea rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
-      </label>
+      <TemplatePicker
+        projectId={projectId}
+        selected={template}
+        onPick={pickTemplate}
+        onClear={() => setTemplate(null)}
+      />
+      {template ? (
+        <>
+          <TemplateFill
+            template={template}
+            values={vars}
+            onChange={(n, v) => setVars((cur) => ({ ...cur, [n]: v }))}
+          />
+          <div className="tpl-meta">
+            {template.labels.length > 0 && (
+              <span>
+                Labels:{' '}
+                {template.labels.map((l) => (
+                  <span key={l} className="tag">
+                    {l}
+                  </span>
+                ))}
+              </span>
+            )}
+            <button type="button" className="ghost" onClick={detachTemplate}>
+              Edit as plain text
+            </button>
+          </div>
+          {template.dependenciesMode === 'ask' && (
+            <p className="hint">This kind of task usually depends on others: pick them below.</p>
+          )}
+        </>
+      ) : (
+        <>
+          <label className="field">
+            Title
+            <input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label className="field">
+            Description
+            <textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
+          </label>
+          <label className="field">
+            Acceptance criteria (one per line)
+            <textarea rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
+          </label>
+        </>
+      )}
       <div className="form-grid">
         <label className="field">
           Size

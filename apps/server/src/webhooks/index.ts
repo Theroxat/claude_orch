@@ -84,62 +84,72 @@ export function registerWebhooks(
       done(null, body),
     );
 
-    scope.post('/api/github/webhook', async (req, reply): Promise<WebhookResponse> => {
-      const secret = config.GITHUB_WEBHOOK_SECRET;
-      if (!secret) throw new HttpError(503, 'webhook_not_configured', 'Webhook secret is not set');
-      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      const sig = req.headers['x-hub-signature-256'];
-      if (!verifySignature(secret, raw, typeof sig === 'string' ? sig : undefined)) {
-        // Delivery id and event only: never the signature, the secret or the body.
-        req.log.warn(
-          {
-            deliveryId: header(req, 'x-github-delivery') ?? null,
-            event: header(req, 'x-github-event') ?? null,
-          },
-          'webhook signature verification failed',
-        );
-        throw new HttpError(401, 'bad_signature', 'Invalid webhook signature');
-      }
-      const event = header(req, 'x-github-event');
-      const deliveryId = header(req, 'x-github-delivery');
-      if (!event || !deliveryId) {
-        throw new HttpError(400, 'invalid_request', 'Missing X-GitHub-Event or X-GitHub-Delivery');
-      }
-      // Signature verified: GitHub's event name, still restricted to a short safe token.
-      const eventLabel = /^[a-z_]{1,40}$/.test(event) ? event : 'other';
-      let payload: Payload;
-      try {
-        payload = JSON.parse(raw.toString('utf8')) as Payload;
-      } catch {
-        throw new HttpError(400, 'invalid_json', 'Malformed JSON body');
-      }
-      try {
-        await prisma.webhookDelivery.create({
-          data: { deliveryId, event, bodyHash: createHash('sha256').update(raw).digest('hex') },
-        });
-      } catch (err) {
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'duplicate' });
-          return { ok: true, duplicate: true };
+    // Explicit cap: the webhook is public and only HMAC-checked after the body is read.
+    scope.post(
+      '/api/github/webhook',
+      { bodyLimit: 1024 * 1024 },
+      async (req, reply): Promise<WebhookResponse> => {
+        const secret = config.GITHUB_WEBHOOK_SECRET;
+        if (!secret)
+          throw new HttpError(503, 'webhook_not_configured', 'Webhook secret is not set');
+        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        const sig = req.headers['x-hub-signature-256'];
+        if (!verifySignature(secret, raw, typeof sig === 'string' ? sig : undefined)) {
+          // Delivery id and event only: never the signature, the secret or the body.
+          req.log.warn(
+            {
+              deliveryId: header(req, 'x-github-delivery') ?? null,
+              event: header(req, 'x-github-event') ?? null,
+            },
+            'webhook signature verification failed',
+          );
+          throw new HttpError(401, 'bad_signature', 'Invalid webhook signature');
         }
-        throw err;
-      }
-      let result: string;
-      try {
-        result = await handle(event, payload);
-      } catch (err) {
-        deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'failed' });
-        await prisma.webhookDelivery.deleteMany({ where: { deliveryId } });
-        throw err;
-      }
-      await prisma.webhookDelivery.update({
-        where: { deliveryId },
-        data: { processedAt: new Date() },
-      });
-      deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'processed' });
-      reply.status(200);
-      return { ok: true, result };
-    });
+        const event = header(req, 'x-github-event');
+        const deliveryId = header(req, 'x-github-delivery');
+        if (!event || !deliveryId) {
+          throw new HttpError(
+            400,
+            'invalid_request',
+            'Missing X-GitHub-Event or X-GitHub-Delivery',
+          );
+        }
+        // Signature verified: GitHub's event name, still restricted to a short safe token.
+        const eventLabel = /^[a-z_]{1,40}$/.test(event) ? event : 'other';
+        let payload: Payload;
+        try {
+          payload = JSON.parse(raw.toString('utf8')) as Payload;
+        } catch {
+          throw new HttpError(400, 'invalid_json', 'Malformed JSON body');
+        }
+        try {
+          await prisma.webhookDelivery.create({
+            data: { deliveryId, event, bodyHash: createHash('sha256').update(raw).digest('hex') },
+          });
+        } catch (err) {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'duplicate' });
+            return { ok: true, duplicate: true };
+          }
+          throw err;
+        }
+        let result: string;
+        try {
+          result = await handle(event, payload);
+        } catch (err) {
+          deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'failed' });
+          await prisma.webhookDelivery.deleteMany({ where: { deliveryId } });
+          throw err;
+        }
+        await prisma.webhookDelivery.update({
+          where: { deliveryId },
+          data: { processedAt: new Date() },
+        });
+        deps.metrics?.webhookDeliveries.inc({ event: eventLabel, result: 'processed' });
+        reply.status(200);
+        return { ok: true, result };
+      },
+    );
   });
 
   function header(req: FastifyRequest, name: string): string | undefined {
@@ -412,7 +422,8 @@ export function registerWebhooks(
         action: 'task.in_review',
         projectId: project.id,
         taskId: task.id,
-        data: { prNumber: pr.number },
+        // Already IN_REVIEW: orch opened this PR itself (task.pr_opened) or it is a reopen/ready.
+        data: { prNumber: pr.number, alreadyInReview: task.status === 'IN_REVIEW' },
       });
       return 'in_review';
     }

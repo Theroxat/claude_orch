@@ -34,10 +34,65 @@ const ConfigSchema = z.object({
    * comma-separated list of addresses, CIDRs or the aliases loopback, linklocal, uniquelocal.
    * Default: private networks only, so the Caddy container is trusted and the internet is not.
    */
-  ORCH_TRUST_PROXY: z
-    .string()
-    .default('loopback,linklocal,uniquelocal')
-    .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+  ORCH_TRUST_PROXY: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .default('loopback,linklocal,uniquelocal')
+      .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+  ),
+  /**
+   * Rate limiting (in-memory, single instance). Limits are per window (RATE_LIMIT_WINDOW_SEC):
+   * API per signed-in user (else per IP), auth/OAuth per IP, webhook per IP, MCP per token,
+   * expensive reads per user. 0 on a *_MAX value is not allowed; set RATE_LIMIT_ENABLED=false
+   * to turn the HTTP limiter off.
+   */
+  RATE_LIMIT_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+  ),
+  RATE_LIMIT_WINDOW_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  RATE_LIMIT_API_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(300),
+  ),
+  RATE_LIMIT_AUTH_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  RATE_LIMIT_WEBHOOK_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(600),
+  ),
+  RATE_LIMIT_MCP_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(120),
+  ),
+  RATE_LIMIT_HEAVY_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  /** Live-log streams (SSE) opened per user per window: counts connections, not events. */
+  RATE_LIMIT_STREAM_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(30),
+  ),
+  /** New agent WebSocket connections per IP per window. */
+  RATE_LIMIT_AGENT_CONNECT_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(30),
+  ),
+  /** Messages per second per agent connection; above it the socket is closed (4429). 0 = off. */
+  RATE_LIMIT_AGENT_MSG_PER_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().nonnegative().default(100),
+  ),
   /** Release version of this server (set at image build). `dev` for local builds. */
   ORCH_VERSION: z
     .string()
@@ -140,6 +195,33 @@ const ConfigSchema = z.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyToUndefined, z.url().optional()),
   /** Running assignments of an agent unseen (and disconnected) for this long become LOST. */
   AGENT_LEASE_SEC: z.coerce.number().int().positive().default(1_800),
+  // Notifications.
+  /** Attempts per external delivery (Slack, Discord, webhook, e-mail) before giving up. */
+  NOTIFY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(4),
+  /** First retry delay; each next one is 4x longer (2 s, 8 s, 32 s by default). */
+  NOTIFY_RETRY_BASE_MS: z.coerce.number().int().positive().default(2_000),
+  /** In-app notifications older than this are deleted. */
+  NOTIFY_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  /** Optional SMTP server for e-mail notifications. The e-mail channel exists only when set. */
+  SMTP_HOST: z.preprocess(emptyToUndefined, z.string().optional()),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  /** `true`: TLS from the first byte (port 465). `false`: STARTTLS when the server offers it. */
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  SMTP_USER: z.preprocess(emptyToUndefined, z.string().optional()),
+  SMTP_PASSWORD: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Sender, e.g. `orch <orch@example.com>`. Default: orch@<host of the public URL>. */
+  SMTP_FROM: z.preprocess(emptyToUndefined, z.string().optional()),
+  /**
+   * Web Push (VAPID). Generate with `npx web-push generate-vapid-keys`. All three, or none: without
+   * them the browser channel is unavailable. SUBJECT is a `mailto:` address or an https URL that
+   * push services can contact.
+   */
+  VAPID_PUBLIC_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  VAPID_PRIVATE_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
+  VAPID_SUBJECT: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -152,6 +234,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
   const c = parsed.data;
+  const vapid = [c.VAPID_PUBLIC_KEY, c.VAPID_PRIVATE_KEY, c.VAPID_SUBJECT];
+  if (vapid.some(Boolean)) {
+    if (!vapid.every(Boolean)) {
+      throw new Error(
+        'Invalid configuration:\n  VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT must be set together',
+      );
+    }
+    if (!/^(mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/.test(c.VAPID_SUBJECT!)) {
+      throw new Error(
+        'Invalid configuration:\n  VAPID_SUBJECT: use a mailto: address or an https URL',
+      );
+    }
+  }
   if (c.ORCH_PUBLIC_URL) c.ORCH_BASE_URL = c.ORCH_PUBLIC_URL;
   return c;
 }

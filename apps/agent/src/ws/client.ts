@@ -45,6 +45,8 @@ export interface WsClientOptions {
    * on upgrade). Default 60 s; the usual jittered backoff is added on top.
    */
   suspendedRetryMs?: number;
+  /** Extra wait after the server closed us for sending too fast (4429). Default 10 s. */
+  rateLimitedRetryMs?: number;
 }
 
 const FATAL_HINTS: Record<number, string> = {
@@ -84,6 +86,19 @@ export class WsClient extends EventEmitter<WsClientEvents> {
   send(msg: AgentMessage): boolean {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+
+  /**
+   * Best-effort send (live output): refused when not ready or when more than `maxBuffered`
+   * bytes are still queued on the socket, so a slow link never piles up memory or delays
+   * the acked messages behind it.
+   */
+  sendBestEffort(msg: AgentMessage, maxBuffered = 256 * 1024): boolean {
+    const ws = this.ws;
+    if (this.state !== 'ready' || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (ws.bufferedAmount > maxBuffered) return false;
     ws.send(JSON.stringify(msg));
     return true;
   }
@@ -167,7 +182,12 @@ export class WsClient extends EventEmitter<WsClientEvents> {
         );
         return;
       }
-      this.scheduleReconnect(code, reason);
+      // Cut off for flooding: wait before reconnecting even though the welcome reset the backoff.
+      this.scheduleReconnect(
+        code,
+        reason,
+        code === CloseCode.RATE_LIMITED ? (this.opts.rateLimitedRetryMs ?? 10_000) : 0,
+      );
     });
   }
 

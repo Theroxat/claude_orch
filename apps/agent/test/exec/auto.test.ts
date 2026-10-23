@@ -2,7 +2,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { serverMessage, type ServerMessage, type TaskOfferPayload } from '@orch/shared';
+import {
+  serverMessage,
+  type ServerMessage,
+  type TaskLogPayload,
+  type TaskOfferPayload,
+} from '@orch/shared';
 import { ClaudeAuthState, CLAUDE_AUTH_REJECT_PREFIX } from '../../src/claude-auth';
 import {
   MAX_TURNS,
@@ -32,6 +37,7 @@ import {
 
 const CLAUDE_TOKEN = 'sk-ant-oat01-' + 'Au7'.repeat(20);
 const GH_TOKEN = 'ghs_' + 'Aut0'.repeat(10);
+const AGENT_CREDENTIAL = 'orch_agent_agt1.' + 'S3cr'.repeat(10);
 
 interface Sent {
   id: string;
@@ -45,7 +51,15 @@ afterEach(() => tmp.cleanup());
 
 type Mode = 'AUTO' | 'APPROVAL';
 
-function setup(opts: { paused?: boolean; max?: number; mode?: Mode; models?: string[] } = {}) {
+function setup(
+  opts: {
+    paused?: boolean;
+    max?: number;
+    mode?: Mode;
+    models?: string[];
+    live?: (p: TaskLogPayload) => boolean;
+  } = {},
+) {
   const git = new FakeGit();
   const docker = new FakeDocker();
   const screen = new FakeScreen();
@@ -92,6 +106,7 @@ function setup(opts: { paused?: boolean; max?: number; mode?: Mode; models?: str
         allowedModels: opts.models ?? ['SONNET', 'OPUS'],
       },
     ],
+    ...(opts.live ? { sendLiveLog: opts.live, knownSecrets: () => [AGENT_CREDENTIAL] } : {}),
     logger: silentLogger,
   };
   const make = () => new ManualExecutor(cfg, deps as never);
@@ -752,5 +767,84 @@ describe('commit author: the task creator (v0.6.2)', () => {
     expect(creatorIdentity({ login: 'bob', githubId: 0 })).toBeNull();
     expect(creatorIdentity({ login: 'evil> <x@y', githubId: 7 })).toBeNull();
     expect(creatorIdentity({ login: 'a\nb', githubId: 7 })).toBeNull();
+  });
+});
+
+describe('auto mode: live output (task.log)', () => {
+  it('streams compact, redacted entries while claude runs, then flushes at the end', async () => {
+    const batches: TaskLogPayload[] = [];
+    const t = setup({ live: (p) => (batches.push(p), true) });
+    t.proc.script = (run) => {
+      run.stdout(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet' }));
+      run.stdout(
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: `token is ${CLAUDE_TOKEN}` },
+              { type: 'tool_use', name: 'Bash', input: { command: `echo ${GH_TOKEN}` } },
+            ],
+          },
+        }),
+      );
+      run.stdout(
+        JSON.stringify({
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', content: `\u001b[32m${AGENT_CREDENTIAL}\u001b[0m` }],
+          },
+        }),
+      );
+      run.stderr('warning: something');
+      run.stdout(resultLine());
+      run.finish(0);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.ex.store.get('asg_1')?.state).toBe('finished');
+    const entries = batches.flatMap((b) => b.entries);
+    expect(batches.every((b) => b.assignmentId === 'asg_1')).toBe(true);
+    expect(entries.map((e) => e.kind)).toEqual([
+      'system',
+      'text',
+      'tool',
+      'tool_result',
+      'stderr',
+      'result',
+    ]);
+    expect(entries[2]).toMatchObject({ tool: 'Bash', text: 'echo [REDACTED]' });
+    const all = JSON.stringify(batches);
+    for (const secret of [CLAUDE_TOKEN, GH_TOKEN, AGENT_CREDENTIAL]) {
+      expect(all).not.toContain(secret);
+    }
+    expect(all).not.toContain('\\u001b');
+  });
+
+  it('a failing or throwing sender never affects the run', async () => {
+    const t = setup({
+      live: () => {
+        throw new Error('socket exploded');
+      },
+    });
+    t.proc.script = finishOk;
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    expect(t.ex.store.get('asg_1')?.state).toBe('finished');
+    expect(t.of('task.finished')[0]!.payload).toMatchObject({ outcome: 'succeeded' });
+  });
+
+  it('drops pending output on task.cancel and sends nothing afterwards', async () => {
+    const batches: TaskLogPayload[] = [];
+    const t = setup({ live: (p) => (batches.push(p), true) });
+    acceptAndAck(t, autoOffer());
+    await waitFor(() => t.proc.runs.length === 1, { what: 'claude started' });
+    const run = t.proc.runs[0]!;
+    run.stdout(JSON.stringify({ type: 'system', subtype: 'init' }));
+    t.ex.handle(serverMessage('task.cancel', { assignmentId: 'asg_1', reason: 'mode_changed' }));
+    await t.ex.idle();
+    run.stdout(JSON.stringify({ type: 'system', subtype: 'init' }));
+    await new Promise((r) => setTimeout(r, 600));
+    expect(batches).toEqual([]);
+    expect(t.of('task.finished').map((s) => s.payload.outcome)).toEqual(['cancelled']);
   });
 });

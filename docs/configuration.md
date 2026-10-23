@@ -33,6 +33,27 @@
 | `BACKUP_S3_PRUNE`                                                                                      | no          | `true` also applies the rotation in the bucket (default: never delete remotely)                                   |
 | `POSTGRES_MAJOR`                                                                                       | no          | Postgres major for the database and the backup image (default 16)                                                 |
 
+### E-mail notifications (optional)
+
+| Variable        | Default              | Meaning                                                                          |
+| --------------- | -------------------- | -------------------------------------------------------------------------------- |
+| `SMTP_HOST`     | (unset)              | SMTP server. Without it the e-mail channel is unavailable ({doc}`notifications`) |
+| `SMTP_PORT`     | 587                  | SMTP port                                                                        |
+| `SMTP_SECURE`   | `false`              | `true`: TLS from the first byte (port 465). `false`: STARTTLS when offered       |
+| `SMTP_USER`     | (unset)              | SMTP login. No authentication when unset                                         |
+| `SMTP_PASSWORD` | (unset)              | SMTP password                                                                    |
+| `SMTP_FROM`     | `orch <orch@domain>` | Sender address; the default uses the host of the public URL                      |
+
+### Browser notifications (optional)
+
+| Variable            | Default | Meaning                                                                                         |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `VAPID_PUBLIC_KEY`  | (unset) | VAPID public key. Without the three variables the browser channel is unavailable                |
+| `VAPID_PRIVATE_KEY` | (unset) | VAPID private key. Keep it secret, and keep it: changing it unsubscribes every browser          |
+| `VAPID_SUBJECT`     | (unset) | Contact for push services: `mailto:you@example.com` or an `https://` URL ({doc}`notifications`) |
+
+Generate the pair once with `npx web-push generate-vapid-keys`.
+
 (access-control)=
 
 ### Who may sign in
@@ -42,6 +63,31 @@
 The usual setup is to list yourself in `ORCH_ADMIN_GITHUB_LOGINS` and let people in from the web UI (see "Managing access" in {doc}`installation`). A user may sign in if they are an admin, **or** their login is listed, **or** they are an active member of a listed organization, **or** an admin approved them on the Access page.
 
 Org membership is checked at login with the user's own GitHub token, and again for open sessions every `ORCH_ALLOWLIST_CACHE_SEC` seconds (default 300). Removing someone from the list or the org therefore takes effect within minutes (logins are re-checked on every request). Org checks need the GitHub App organization permission **Members: Read-only** ({doc}`github-app`) and the App installed on, or approved by, the organization. In development and tests an empty allowlist only logs a warning.
+
+(rate-limits)=
+
+### Rate limits
+
+The server limits requests with an **in-memory** counter (`@fastify/rate-limit`). orch runs as one server instance, so no shared store is needed; counters reset when the server restarts and are not shared between instances. Each limit counts requests per window (`RATE_LIMIT_WINDOW_SEC`, default 60 s). Over the limit the server answers `429` with a `Retry-After` header, `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` headers, and the usual error body `{"error": {"code": "rate_limited", "message": "..."}}`. The web app shows a short notice.
+
+| Variable                       | Default | Applies to (key)                                                                                                                                                        |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RATE_LIMIT_ENABLED`           | `true`  | `false` turns the HTTP limiter off (also the agent message cap)                                                                                                         |
+| `RATE_LIMIT_WINDOW_SEC`        | 60      | Window length of every limit below                                                                                                                                      |
+| `RATE_LIMIT_API_MAX`           | 300     | All other routes (signed-in user, else client IP)                                                                                                                       |
+| `RATE_LIMIT_AUTH_MAX`          | 60      | Sign-in start and callback, access requests, OAuth `authorize`/`register`/`token`/`revoke`, agent enrollment, invite links (client IP)                                  |
+| `RATE_LIMIT_WEBHOOK_MAX`       | 600     | `POST /api/github/webhook` (client IP). Bodies are capped at 1 MiB                                                                                                      |
+| `RATE_LIMIT_MCP_MAX`           | 120     | `/mcp` (bearer token, else client IP)                                                                                                                                   |
+| `RATE_LIMIT_HEAVY_MAX`         | 60      | Expensive reads such as the pool view, usage and task history (signed-in user)                                                                                          |
+| `RATE_LIMIT_STREAM_MAX`        | 30      | Live-log streams (SSE) opened per user. Counts openings, so a reconnect storm is limited; an open stream costs one hit                                                  |
+| `RATE_LIMIT_AGENT_CONNECT_MAX` | 30      | New agent WebSocket connections (client IP)                                                                                                                             |
+| `RATE_LIMIT_AGENT_MSG_PER_SEC` | 100     | Messages per second on one agent connection. Above it the socket is closed with code 4429; the agent reconnects with its normal backoff plus 10 s. `0` disables the cap |
+
+MCP is limited per bearer token and, to stop token spraying, also per client IP (5x the per-token limit). IPv6 clients are counted per /64. In `deploy/server/compose.yaml` these variables are passed through only when set in `.env` (an empty value means the default).
+
+Health checks (`/healthz`, `/api/healthz`), `install.sh` and `/agent/compose.yaml` are never limited. The existing per-IP limits on access requests and on OAuth registration and token calls stay in place on top of these.
+
+The client IP comes from `X-Forwarded-For` only when the direct peer is in `ORCH_TRUST_PROXY` (default: private networks, i.e. the Caddy container, which sets the header itself; in Cloudflare Tunnel mode Caddy keeps the chain Cloudflare built). A client that reaches the server directly cannot choose its own IP by sending that header. If you publish the server port without Caddy, set `ORCH_TRUST_PROXY=false`.
 
 ## Other server knobs
 
@@ -66,6 +112,9 @@ These have defaults and are defined in `apps/server/src/config/index.ts`. To cha
 | `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability` |
 | `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)             |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset          |
+| `NOTIFY_MAX_ATTEMPTS`         | 4                           | Attempts per external notification delivery before giving up                     |
+| `NOTIFY_RETRY_BASE_MS`        | 2000                        | First retry delay of a notification; each next one is 4x longer                  |
+| `NOTIFY_RETENTION_DAYS`       | 90                          | In-app notifications older than this are deleted                                 |
 
 ## Agent environment
 

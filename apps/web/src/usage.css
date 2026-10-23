@@ -1,0 +1,400 @@
+/* Usage page. Loaded with the page chunk. Colors come from the signal-panel tokens. */
+
+/* .sr-only comes from styles.css. */
+
+/* Range selector: one control, the current range lit. */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+}
+.segmented button {
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 6px 14px;
+  min-height: 34px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow:
+    0 0 0 1px var(--rule-strong),
+    inset 0 -2px 0 var(--proceed);
+}
+
+.usage-body {
+  display: grid;
+  gap: 28px;
+  transition: opacity 0.2s var(--ease-out);
+}
+.usage-body[data-stale] {
+  opacity: 0.55;
+}
+
+/* KPI strip: four readouts separated by rules, not four cards. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.usage-tile {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding: 16px 20px 18px;
+  border-left: 1px solid var(--rule);
+  min-width: 0;
+}
+.usage-tile:first-child {
+  border-left: 0;
+  box-shadow: inset 0 3px 0 var(--proceed);
+}
+@media (max-width: 760px) {
+  .usage-tile {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+  .usage-tile:first-child {
+    border-top: 0;
+  }
+}
+.tile-label {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+.tile-value {
+  font-size: clamp(1.9rem, 1.5rem + 1.2vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.tile-note {
+  color: var(--muted);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.usage-block h2 {
+  margin-bottom: 8px;
+}
+.usage-block > .hint {
+  margin-top: 0;
+}
+
+/* Chart */
+.chart-block {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  padding: 18px 20px 14px;
+}
+.usage-chart {
+  min-width: 0;
+}
+.chart-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  align-items: baseline;
+  margin: 0 0 6px;
+  min-height: 1.6em;
+  font-size: 0.95rem;
+}
+.chart-readout strong {
+  font-variant-numeric: tabular-nums;
+}
+.chart-readout span {
+  color: var(--muted);
+}
+.chart-readout[data-active] strong {
+  color: var(--proceed-ink);
+}
+.usage-chart svg {
+  display: block;
+  max-width: 100%;
+  touch-action: pan-y;
+  border-radius: var(--r-sm);
+}
+.usage-chart svg:focus-visible {
+  outline: 2px solid var(--route);
+  outline-offset: 2px;
+}
+.usage-chart .grid {
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+.usage-chart .axis {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+}
+.usage-chart .tick {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.usage-chart .bar {
+  fill: var(--proceed);
+  transition: opacity 0.12s;
+}
+.usage-chart .bar[data-dim] {
+  opacity: 0.4;
+}
+.usage-chart .cursor {
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  pointer-events: none;
+}
+.usage-chart .hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .usage-chart .bar {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: bar-rise 0.5s var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 320ms);
+  }
+}
+@keyframes bar-rise {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+.chart-table {
+  margin-top: 8px;
+}
+.chart-table summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 6px 0;
+}
+.chart-table .table-wrap {
+  max-height: 320px;
+}
+
+/* Tables */
+.usage-split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 28px;
+}
+.table-wrap {
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+}
+.table-wrap:focus-visible {
+  outline: 2px solid var(--route);
+  outline-offset: 2px;
+}
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93rem;
+}
+.usage-table th,
+.usage-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+.usage-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.usage-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-sunk);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.usage-table tbody th {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.usage-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.usage-table .dim {
+  color: var(--muted);
+}
+.usage-table .hint.block {
+  display: block;
+  margin: 0;
+  font-weight: 400;
+}
+.usage-table tbody tr:hover > * {
+  background: color-mix(in srgb, var(--proceed) 6%, transparent);
+}
+.usage-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+td.tokens {
+  display: table-cell;
+}
+.tokens .share {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 10px;
+}
+.share {
+  width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-sunk);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  overflow: hidden;
+}
+.share > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--proceed);
+}
+@media (max-width: 520px) {
+  .tokens .share {
+    display: none;
+  }
+}
+
+/* Budget meters: the lamp turns from proceed to caution to stop as the budget drains. */
+.budgets {
+  display: grid;
+  gap: 14px;
+  margin: 10px 0 0;
+}
+.budgets li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 14px;
+  align-items: center;
+}
+.budgets li > .row {
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+}
+.budgets .hint {
+  margin: 0;
+}
+.meter {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface-sunk);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  overflow: hidden;
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: var(--proceed);
+  transition: width 0.5s var(--ease-out);
+}
+.meter[data-level='warn'] > span {
+  background: var(--caution);
+}
+.meter[data-level='stop'] > span {
+  background: var(--stop);
+}
+.meter-value {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  min-width: 3.2em;
+  justify-content: flex-end;
+}
+
+/* Token types */
+.token-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 12px 0 0;
+  max-width: 520px;
+}
+.token-split > div {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.token-split dt {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.token-split dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.token-split .share {
+  flex: 1;
+  width: auto;
+  max-width: 280px;
+}
+
+/* Loading */
+.usage-skeleton {
+  display: grid;
+  gap: 24px;
+}
+.sk {
+  display: block;
+  min-height: 92px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(
+    100deg,
+    var(--surface-sunk) 30%,
+    color-mix(in srgb, var(--surface) 70%, var(--surface-sunk)) 50%,
+    var(--surface-sunk) 70%
+  );
+  background-size: 200% 100%;
+}
+.sk.tall {
+  min-height: 260px;
+}
+.usage-skeleton .tiles {
+  background: none;
+  border: 0;
+  gap: 12px;
+  overflow: visible;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sk {
+    animation: sk-sweep 1.4s linear infinite;
+  }
+}
+@keyframes sk-sweep {
+  to {
+    background-position: -200% 0;
+  }
+}
