@@ -9,6 +9,7 @@ const verified = {
   discord: { configured: false, hint: null },
   webhook: { configured: false, hint: null },
   email: { available: true, address: 'octo@example.com', status: 'verified' },
+  push: { available: false, publicKey: null, subscriptions: 0 },
 };
 const common = {
   'GET /me': () => ({ json: me }),

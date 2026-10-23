@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router';
 import { AuthGate } from './auth';
 import { Layout } from './components/Layout';
+import { UpdatePrompt } from './pwa/UpdatePrompt';
 import { pages } from './routes';
 import { PageFallback } from './ui/PageFallback';
 import { ToastProvider } from './ui/Toast';
@@ -15,6 +16,8 @@ const Discover = pages['/discover'];
 const Pool = pages['/pool'];
 const Requests = pages['/requests'];
 const Backlog = pages['/backlog'];
+const History = pages['/history'];
+const Usage = pages['/usage'];
 const ClaudeCode = pages['/claude-code'];
 const MyServer = pages['/my-server'];
 const AdminAccess = pages['/admin/access'];
@@ -34,6 +37,7 @@ function NotFound() {
 export function App() {
   return (
     <ToastProvider>
+      <UpdatePrompt />
       <Suspense fallback={<PageFallback />}>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -48,6 +52,8 @@ export function App() {
               <Route path="/pool" element={<Pool />} />
               <Route path="/requests" element={<Requests />} />
               <Route path="/backlog" element={<Backlog />} />
+              <Route path="/history" element={<History />} />
+              <Route path="/usage" element={<Usage />} />
               <Route path="/claude-code" element={<ClaudeCode />} />
               <Route path="/my-server" element={<MyServer />} />
               <Route path="/admin/access" element={<AdminAccess />} />

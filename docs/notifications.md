@@ -1,6 +1,6 @@
 # Notifications
 
-orch tells you when something needs you: a task you created is merged or fails, a PR waits for review, a task is offered to you, or someone asks to join your pool or your server. Notifications show up in the app (the bell in the header) and, if you want, in Slack, Discord, any JSON webhook or by e-mail.
+orch tells you when something needs you: a task you created is merged or fails, a PR waits for review, a task is offered to you, or someone asks to join your pool or your server. Notifications show up in the app (the bell in the header) and, if you want, in your browser, in Slack, Discord, any JSON webhook or by e-mail.
 
 <img src="screenshot-notifications.png" alt="The bell panel: latest notifications, unread ones marked" width="100%">
 
@@ -32,6 +32,7 @@ Set them up on **My Server → Notifications**, then choose, per event, which ch
 | Slack   | A Slack [incoming webhook](https://api.slack.com/messaging/webhooks) URL. Mattermost works too     |
 | Discord | A channel [webhook](https://support.discord.com/hc/en-us/articles/228383668) URL                   |
 | Webhook | Any `https` URL that accepts a JSON `POST`                                                         |
+| Browser | Nothing to type: switch on **Enable browser notifications** in each browser you want (see below)   |
 
 Webhook URLs are secrets (anyone who has one can post to your channel). orch stores them encrypted with `ORCH_ENCRYPTION_KEY` and only ever shows a masked hint such as `https://hooks.slack.com/…k9Qp`. To change one, paste a new URL; **Remove** deletes it.
 
@@ -52,6 +53,38 @@ Webhook URLs are secrets (anyone who has one can post to your channel). orch sto
 ```
 
 `event` is one of `task_done`, `task_failed`, `task_needs_attention`, `pr_review`, `consent_request`, `access_request`, `participation_request`. `url` is the PR for `task_done` and `pr_review`, otherwise a page of the web app. Any `2xx` answer counts as delivered; redirects are not followed.
+
+## Browser notifications
+
+With browser notifications (Web Push), orch shows a system notification on your computer or phone, even when orch is not open. Clicking it opens the related page of the app.
+
+1. On **My Server → Notifications**, switch on **Enable browser notifications** and allow notifications when the browser asks.
+2. In the table below, tick **Browser** for the events you want. Without a tick, nothing is sent.
+3. Use **Send test** to check.
+
+It is set up per browser: repeat step 1 on each device you want (up to 10 per member; the oldest is dropped beyond that). Switching the toggle off, or removing the site permission in the browser, stops notifications on that browser.
+
+- **iPhone and iPad** only support Web Push for apps added to the Home Screen: install orch first ({doc}`usage`, "Install as an app").
+- If you blocked notifications for the site earlier, the browser will not ask again: allow them in the browser's site settings.
+- A browser that was uninstalled or that revoked the permission is detected on the next delivery (the push service answers `404` or `410`) and forgotten automatically.
+
+### Server setup
+
+The server needs a VAPID key pair, which identifies it to the browsers' push services. Generate it once and add it to `deploy/server/.env`:
+
+```sh
+npx web-push generate-vapid-keys
+```
+
+```sh
+VAPID_PUBLIC_KEY=B...
+VAPID_PRIVATE_KEY=...
+VAPID_SUBJECT=mailto:admin@example.com   # or an https:// URL
+```
+
+Restart the server. Without these variables the **Browser** column is greyed out. Keep the pair: browsers are subscribed to the public key, so replacing it requires every member to switch the toggle off and on again.
+
+Messages travel through the browser vendor's push service (Google, Mozilla, Apple or Microsoft), encrypted so that only the target browser can read them. They contain the title and the first lines of the text, like the other external channels. The server only accepts subscription addresses of these services (`https`, known hosts), and delivery uses the same private-network guard as webhooks (see below). Pushes are retried like other deliveries and expire after 24 hours if the browser stays offline.
 
 ## Delivery
 

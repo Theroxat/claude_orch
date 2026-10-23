@@ -69,6 +69,16 @@ enum DispatchMode {
   BROADCAST
 }
 
+enum TemplateScope {
+  PERSONAL
+  PROJECT
+}
+
+enum TemplateDependenciesMode {
+  NONE
+  ASK
+}
+
 enum TaskOrigin {
   PLATFORM
   LABEL_IMPORT
@@ -124,6 +134,7 @@ model User {
   agents           Agent[]
   enrollmentTokens EnrollmentToken[]
   createdTasks     Task[]              @relation("TaskCreator")
+  templates        TaskTemplate[]
   taskTargets      TaskTarget[]
   assignedTasks    Task[]              @relation("TaskAssignee")
   assignments      Assignment[]
@@ -132,6 +143,7 @@ model User {
   oauthCodes       OAuthCode[]
   notifications    Notification[]
   notificationSettings NotificationSettings?
+  pushSubscriptions PushSubscription[]
 }
 
 model Session {
@@ -182,6 +194,7 @@ model Project {
   permissions    ProjectPermission[]
   participations Participation[]
   tasks          Task[]
+  templates      TaskTemplate[]
 
   @@index([installationId])
 }
@@ -396,6 +409,8 @@ model Task {
   @@index([createdById, status])
   /// Dispatcher tick: every TODO task, oldest first.
   @@index([status, createdAt])
+  /// History: stable keyset pagination, newest first.
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
 }
 
 /// Acyclic: checked before insert.
@@ -606,6 +621,32 @@ model AccessInvite {
   lastUsedAt DateTime?
 }
 
+/// Reusable task skeleton with `{{placeholders}}`. PERSONAL: visible to its creator only. PROJECT:
+/// shared with the project (managed by its owner). Built-in templates live in code, not here.
+model TaskTemplate {
+  id                 String                   @id @default(cuid())
+  scope              TemplateScope
+  projectId          String?
+  createdById        String
+  name               String
+  description        String                   @default("")
+  titleTemplate      String                   @default("")
+  bodyTemplate       String
+  acceptanceCriteria String[]
+  size               TaskSize                 @default(M)
+  model              Model                    @default(SONNET)
+  labels             String[]
+  dependenciesMode   TemplateDependenciesMode @default(NONE)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([createdById, scope])
+  @@index([projectId])
+}
+
 /// One in-app notification (see apps/server/src/notifications).
 model Notification {
   id        String    @id @default(cuid())
@@ -652,4 +693,21 @@ model NotificationSettings {
   updatedAt     DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// A browser registered for Web Push (one row per browser). The endpoint is a capability URL of the
+/// browser vendor's push service: it is only ever used to deliver that user's notifications.
+model PushSubscription {
+  id         String    @id @default(cuid())
+  userId     String
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

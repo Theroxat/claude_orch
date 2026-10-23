@@ -61,4 +61,5 @@ export const CHANNEL_LABEL: Record<NotificationChannel, string> = {
   slack: 'Slack',
   discord: 'Discord',
   webhook: 'Webhook',
+  push: 'Browser',
 };

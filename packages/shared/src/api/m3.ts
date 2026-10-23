@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { FailureClass } from '../domain/failure';
 import { Model } from '../domain/enums';
 import { TaskSize } from '../protocol/messages';
+import { TemplateLabel } from './templates';
 import { DispatchRequestSchema, DispatchViewSchema } from './dispatch';
 
 /**
@@ -195,6 +196,8 @@ export const CreateTaskRequestSchema = z.object({
   dependsOn: z.array(z.string()).max(50).default([]),
   /** Subtask PRs target this branch instead of the default branch. */
   integrationBranch: z.string().trim().min(1).max(200).nullable().default(null),
+  /** Extra GitHub labels for the issue (e.g. from a template), on top of the pool label. */
+  labels: z.array(TemplateLabel).max(5).default([]),
   /** M4 (additive): who the dispatcher may offer it to. Default `{ mode: 'pool' }`. */
   dispatch: DispatchRequestSchema.optional(),
 });

@@ -16,6 +16,7 @@ const settings = (over: Record<string, unknown> = {}) => ({
   discord: { configured: false, hint: null },
   webhook: { configured: false, hint: null },
   email: { available: true, address: 'octo@example.com', status: 'verified' },
+  push: { available: false, publicKey: null, subscriptions: 0 },
   ...over,
 });
 

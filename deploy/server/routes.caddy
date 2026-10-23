@@ -10,6 +10,18 @@ header {
 	-Server
 }
 
+# Operations endpoints are never public: Prometheus scrapes server:3000/metrics on the internal
+# Docker network (deploy/observability). This stays first, whatever METRICS_ENABLED says.
+@internal path /metrics /metrics/* /readyz /api/metrics /api/readyz
+handle @internal {
+	respond 404
+}
+
+# The service worker and the files that describe the app must always be revalidated, otherwise
+# a stale /sw.js delays updates. Hashed files under /assets/ stay cacheable.
+@revalidate path /sw.js /push-sw.js /manifest.webmanifest /offline.html
+header @revalidate Cache-Control "no-cache"
+
 # GitHub webhook, REST API, GitHub sign-in. Real-time agent link (WebSocket) is proxied as-is.
 handle /api/* {
 	reverse_proxy server:3000
@@ -44,6 +56,10 @@ handle /install.sh {
 handle /healthz {
 	reverse_proxy server:3000
 }
+
+# The Web Push worker is re-fetched when a browser checks for updates: never serve a stale copy.
+@pushsw path /push-sw.js
+header @pushsw Cache-Control "no-cache"
 
 # The single-page app, built at image build time.
 handle {

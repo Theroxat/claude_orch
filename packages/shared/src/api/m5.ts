@@ -86,35 +86,71 @@ export const ListTasksInputSchema = z.object({
 });
 export type ListTasksInput = z.infer<typeof ListTasksInputSchema>;
 
-export const SubmitTaskItemSchema = z.object({
-  ref: z
-    .string()
-    .regex(/^[A-Za-z0-9_-]{1,40}$/)
-    .describe('Local id of this subtask inside the request (e.g. "a"), used by dependsOn.'),
-  title: z.string().trim().min(1).max(200).describe('Short imperative title of the issue.'),
-  description: z
-    .string()
-    .trim()
-    .min(1)
-    .max(20_000)
-    .describe(
-      'Self-contained instructions for the Claude Code session that will run it: context, files, approach.',
-    ),
-  acceptanceCriteria: z
-    .array(z.string().trim().min(1).max(500))
-    .min(1)
-    .max(30)
-    .describe('Checkable conditions that prove the subtask is done (tests pass, behavior...).'),
-  size: z.enum(['S', 'M', 'L']).describe('S < 30 min, M < 90 min, L < 180 min of agent time.'),
-  model: z.enum(['sonnet', 'opus']).describe('sonnet for routine work, opus for hard work.'),
-  dependsOn: z
-    .array(z.union([z.string().min(1), z.number().int().positive()]))
-    .max(30)
-    .default([])
-    .describe(
-      'Refs of other subtasks of this request, or issue numbers of existing tasks of the same project ("#12" or 12).',
-    ),
-});
+export const SubmitTaskItemSchema = z
+  .object({
+    ref: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,40}$/)
+      .describe('Local id of this subtask inside the request (e.g. "a"), used by dependsOn.'),
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Short imperative title of the issue.'),
+    description: z
+      .string()
+      .trim()
+      .min(1)
+      .max(20_000)
+      .optional()
+      .describe(
+        'Self-contained instructions for the Claude Code session that will run it: context, files, approach.',
+      ),
+    acceptanceCriteria: z
+      .array(z.string().trim().min(1).max(500))
+      .min(1)
+      .max(30)
+      .optional()
+      .describe('Checkable conditions that prove the subtask is done (tests pass, behavior...).'),
+    size: z
+      .enum(['S', 'M', 'L'])
+      .optional()
+      .describe('S < 30 min, M < 90 min, L < 180 min of agent time.'),
+    model: z
+      .enum(['sonnet', 'opus'])
+      .optional()
+      .describe('sonnet for routine work, opus for hard work.'),
+    dependsOn: z
+      .array(z.union([z.string().min(1), z.number().int().positive()]))
+      .max(30)
+      .default([])
+      .describe(
+        'Refs of other subtasks of this request, or issue numbers of existing tasks of the same project ("#12" or 12).',
+      ),
+    template: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        'Optional task template (id, or exact name, from list_templates). Its description, acceptance criteria, size, model and title are rendered from `variables`; fields you set explicitly win.',
+      ),
+    variables: z
+      .record(z.string(), z.string().max(10_000))
+      .optional()
+      .describe('Values for the template placeholders ({{name}}): every placeholder is required.'),
+  })
+  .superRefine((t, ctx) => {
+    if (t.template) return;
+    for (const k of ['title', 'description', 'acceptanceCriteria', 'size', 'model'] as const) {
+      if (t[k] === undefined) {
+        ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required without a template` });
+      }
+    }
+  });
 export type SubmitTaskItem = z.infer<typeof SubmitTaskItemSchema>;
 
 export const SubmitTaskInputSchema = z.object({
@@ -143,6 +179,13 @@ export const SubmitTaskInputSchema = z.object({
 });
 export type SubmitTaskInput = z.infer<typeof SubmitTaskInputSchema>;
 
+export const ListTemplatesInputSchema = z.object({
+  projectFullName: ProjectFullName.optional().describe(
+    'Also include the shared templates of this project.',
+  ),
+});
+export type ListTemplatesInput = z.infer<typeof ListTemplatesInputSchema>;
+
 export const TakeTaskInputSchema = z.object({
   projectFullName: ProjectFullName,
   issueNumber: z.number().int().positive(),
@@ -160,6 +203,7 @@ export const MCP_TOOL_NAMES = [
   'view_pool',
   'list_tasks',
   'submit_task',
+  'list_templates',
   'take_task',
   'task_status',
   'retry_task',

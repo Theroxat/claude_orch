@@ -108,7 +108,7 @@ export async function settle(page) {
       { timeout: 5000 },
     )
     .catch(() => undefined);
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(250); // let the entry animations finish before axe / screenshots
 }
 
 export async function shot(page, name) {

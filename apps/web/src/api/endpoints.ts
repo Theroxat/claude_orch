@@ -7,10 +7,13 @@ import {
   OutdatedCountResponseSchema,
   PersonalTokenListResponseSchema,
   DiscoverItemSchema,
+  HistoryResponseSchema,
   ImportTasksResponseSchema,
   InstallUrlResponseSchema,
   TaskBoardSchema,
+  UsageDashboardSchema,
   TaskViewSchema,
+  TaskTemplateViewSchema,
   WhyNotRunningResponseSchema,
   OfferListResponseSchema,
   OnboardingResponseSchema,
@@ -22,15 +25,20 @@ import {
   NotificationListResponseSchema,
   NotificationSettingsViewSchema,
   OkResponseSchema,
+  PushStatusSchema,
   SendTestNotificationResponseSchema,
   UnreadCountResponseSchema,
   type AddProjectRequest,
   type MarkNotificationsReadRequest,
   type NotificationChannel,
+  type PushSubscribeRequest,
   type UpdateNotificationSettingsRequest,
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
+  type CreateTemplateRequest,
+  type UpdateTemplateRequest,
   type UpdateProjectRequest,
+  type UsageRange,
   type UndoRejectionRequest,
   type UpsertParticipationRequest,
 } from '@orch/shared';
@@ -176,6 +184,24 @@ export const revokeInvite = (id: string) =>
     schema: z.object({ invite: InviteSchema }),
   });
 
+export const fetchTemplates = (projectId?: string) =>
+  api('GET', projectId ? `/templates?projectId=${encodeURIComponent(projectId)}` : '/templates', {
+    schema: z.array(TaskTemplateViewSchema),
+  });
+export const createTemplate = (body: CreateTemplateRequest) =>
+  api('POST', '/templates', { body, schema: TaskTemplateViewSchema });
+export const updateTemplate = (id: string, body: UpdateTemplateRequest) =>
+  api('PATCH', `/templates/${id}`, { body, schema: TaskTemplateViewSchema });
+export const deleteTemplate = (id: string) => api<unknown>('DELETE', `/templates/${id}`);
+/** One page of the task history; `params` is the filter query string (cursor excluded). */
+export const fetchHistory = (params: URLSearchParams, cursor?: string) => {
+  const qs = new URLSearchParams(params);
+  if (cursor) qs.set('cursor', cursor);
+  const text = qs.toString();
+  return api('GET', `/tasks/history${text ? `?${text}` : ''}`, { schema: HistoryResponseSchema });
+};
+export const fetchUsage = (range: UsageRange) =>
+  api('GET', `/usage?range=${range}`, { schema: UsageDashboardSchema });
 export const fetchNotifications = (limit = 30) =>
   api('GET', `/notifications?limit=${limit}`, { schema: NotificationListResponseSchema });
 export const fetchUnreadCount = () =>
@@ -193,6 +219,10 @@ export const confirmNotificationEmail = (token: string) =>
     body: { token },
     schema: NotificationSettingsViewSchema,
   });
+export const pushSubscribe = (body: PushSubscribeRequest) =>
+  api('POST', '/notifications/push/subscribe', { body, schema: PushStatusSchema });
+export const pushUnsubscribe = (endpoint: string) =>
+  api('POST', '/notifications/push/unsubscribe', { body: { endpoint }, schema: PushStatusSchema });
 export const sendTestNotification = (channel: NotificationChannel) =>
   api('POST', '/notifications/test', {
     body: { channel },

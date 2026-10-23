@@ -18,6 +18,11 @@
  *        POSTs only when the member clicks, so link prefetchers cannot confirm.
  *   POST /api/notifications/test          SendTestNotificationRequest -> SendTestNotificationResponse
  *        Sends one test message on that channel right away (single attempt) and reports the result.
+ *   POST /api/notifications/push/subscribe    PushSubscribeRequest -> PushStatus
+ *        Registers this browser (a Web Push subscription) for the caller. Needs the server's VAPID
+ *        keys (`settings.push.available`); the endpoint must be a known push service over https.
+ *   POST /api/notifications/push/unsubscribe  PushUnsubscribeRequest -> PushStatus
+ *        Forgets one browser of the caller.
  *
  * Webhook URLs are secrets (anyone holding a Slack or Discord webhook URL can post to it): they are
  * stored encrypted and only a masked hint is returned.
@@ -43,7 +48,15 @@ export const NotificationEvent = z.enum([
 export type NotificationEvent = z.infer<typeof NotificationEvent>;
 export const NOTIFICATION_EVENTS = NotificationEvent.options;
 
-export const NotificationChannel = z.enum(['in_app', 'email', 'slack', 'discord', 'webhook']);
+export const NotificationChannel = z.enum([
+  'in_app',
+  'email',
+  'slack',
+  'discord',
+  'webhook',
+  /** Web Push: a system notification in the member's browsers. */
+  'push',
+]);
 export type NotificationChannel = z.infer<typeof NotificationChannel>;
 export const NOTIFICATION_CHANNELS = NotificationChannel.options;
 
@@ -109,6 +122,14 @@ export const NotificationSettingsViewSchema = z.object({
     /** `pending`: a confirmation e-mail was sent, nothing is delivered to it until confirmed. */
     status: z.enum(['none', 'pending', 'verified']),
   }),
+  push: z.object({
+    /** False when the server has no VAPID keys: browser notifications are then unavailable. */
+    available: z.boolean(),
+    /** VAPID public key (base64url) for `pushManager.subscribe`. Null when unavailable. */
+    publicKey: z.string().nullable(),
+    /** Browsers of the caller that currently receive pushes. */
+    subscriptions: z.number().int().nonnegative(),
+  }),
 });
 export type NotificationSettingsView = z.infer<typeof NotificationSettingsViewSchema>;
 
@@ -139,3 +160,22 @@ export const SendTestNotificationResponseSchema = z.object({
   error: z.string().optional(),
 });
 export type SendTestNotificationResponse = z.infer<typeof SendTestNotificationResponseSchema>;
+
+export const PushStatusSchema = z.object({ subscriptions: z.number().int().nonnegative() });
+export type PushStatus = z.infer<typeof PushStatusSchema>;
+
+const b64url = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[A-Za-z0-9_-]+={0,2}$/);
+
+/** `PushSubscription.toJSON()` of the browser. */
+export const PushSubscribeRequestSchema = z.object({
+  endpoint: z.string().min(1).max(2048),
+  keys: z.object({ p256dh: b64url, auth: b64url }),
+});
+export type PushSubscribeRequest = z.infer<typeof PushSubscribeRequestSchema>;
+
+export const PushUnsubscribeRequestSchema = z.object({ endpoint: z.string().min(1).max(2048) });
+export type PushUnsubscribeRequest = z.infer<typeof PushUnsubscribeRequestSchema>;
