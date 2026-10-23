@@ -22,6 +22,7 @@ import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import { participationStatus } from '../projects/service';
+import { versionLabel, type Metrics } from '../observability';
 import { TaskService } from '../tasks/service';
 import { claudeAuthUpdate, purgeRetention, recordUsage } from '../usage';
 
@@ -36,6 +37,8 @@ interface Conn {
   maxConcurrent: number;
   /** True when `hello` announced `selfUpdate` (understands `agent.update`). */
   selfUpdate: boolean;
+  /** Agent version announced in `hello` (metrics label). */
+  agentVersion?: string;
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
 }
@@ -62,6 +65,7 @@ export interface GatewayDeps {
    * offer and every manual claim, so removing someone's access also cuts off their agents.
    */
   isAllowed?: (user: User) => Promise<boolean>;
+  metrics?: Metrics;
 }
 
 /**
@@ -87,6 +91,7 @@ export class AgentGateway {
       prisma: deps.prisma,
       config: deps.config,
       github: deps.github,
+      metrics: deps.metrics,
     });
   }
 
@@ -113,6 +118,17 @@ export class AgentGateway {
 
   isConnected(agentId: string): boolean {
     return this.conns.get(agentId)?.helloed === true;
+  }
+
+  /** Live (helloed) agents per announced version, for the `orch_agents_connected` gauge. */
+  connectedByVersion(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const c of this.conns.values()) {
+      if (!c.helloed) continue;
+      const v = versionLabel(c.agentVersion);
+      out.set(v, (out.get(v) ?? 0) + 1);
+    }
+    return out;
   }
 
   /** Connected and able to update itself on request (`agent.update`). */
@@ -463,6 +479,7 @@ export class AgentGateway {
     if (this.conns.get(c.agentId) !== c) return; // superseded or closed
     const r = parseAgentMessage(raw);
     if (!r.ok) {
+      this.deps.metrics?.wsMessages.inc({ type: 'invalid' });
       this.sendError(c, r.code, r.error, r.id);
       if (r.code === 'version_mismatch') {
         this.disconnect(c.agentId, CloseCode.VERSION_MISMATCH, 'protocol version mismatch');
@@ -472,6 +489,7 @@ export class AgentGateway {
       return;
     }
     const m = r.message;
+    this.deps.metrics?.wsMessages.inc({ type: m.type });
     if (m.type !== 'ack' && this.deps.isAllowed) {
       // GitHub outages are handled by the allowlist (last known decision for a grace period,
       // then deny); any other failure throws and the frame is not processed (fail closed).
@@ -632,6 +650,7 @@ export class AgentGateway {
     c.helloed = true;
     c.maxConcurrent = m.payload.maxConcurrent;
     c.selfUpdate = m.payload.selfUpdate === true;
+    c.agentVersion = m.payload.agentVersion;
     const latest = normalizeVersion(this.deps.config.ORCH_VERSION);
     this.send(
       c,

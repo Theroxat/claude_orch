@@ -13,7 +13,7 @@ flowchart TB
     GH["GitHub App<br/>OAuth, webhooks, issues, PRs"]
     subgraph Server["Your server (Docker Compose)"]
         Caddy["Caddy<br/>HTTPS, web build, proxy"] --> API["server (Fastify)<br/>API, dispatcher, MCP, agent gateway"]
-        API --> PG[("Postgres<br/>+ nightly pg_dump")]
+        API --> PG[("Postgres<br/>+ scheduled pg_dump")]
     end
     Browser["Browser"] -->|HTTPS| Caddy
     CC["Claude Code"] -->|"/mcp"| Caddy
@@ -33,6 +33,7 @@ Members never open an inbound port: the agent connects out to the server over a 
 quickstart
 installation
 github-app
+backups
 members
 ```
 
@@ -51,6 +52,7 @@ mcp
 :caption: Reference
 
 configuration
+observability
 security
 ```
 

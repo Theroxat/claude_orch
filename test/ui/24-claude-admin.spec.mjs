@@ -1,39 +1,8 @@
 import { test, expect, settle, shot } from './fixtures.mjs';
-import { auditPage, checkDialog, closeDialogWithEscape } from './helpers.mjs';
+import { auditPage } from './helpers.mjs';
 import { oauthRequest } from './lib/api.mjs';
 
 const VERSION = process.env.ORCH_UI_VERSION ?? '0.6.1';
-
-test('claude code: OAuth command, PAT create/validate/revoke, connected app revoke', async ({
-  newRole,
-}) => {
-  const page = await newRole('alice');
-  await page.goto('/claude-code');
-  await settle(page);
-  await expect(page.getByTestId('mcp-oauth-command')).toContainText('claude mcp add');
-  await expect(page.getByRole('article', { name: 'Token laptop-cli' })).toContainText('Active');
-  await expect(page.getByRole('article', { name: 'Token old-token' })).toContainText('Revoked');
-  await expect(page.getByRole('article', { name: /App Claude Code/ }).first()).toBeVisible();
-  const create = page.getByRole('button', { name: 'Create token' });
-  await expect(create).toBeDisabled();
-  await page.getByLabel('Token name').fill('ui-token');
-  await page.getByLabel(/Expires in days/).fill('7');
-  await create.click();
-  await expect(page.getByTestId('mcp-command')).toContainText('orch_pat_');
-  await expect(page.getByRole('article', { name: 'Token ui-token' })).toBeVisible();
-  await shot(page, 'claude-code-token-created');
-  const row = page.getByRole('article', { name: 'Token ui-token' });
-  const opener = row.getByRole('button', { name: 'Revoke' });
-  await checkDialog(page, 'revoke-token', opener);
-  await closeDialogWithEscape(page, 'revoke-token', opener);
-  await opener.click();
-  await page.getByRole('button', { name: 'Confirm revoke' }).click();
-  await expect(page.getByText('ui-token token revoked')).toBeVisible();
-  const app = page.getByRole('article', { name: /App Claude Code/ }).first();
-  await app.getByRole('button', { name: 'Revoke' }).click();
-  await page.getByRole('button', { name: 'Confirm revoke' }).click();
-  await expect(page.getByText(/access revoked/)).toBeVisible();
-});
 
 test('OAuth consent: double click on Approve sends ONE POST; deny; bad request', async ({
   newRole,

@@ -4,26 +4,34 @@
 
 ## Server environment (`deploy/server/.env`)
 
-| Variable                                                                       | Required | Meaning                                                                               |
-| ------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------- |
-| `ORCH_DOMAIN`                                                                  | yes      | Public host name (example: `orch.selfhostr.io`)                                       |
-| `HTTP_PORT`, `HTTPS_PORT`                                                      | no       | Host ports for Caddy (default 80 and 443). The only ports published                   |
-| `ORCH_BASE_URL`                                                                | no       | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port          |
-| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`          | no       | Cloudflare Tunnel mode, see [installation](installation.md#behind-cloudflare-tunnel)  |
-| `ORCH_TRUST_PROXY`                                                             | no       | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)          |
-| `ORCH_VERSION`                                                                 | no       | Image tag of `orch-server` and `orch-web` (default `latest`)                          |
-| `POSTGRES_PASSWORD`                                                            | yes      | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)               |
-| `ORCH_ENCRYPTION_KEY`                                                          | yes      | 32 random bytes, base64. Encrypts stored GitHub user tokens. Back it up               |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes      | From your GitHub App ({doc}`github-app`)                                              |
-| `ORCH_ADMIN_GITHUB_LOGINS`                                                     | yes (\*) | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page |
-| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                       | no (\*)  | Who may also sign in: GitHub logins and/or organizations, comma-separated             |
-| `ORCH_ALLOW_ANY_GITHUB_USER`                                                   | no       | `true` lets any GitHub account sign in. Only for a server that is not public          |
-| `ORCH_ALLOWLIST_CACHE_SEC`                                                     | no       | How often org membership is re-checked for open sessions, default 300                 |
-| `ORCH_ACCESS_GRACE_SEC`                                                        | no       | GitHub outage grace for org-based access, default 900 (see {doc}`security`)           |
-| `GITHUB_WEBHOOK_SECRET`                                                        | yes      | Same value as the App's webhook secret                                                |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                                  | yes      | Host path of the App private key (default `./secrets/github-app.pem`)                 |
-| `LOG_LEVEL`                                                                    | no       | `info` by default                                                                     |
-| `BACKUP_HOUR_UTC`, `BACKUP_RETENTION_DAYS`, `BACKUP_ON_START`                  | no       | Backup schedule (default 03:00 UTC), retention (14 days), dump at container start     |
+| Variable                                                                                               | Required    | Meaning                                                                                                           |
+| ------------------------------------------------------------------------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ORCH_DOMAIN`                                                                                          | yes         | Public host name (example: `orch.selfhostr.io`)                                                                   |
+| `HTTP_PORT`, `HTTPS_PORT`                                                                              | no          | Host ports for Caddy (default 80 and 443). The only ports published                                               |
+| `ORCH_BASE_URL`                                                                                        | no          | Public URL, default `https://$ORCH_DOMAIN`. Set only for a non-standard port                                      |
+| `ORCH_TLS_MODE`, `ORCH_BIND_ADDR`, `HTTPS_PUBLISH`, `ORCH_PUBLIC_URL`                                  | no          | Cloudflare Tunnel mode, see [installation](installation.md#behind-cloudflare-tunnel)                              |
+| `ORCH_TRUST_PROXY`                                                                                     | no          | Peers allowed to set `X-Forwarded-*` (default: private networks, i.e. Caddy)                                      |
+| `ORCH_VERSION`                                                                                         | no          | Image tag of `orch-server` and `orch-web` (default `latest`)                                                      |
+| `POSTGRES_PASSWORD`                                                                                    | yes         | Database password (`POSTGRES_USER` and `POSTGRES_DB` default to `orch`)                                           |
+| `ORCH_ENCRYPTION_KEY`                                                                                  | yes         | 32 random bytes, base64. Encrypts stored GitHub user tokens. Not in backups: store it separately ({doc}`backups`) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`                         | yes         | From your GitHub App ({doc}`github-app`)                                                                          |
+| `ORCH_ADMIN_GITHUB_LOGINS`                                                                             | yes (\*)    | Admins: GitHub logins, comma-separated, case-insensitive. They manage the Access page                             |
+| `ORCH_ALLOWED_GITHUB_LOGINS`, `ORCH_ALLOWED_GITHUB_ORGS`                                               | no (\*)     | Who may also sign in: GitHub logins and/or organizations, comma-separated                                         |
+| `ORCH_ALLOW_ANY_GITHUB_USER`                                                                           | no          | `true` lets any GitHub account sign in. Only for a server that is not public                                      |
+| `ORCH_ALLOWLIST_CACHE_SEC`                                                                             | no          | How often org membership is re-checked for open sessions, default 300                                             |
+| `ORCH_ACCESS_GRACE_SEC`                                                                                | no          | GitHub outage grace for org-based access, default 900 (see {doc}`security`)                                       |
+| `GITHUB_WEBHOOK_SECRET`                                                                                | yes         | Same value as the App's webhook secret                                                                            |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                                          | yes         | Host path of the App private key (default `./secrets/github-app.pem`)                                             |
+| `LOG_LEVEL`                                                                                            | no          | `info` by default                                                                                                 |
+| `BACKUP_SCHEDULE`                                                                                      | no          | Backup cron expression, UTC (default `0 3 * * *`). Replaces `BACKUP_HOUR_UTC`                                     |
+| `BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`, `BACKUP_KEEP_MONTHLY`                                       | no          | Rotation: days / ISO weeks / months kept (defaults 7, 4, 6). `BACKUP_RETENTION_DAYS` still sets the daily count   |
+| `BACKUP_ON_START`                                                                                      | no          | `true` also takes a backup when the container starts                                                              |
+| `BACKUP_VOLUME`                                                                                        | no          | Named volume (default `backups`) or host directory                                                                |
+| `BACKUP_AGE_RECIPIENT`                                                                                 | no          | age public key(s): dumps are encrypted to `.dump.age`. Keep the private key off-server                            |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_PREFIX`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_PROVIDER` | no          | Off-site upload target (S3-compatible), see {doc}`backups`                                                        |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`                                               | with bucket | Credentials of the bucket (never logged)                                                                          |
+| `BACKUP_S3_PRUNE`                                                                                      | no          | `true` also applies the rotation in the bucket (default: never delete remotely)                                   |
+| `POSTGRES_MAJOR`                                                                                       | no          | Postgres major for the database and the backup image (default 16)                                                 |
 
 (access-control)=
 
@@ -64,22 +72,25 @@ The client IP comes from `X-Forwarded-For` only when the direct peer is in `ORCH
 
 These have defaults and are defined in `apps/server/src/config/index.ts`. To change one, add it to the `server` service `environment` in `compose.yaml`.
 
-| Variable                     | Default                     | Meaning                                                                  |
-| ---------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `DISPATCHER_ENABLED`         | `true`                      | Run the dispatcher                                                       |
-| `DISPATCHER_INTERVAL_MS`     | 5000                        | Dispatcher tick                                                          |
-| `AUTO_OFFER_TTL_SEC`         | 60                          | Pending auto offers expire after this                                    |
-| `CONSENT_REQUEST_TTL_SEC`    | 1800                        | Pending approval requests expire after this                              |
-| `USAGE_STALE_SEC`            | 900                         | A usage report older than this makes a member ineligible for auto offers |
-| `BUDGET_SAFETY_RESERVE`      | 0                           | Extra server-side reserve on top of the agent's own 20 %                 |
-| `OPUS_FACTOR`                | 5                           | Weight of Opus relative to Sonnet in estimates                           |
-| `PRO_WINDOW_WEIGHTED`        | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)         |
-| `EXEC_LEASE_GRACE_SEC`       | 900                         | Grace added to task timeouts before an auto run is declared lost         |
-| `AGENT_LEASE_SEC`            | 1800                        | Running assignments of an agent unseen this long become lost             |
-| `AGENT_HEARTBEAT_SEC`        | 30                          | Agent heartbeat interval                                                 |
-| `AGENT_HEARTBEAT_TIMEOUT_MS` | 90000                       | Agent considered offline after this                                      |
-| `AGENT_USAGE_SEC`            | 300                         | Usage report interval                                                    |
-| `ORCH_AGENT_IMAGE_REPO`      | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                     |
+| Variable                      | Default                     | Meaning                                                                          |
+| ----------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `DISPATCHER_ENABLED`          | `true`                      | Run the dispatcher                                                               |
+| `DISPATCHER_INTERVAL_MS`      | 5000                        | Dispatcher tick                                                                  |
+| `AUTO_OFFER_TTL_SEC`          | 60                          | Pending auto offers expire after this                                            |
+| `CONSENT_REQUEST_TTL_SEC`     | 1800                        | Pending approval requests expire after this                                      |
+| `USAGE_STALE_SEC`             | 900                         | A usage report older than this makes a member ineligible for auto offers         |
+| `BUDGET_SAFETY_RESERVE`       | 0                           | Extra server-side reserve on top of the agent's own 20 %                         |
+| `OPUS_FACTOR`                 | 5                           | Weight of Opus relative to Sonnet in estimates                                   |
+| `PRO_WINDOW_WEIGHTED`         | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)                 |
+| `EXEC_LEASE_GRACE_SEC`        | 900                         | Grace added to task timeouts before an auto run is declared lost                 |
+| `AGENT_LEASE_SEC`             | 1800                        | Running assignments of an agent unseen this long become lost                     |
+| `AGENT_HEARTBEAT_SEC`         | 30                          | Agent heartbeat interval                                                         |
+| `AGENT_HEARTBEAT_TIMEOUT_MS`  | 90000                       | Agent considered offline after this                                              |
+| `AGENT_USAGE_SEC`             | 300                         | Usage report interval                                                            |
+| `ORCH_AGENT_IMAGE_REPO`       | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                             |
+| `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability` |
+| `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset          |
 
 ## Agent environment
 

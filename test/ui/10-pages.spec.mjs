@@ -26,7 +26,6 @@ for (const [name, path, roles] of PAGES) {
       test(`${name} as ${role} (${vp}, ${theme})`, async ({ newRole }) => {
         const page = await newRole(role, { viewport: vp, theme });
         await page.goto(path);
-        await settle(page);
         await expect(page.locator('main.page, main').first()).toBeVisible();
         if (name === 'access' && role === 'alice')
           await expect(page.getByText('Admins only.')).toBeVisible();

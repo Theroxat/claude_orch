@@ -184,6 +184,15 @@ const ConfigSchema = z.object({
   PRO_WINDOW_WEIGHTED: z.coerce.number().positive().default(44_000),
   /** Grace added to the S/M/L execution timeouts before an auto run is declared lost. */
   EXEC_LEASE_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
+  /** Prometheus `/metrics`: 404 unless true. Never expose it publicly (see docs/observability.md). */
+  METRICS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /** Optional bearer token required on `/metrics` (in addition to keeping it off the public proxy). */
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+  /** OpenTelemetry traces: enabled only when set (OTLP/HTTP endpoint, e.g. http://otel:4318). */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyToUndefined, z.url().optional()),
   /** Running assignments of an agent unseen (and disconnected) for this long become LOST. */
   AGENT_LEASE_SEC: z.coerce.number().int().positive().default(1_800),
 });
