@@ -198,10 +198,26 @@ If you only have read access, the tasks are created as PROPOSED and wait for a m
         }
         const items: BatchItem[] = [];
         for (const t of args.tasks) {
-          const tpl = t.template ? await templates.resolve(t.template, user, project.id) : null;
-          const r = tpl ? templates.render(tpl, t.variables ?? {}) : null;
-          if (!tpl && t.variables) {
+          if (!t.template && t.variables) {
             throw new HttpError(400, 'invalid_request', `"${t.ref}": variables need a template`);
+          }
+          let tpl: Awaited<ReturnType<typeof templates.resolve>> | null;
+          let r: ReturnType<typeof templates.render> | null;
+          try {
+            tpl = t.template ? await templates.resolve(t.template, user, project.id) : null;
+            r = tpl ? templates.render(tpl, t.variables ?? {}) : null;
+          } catch (err) {
+            if (err instanceof HttpError) {
+              throw new HttpError(err.status, err.code, `Subtask "${t.ref}": ${err.message}`);
+            }
+            throw err;
+          }
+          if (r && !(t.title ?? r.title)) {
+            throw new HttpError(
+              400,
+              'invalid_request',
+              `Subtask "${t.ref}": template "${tpl!.name}" has no title; pass "title"`,
+            );
           }
           const model = t.model ?? (r ? (r.model === 'OPUS' ? 'opus' : 'sonnet') : undefined);
           items.push({

@@ -263,6 +263,34 @@ describe('templates REST', () => {
     expect(long.json().error.code).toBe('invalid_variable');
   });
 
+  it('render: a comment marker assembled across placeholders is neutralised', async () => {
+    const u = await loginAs(app, gh);
+    const t = parse(
+      await create(u, {
+        scope: 'personal',
+        ...fields({
+          titleTemplate: 'T {{a}}',
+          bodyTemplate: 'x <!{{a}} orch:begin -{{a}}> {{b}}{{c}}',
+          acceptanceCriteria: ['<{{d}}'],
+        }),
+      }),
+    );
+    const r = RenderedTemplateSchema.parse(
+      (
+        await api(app, u)('POST', `/api/templates/${t.id}/render`, {
+          variables: { a: '--', b: '<!', c: '--', d: '!--' },
+        })
+      ).json(),
+    );
+    for (const text of [r.title, r.body, ...r.acceptanceCriteria]) {
+      expect(text).not.toMatch(/<!--|-->|--!>/);
+    }
+    const bomb = await api(app, u)('POST', `/api/templates/${t.id}/render`, {
+      variables: { a: 'y'.repeat(5_000), b: 'y', c: 'y', d: 'y' },
+    });
+    expect(bomb.statusCode).toBe(200);
+  });
+
   it('a rendered template creates a task whose issue carries the template labels', async () => {
     const { owner, project: p } = await project();
     const t = parse(await create(owner, { scope: 'project', projectId: p.id, ...fields() }));

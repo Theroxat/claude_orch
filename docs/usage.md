@@ -21,7 +21,7 @@ A template is a reusable task skeleton: a title, a Markdown description, accepta
 - **Personal templates** are managed in **My server**, under _My templates_. Only you see them.
 - **Shared templates** belong to a project. The project owner creates, edits and deletes them from **My projects** (_Shared templates_ on the project card); everyone who can see the project can use them. Private repositories keep their templates private.
 
-Values are inserted as plain text: HTML comments are neutralised (the issue body carries hidden orch metadata), the title is kept on one line and a value is never expanded a second time. Limits: 50 templates per user and per project, 20 placeholders per template, 5 000 characters per value, 5 labels. Labels may contain letters, digits, spaces and `. _ : / -`; they are added to the GitHub issue next to the pool label.
+Values are inserted as plain text: HTML comments are neutralised (the issue body carries hidden orch metadata), the title is kept on one line and a value is never expanded a second time. Limits: 50 templates per user and per project, 20 placeholders per template, 5 000 characters per value, 5 labels. Labels may contain letters, digits, spaces and `. _ : / -`; they are added to the GitHub issue next to the pool label. GitHub creates a label that does not exist yet in the repository, so use labels the repository already has; the pool label and `orch-aborted` are never added twice or by a template.
 
 Claude Code can use the same templates through MCP ({doc}`mcp`).
 

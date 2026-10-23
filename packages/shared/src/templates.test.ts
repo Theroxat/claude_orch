@@ -52,6 +52,32 @@ describe('templates', () => {
     expect(r.title).toBe('Fix a b');
   });
 
+  it('neutralises comment markers assembled across placeholders', () => {
+    const t = {
+      ...tpl,
+      titleTemplate: 'T',
+      acceptanceCriteria: [],
+      bodyTemplate: 'a <!{{x}} b {{y}}{{z}} c -{{x}}> d {{w}}',
+    };
+    const r = renderTemplate(t, { x: '--', y: '<!', z: '--', w: '--!>' });
+    expect(r.body).not.toMatch(/<!--|-->|--!>/);
+    expect(r.body).toContain('&lt;!--');
+    const split = { ...tpl, acceptanceCriteria: ['<{{x}}'], titleTemplate: '<!{{x}} orch' };
+    const r2 = renderTemplate({ ...split, bodyTemplate: '{{x}}' }, { x: '!--' });
+    expect(r2.acceptanceCriteria[0]).not.toContain('<!--');
+    expect(r2.title).not.toContain('<!--');
+  });
+
+  it('refuses a template repeated slot that would explode the output', () => {
+    const t = {
+      ...tpl,
+      titleTemplate: 'T',
+      bodyTemplate: '{{a}}'.repeat(4000),
+      acceptanceCriteria: [],
+    };
+    expect(() => renderTemplate(t, { a: 'x'.repeat(5000) })).toThrow(TemplateError);
+  });
+
   it('previews without throwing and keeps unfilled slots visible', () => {
     expect(previewTemplate(tpl, { what: 'bug' }).body).toBe('Fix bug in {{where}}.');
   });

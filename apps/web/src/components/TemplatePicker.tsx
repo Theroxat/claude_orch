@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { TaskTemplateView } from '@orch/shared';
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { fetchTemplates } from '../api/endpoints';
 
 export const SCOPE_LABEL = {
@@ -24,6 +24,8 @@ export function TemplatePicker({
   const uid = useId();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const toggle = useRef<HTMLButtonElement>(null);
+  const search = useRef<HTMLInputElement>(null);
   const templates = useQuery({
     queryKey: ['templates', projectId],
     queryFn: () => fetchTemplates(projectId || undefined),
@@ -43,7 +45,14 @@ export function TemplatePicker({
           type="button"
           aria-expanded={open}
           aria-controls={`${uid}-panel`}
-          onClick={() => setOpen((o) => !o)}
+          ref={toggle}
+          onClick={() => {
+            if (!open) {
+              setOpen(true);
+              // The panel is inert while closed: focus the search once it is live.
+              requestAnimationFrame(() => search.current?.focus());
+            } else setOpen(false);
+          }}
         >
           Start from a template
         </button>
@@ -53,7 +62,14 @@ export function TemplatePicker({
             <span>
               Using <strong>{selected.name}</strong>
             </span>
-            <button type="button" className="ghost" onClick={onClear}>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                onClear();
+                toggle.current?.focus();
+              }}
+            >
               Remove template
             </button>
           </span>
@@ -65,6 +81,7 @@ export function TemplatePicker({
             Search templates
             <input
               type="search"
+              ref={search}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="bug, upgrade, tests..."
@@ -85,6 +102,8 @@ export function TemplatePicker({
                   onClick={() => {
                     onPick(t);
                     setOpen(false);
+                    // The focused row is about to become inert: keep focus on the toggle.
+                    toggle.current?.focus();
                   }}
                 >
                   <span className="lamp" data-scope={t.scope} aria-hidden="true" />

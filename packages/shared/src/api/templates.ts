@@ -85,12 +85,16 @@ const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
 /** Makes a user value safe to put in an issue body: no control chars, no HTML comment markers. */
 export function sanitizeValue(value: string): string {
-  return value
-    .replace(/\r\n?/g, '\n')
-    .replace(CONTROL_RE, '')
-    .replace(/<!--/g, '&lt;!--')
-    .replace(/-->/g, '--&gt;')
-    .trim();
+  return neutraliseComments(value.replace(/\r\n?/g, '\n').replace(CONTROL_RE, '')).trim();
+}
+
+/**
+ * Breaks HTML comment openers and closers (`<!--`, `-->`, and the `--!>` the HTML parser also
+ * accepts). Applied to each value AND to the final rendered text: a marker can be assembled
+ * across a placeholder boundary (`<!{{a}}` with a = `--`, or `{{a}}{{b}}`).
+ */
+export function neutraliseComments(text: string): string {
+  return text.replace(/<!--/g, '&lt;!--').replace(/--!?>/g, (m) => m.slice(0, -1) + '&gt;');
 }
 
 export type TemplateErrorCode = 'missing_variables' | 'unknown_variables' | 'invalid_variable';
@@ -105,12 +109,27 @@ export class TemplateError extends Error {
   }
 }
 
-function fill(text: string, values: Record<string, string>, singleLine: boolean): string {
+/** Longest rendered text, checked while filling to bound the work (a template may repeat a slot). */
+const MAX_RENDERED = 60_000;
+
+function fill(
+  text: string,
+  values: Record<string, string>,
+  singleLine: boolean,
+  capped = false,
+): string {
+  let size = text.length;
   const out = text.replace(PLACEHOLDER_RE, (_m, name: string) => {
-    const v = values[name] ?? '';
-    return singleLine ? v.replace(/\s+/g, ' ') : v;
+    let v = values[name] ?? '';
+    if (singleLine) v = v.replace(/\s+/g, ' ');
+    size += v.length;
+    if (capped && size > MAX_RENDERED) {
+      throw new TemplateError('invalid_variable', 'The rendered text is too long', []);
+    }
+    return v;
   });
-  return singleLine ? out.replace(/\s+/g, ' ').trim() : out;
+  const joined = neutraliseComments(out);
+  return singleLine ? joined.replace(/\s+/g, ' ').trim() : joined;
 }
 
 export type DependenciesMode = 'none' | 'ask';
@@ -184,16 +203,13 @@ export function renderTemplate(
   variables: Record<string, string>,
 ): RenderedTemplate {
   const values = checkVariables(placeholdersOf(t), variables);
-  const title = fill(t.titleTemplate, values, true).slice(0, TEMPLATE_LIMITS.title).trim();
-  const body = fill(t.bodyTemplate, values, false).trim();
-  if (body.length > 60_000) {
-    throw new TemplateError('invalid_variable', 'The rendered description is too long', []);
-  }
+  const title = fill(t.titleTemplate, values, true, true).slice(0, TEMPLATE_LIMITS.title).trim();
+  const body = fill(t.bodyTemplate, values, false, true).trim();
   return {
     title,
     body,
     acceptanceCriteria: t.acceptanceCriteria
-      .map((c) => fill(c, values, true).slice(0, TEMPLATE_LIMITS.criterion))
+      .map((c) => fill(c, values, true, true).slice(0, TEMPLATE_LIMITS.criterion))
       .filter((c) => c !== ''),
     size: t.size,
     model: t.model,
