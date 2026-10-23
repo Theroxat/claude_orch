@@ -55,6 +55,7 @@ case "${1:-up}" in
     "$0" down >/dev/null 2>&1 || true # stale stack of a previous run
     rm -rf "$BASE/shots" "$WORK/test-results" "$WORK"/report*.json "$WORK/findings.jsonl"
     mkdir -p "$BASE/shots"
+    docker pull -q "$PW_IMAGE" >/dev/null 2>&1 & # pulled while the stack builds
     "$0" up
     # Flow specs mutate the shared stack and are ordered: serial. 10-pages is read-only: parallel.
     if phases; then status=0; fi
