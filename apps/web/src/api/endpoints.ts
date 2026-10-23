@@ -10,6 +10,7 @@ import {
   ImportTasksResponseSchema,
   InstallUrlResponseSchema,
   TaskBoardSchema,
+  UsageDashboardSchema,
   TaskViewSchema,
   WhyNotRunningResponseSchema,
   OfferListResponseSchema,
@@ -32,6 +33,7 @@ import {
   type CreatePersonalTokenRequest,
   type CreateTaskRequest,
   type UpdateProjectRequest,
+  type UsageRange,
   type UndoRejectionRequest,
   type UpsertParticipationRequest,
 } from '@orch/shared';
@@ -177,6 +179,8 @@ export const revokeInvite = (id: string) =>
     schema: z.object({ invite: InviteSchema }),
   });
 
+export const fetchUsage = (range: UsageRange) =>
+  api('GET', `/usage?range=${range}`, { schema: UsageDashboardSchema });
 export const fetchNotifications = (limit = 30) =>
   api('GET', `/notifications?limit=${limit}`, { schema: NotificationListResponseSchema });
 export const fetchUnreadCount = () =>

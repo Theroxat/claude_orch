@@ -18,6 +18,7 @@ import { registerMcp } from './mcp';
 import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
+import { registerUsage } from './usage/dashboard';
 import { LiveLogStore, registerLiveLogs } from './logs';
 import { Metrics, registerObservability } from './observability';
 import { Notifier, registerNotifications } from './notifications';
@@ -121,6 +122,7 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
     registerOAuth(app, deps);
     registerMcp(app, m4);
     registerOnboarding(app, m4);
+    registerUsage(app, deps);
     registerNotifications(app, { ...deps, notifier });
     app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
     app.register(async (scope) => registerAgents(scope, m4, gateway));
