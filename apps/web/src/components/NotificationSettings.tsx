@@ -13,11 +13,19 @@ import { useLocation } from 'react-router';
 import { ApiError } from '../api/client';
 import {
   fetchNotificationSettings,
+  pushSubscribe,
+  pushUnsubscribe,
   sendTestNotification,
   updateNotificationSettings,
 } from '../api/endpoints';
 import { useMe } from '../auth';
 import { motionAllowed } from '../ui/motion';
+import {
+  currentSubscription,
+  notificationPermission,
+  pushSupported,
+  subscribeBrowser,
+} from '../push/browser';
 import { CHANNEL_LABEL, EVENT_META } from '../ui/notificationMeta';
 import { useToast } from '../ui/Toast';
 
@@ -56,6 +64,7 @@ const ROLE_NOTE: Partial<Record<NotificationEvent, string>> = {
 function configured(s: NotificationSettingsView, c: NotificationChannel): boolean {
   if (c === 'in_app') return true;
   if (c === 'email') return s.email.available && !!s.email.address;
+  if (c === 'push') return s.push.available && s.push.subscriptions > 0;
   return s[c].configured;
 }
 
@@ -80,10 +89,16 @@ export function NotificationSettings() {
       </p>
       {settings.isPending && <p className="hint">Loading notification settings...</p>}
       {settings.error && <p className="error">{settings.error.message}</p>}
-      {settings.data && <SettingsForm key={JSON.stringify(settings.data)} data={settings.data} />}
+      {settings.data && <SettingsForm key={formKey(settings.data)} data={settings.data} />}
     </section>
   );
 }
+
+/**
+ * The form restarts from the saved settings after each save. Browser subscriptions change on their
+ * own (this browser toggled, another one added) and must not discard edits in progress.
+ */
+const formKey = (d: NotificationSettingsView) => JSON.stringify({ ...d, push: undefined });
 
 function SettingsForm({ data }: { data: NotificationSettingsView }) {
   const qc = useQueryClient();
@@ -221,6 +236,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
             </div>
           );
         })}
+        <BrowserTarget data={data} onTest={() => test.mutate('push')} />
         <div className="notify-target">
           <div className="notify-target-head">
             <span className="notify-label">In the app</span>
@@ -300,6 +316,138 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
         </button>
       </div>
     </form>
+  );
+}
+
+type BrowserState = 'checking' | 'unsupported' | 'unavailable' | 'denied' | 'off' | 'on';
+
+/** "Enable browser notifications": subscribes this browser to Web Push, after asking permission. */
+function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTest: () => void }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const { available, publicKey, subscriptions } = data.push;
+  const [state, setState] = useState<BrowserState>(
+    !pushSupported() ? 'unsupported' : !available ? 'unavailable' : 'checking',
+  );
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (state !== 'checking') return;
+    let live = true;
+    currentSubscription()
+      .then((sub) => {
+        if (!live) return;
+        if (sub) setState('on');
+        else setState(notificationPermission() === 'denied' ? 'denied' : 'off');
+      })
+      .catch(() => live && setState('off'));
+    return () => {
+      live = false;
+    };
+  }, [state]);
+
+  const refresh = () => qc.invalidateQueries({ queryKey: KEY });
+
+  const enable = async () => {
+    if (!publicKey) return;
+    setBusy(true);
+    try {
+      // Asked in the click handler: browsers only show the prompt after a user gesture.
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setState(permission === 'denied' ? 'denied' : 'off');
+        if (permission !== 'denied') toast('Browser notifications were not enabled', 'info');
+        return;
+      }
+      const sub = await subscribeBrowser(publicKey);
+      const json = sub.toJSON();
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys.auth) {
+        throw new Error('The browser returned an incomplete subscription');
+      }
+      await pushSubscribe({
+        endpoint: json.endpoint,
+        keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+      });
+      setState('on');
+      toast('Browser notifications enabled');
+      await refresh();
+    } catch (e) {
+      toast(
+        `Could not enable browser notifications: ${e instanceof Error ? e.message : e}`,
+        'info',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    try {
+      const sub = await currentSubscription();
+      if (sub) {
+        await pushUnsubscribe(sub.endpoint);
+        await sub.unsubscribe();
+      }
+      setState('off');
+      toast('Browser notifications turned off');
+      await refresh();
+    } catch (e) {
+      toast(
+        `Could not turn off browser notifications: ${e instanceof Error ? e.message : e}`,
+        'info',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hint: Record<BrowserState, string> = {
+    checking: 'Checking this browser...',
+    unsupported:
+      'This browser cannot show notifications. On iPhone and iPad, add orch to the Home Screen first.',
+    unavailable:
+      'This server has no push keys, so browser notifications are unavailable. Ask an admin to set them up.',
+    denied:
+      "Notifications are blocked for this site. Allow them in your browser's site settings, then try again.",
+    off: 'Show a system notification on this device, even when orch is closed.',
+    on:
+      subscriptions > 1
+        ? `This browser is on. ${subscriptions} browsers receive notifications.`
+        : 'This browser receives notifications.',
+  };
+  const locked = busy || state === 'checking' || state === 'unsupported' || state === 'unavailable';
+
+  return (
+    <div className="notify-target">
+      <div className="notify-target-head">
+        <span className="notify-label">Browser</span>
+        <span className="hint" id="notify-browser-hint">
+          {hint[state]}
+        </span>
+      </div>
+      <div className="notify-target-body">
+        <label className="notify-switch">
+          <input
+            id="notify-browser"
+            type="checkbox"
+            checked={state === 'on'}
+            disabled={locked || state === 'denied'}
+            aria-describedby="notify-browser-hint"
+            onChange={(e) => void (e.target.checked ? enable() : disable())}
+          />
+          Enable browser notifications
+        </label>
+        <TargetActions
+          name="Browser"
+          canRemove={false}
+          canTest={available && subscriptions > 0}
+          busy={busy}
+          onRemove={() => undefined}
+          onTest={onTest}
+        />
+      </div>
+    </div>
   );
 }
 

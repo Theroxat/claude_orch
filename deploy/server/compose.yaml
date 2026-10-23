@@ -91,6 +91,10 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # Optional browser notifications (Web Push, see docs/notifications.md).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     volumes:
       # GitHub App private key (read-only). See README: Creating the GitHub App.
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-./secrets/github-app.pem}:/run/orch-secrets/github-app.pem:ro

@@ -2,9 +2,10 @@ import { Suspense, ViewTransition, useEffect, useRef, useState, type CSSProperti
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { dismissOnboarding, fetchPendingCount } from '../api/endpoints';
+import { dismissOnboarding, fetchPendingCount, pushUnsubscribe } from '../api/endpoints';
 import { useOffers } from '../api/offers';
 import { useMe, useResetSession } from '../auth';
+import { dropBrowserSubscription } from '../push/browser';
 import { preload } from '../routes';
 import { Brand } from '../ui/Brand';
 import { Icon } from '../ui/Icon';
@@ -91,7 +92,10 @@ export function Layout() {
       .catch(() => undefined);
   }, [me, incomplete, navigate, qc]);
   const logout = useMutation({
-    mutationFn: () => api<unknown>('POST', '/auth/logout'),
+    mutationFn: async () => {
+      await dropBrowserSubscription(pushUnsubscribe);
+      return api<unknown>('POST', '/auth/logout');
+    },
     onSuccess: () => {
       reset();
       navigate('/login', { replace: true });

@@ -23,6 +23,7 @@ import { Metrics, registerObservability } from './observability';
 import { Notifier, registerNotifications } from './notifications';
 import { recipientCheck } from './notifications/access';
 import type { Mailer } from './notifications/service';
+import type { PushSender } from './notifications/push';
 import type { WebhookPoster } from './notifications/ssrf';
 
 declare module 'fastify' {
@@ -38,8 +39,8 @@ export interface AppDeps {
   github?: GithubClient;
   /** Test hook: where pino writes (with config.LOG_LEVEL). */
   logStream?: { write(msg: string): void };
-  /** Test hooks: webhook HTTP client and e-mail transport of the notifier. */
-  notify?: { post?: WebhookPoster; mailer?: Mailer | null };
+  /** Test hooks: webhook HTTP client, e-mail transport and Web Push sender of the notifier. */
+  notify?: { post?: WebhookPoster; mailer?: Mailer | null; pusher?: PushSender | null };
 }
 
 /** Logged URL without the query string: it carries the OAuth code and state. */
