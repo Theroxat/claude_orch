@@ -27,6 +27,7 @@ const links = [
   { to: '/pool', label: 'Pool' },
   { to: '/requests', label: 'Requests' },
   { to: '/backlog', label: 'Backlog' },
+  { to: '/history', label: 'History' },
   { to: '/usage', label: 'Usage' },
   { to: '/claude-code', label: 'Claude Code' },
   { to: '/my-server', label: 'My Server' },

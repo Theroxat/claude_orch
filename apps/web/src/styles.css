@@ -425,6 +425,11 @@ strong {
 .shell:has(.kanban) .line {
   max-width: 1520px;
 }
+.page:has(.history),
+.shell:has(.history) .topbar-row,
+.shell:has(.history) .line {
+  max-width: 1320px;
+}
 .page-head {
   display: flex;
   flex-wrap: wrap;
@@ -2167,6 +2172,380 @@ details.card > summary {
 @media (max-width: 420px) {
   .progress-pill:not([aria-label]) {
     display: none;
+  }
+}
+
+/* ---------- History ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.history-filters {
+  display: grid;
+  gap: 14px 20px;
+  grid-template-columns: minmax(240px, 1fr) auto auto;
+  align-items: end;
+  padding: 16px 18px 18px;
+  margin-bottom: 18px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+}
+.history-search {
+  min-width: 0;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.chips legend {
+  float: left;
+  padding: 0;
+  margin-right: 4px;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+.chips legend + * {
+  clear: none;
+}
+.chip {
+  --lamp: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 4px;
+  min-height: 32px;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 650;
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-soft);
+}
+.chip .lamp {
+  width: 7px;
+  height: 7px;
+  box-shadow: none;
+  background: var(--lamp);
+}
+.chip[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--lamp) 14%, var(--surface));
+  border-color: var(--lamp);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--lamp);
+}
+.chip:not(:has(.lamp))[aria-pressed='true'] {
+  --lamp: var(--route);
+}
+.chip[data-status='IN_PROGRESS'],
+.history-row[data-status='IN_PROGRESS'] {
+  --lamp: var(--proceed);
+}
+.chip[data-status='IN_REVIEW'],
+.history-row[data-status='IN_REVIEW'] {
+  --lamp: var(--caution);
+}
+.chip[data-status='TODO'],
+.history-row[data-status='TODO'] {
+  --lamp: var(--route);
+}
+.chip[data-status='DONE'],
+.history-row[data-status='DONE'] {
+  --lamp: var(--ink-soft);
+}
+.chip[data-status='CANCELLED'],
+.history-row[data-status='CANCELLED'] {
+  --lamp: var(--muted);
+}
+.history-selects {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.history-scroll {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  transition: opacity 0.15s;
+}
+.history-scroll[data-stale] {
+  opacity: 0.55;
+}
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+.history-table th {
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--muted);
+  padding: 10px 14px 9px;
+  background: var(--surface-sunk);
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+.history-table td {
+  padding: 12px 14px 11px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--rule);
+}
+.history-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.history-table .h-status {
+  position: relative;
+  white-space: nowrap;
+  padding-left: 20px;
+}
+.history-table .h-status::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--lamp, var(--muted));
+}
+.history-row[data-status='CANCELLED'] .h-title {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.status-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 650;
+}
+.status-mark .lamp {
+  background: var(--lamp, var(--muted));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lamp, var(--muted)) 20%, transparent);
+}
+.h-task {
+  min-width: 260px;
+}
+.h-title {
+  display: block;
+  font-weight: 650;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.h-refs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.h-refs a {
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.h-runs {
+  white-space: nowrap;
+}
+.h-runs > * {
+  display: block;
+  width: fit-content;
+}
+.h-runs .badge {
+  margin-top: 4px;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.h-time {
+  min-width: 96px;
+}
+.track {
+  display: block;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+.track > span {
+  display: block;
+  height: 100%;
+  background: var(--lamp, var(--ink-soft));
+  border-radius: 2px;
+}
+.person {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.ran-by {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.h-date {
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+.history-more {
+  display: flex;
+  justify-content: center;
+  padding: 18px 0 4px;
+}
+.history-end {
+  text-align: center;
+  margin-top: 16px;
+}
+.history-skeleton {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.history-skeleton li {
+  height: 62px;
+  border-radius: var(--r-md);
+  background: linear-gradient(
+    90deg,
+    var(--surface) 20%,
+    var(--surface-sunk) 50%,
+    var(--surface) 80%
+  );
+  background-size: 200% 100%;
+  border: 1px solid var(--rule);
+  animation: sweep 1.4s linear infinite;
+}
+@keyframes sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (max-width: 1100px) {
+  .history-filters {
+    grid-template-columns: 1fr;
+  }
+  .history-selects {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .history-selects > button {
+    justify-self: start;
+  }
+}
+/* Desktop: the extra filters are always visible and part of the grid; the toggle is mobile only. */
+.history-more-filters {
+  display: contents;
+}
+.history-toggle {
+  display: none;
+  justify-self: start;
+  gap: 8px;
+}
+@media (max-width: 820px) {
+  .history-toggle {
+    display: inline-flex;
+    align-items: center;
+  }
+  .history-more-filters {
+    display: grid;
+    gap: 14px;
+  }
+  .history-more-filters[data-open='false'] {
+    display: none;
+  }
+}
+/* Narrow screens: each task becomes a stacked card, columns keep their labels. */
+@media (max-width: 820px) {
+  .history-selects {
+    grid-template-columns: 1fr 1fr;
+  }
+  .history-scroll {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .history-table,
+  .history-table tbody,
+  .history-table tr,
+  .history-table td {
+    display: block;
+  }
+  .history-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .history-table tr {
+    position: relative;
+    margin-bottom: 10px;
+    padding: 4px 0 6px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--r-lg);
+    overflow: hidden;
+  }
+  .history-table td {
+    border: 0;
+    padding: 5px 14px 5px 18px;
+  }
+  .history-table td:not(.h-status):not(.h-task)::before {
+    content: attr(data-label) ': ';
+    color: var(--muted);
+    font-size: 0.84rem;
+  }
+  .history-table .h-status {
+    padding-left: 18px;
+  }
+  .history-table .h-status::before {
+    inset: 0 auto 0 0;
+  }
+  .h-runs > *,
+  .h-people > * {
+    display: inline-flex;
+  }
+  .h-runs .badge {
+    margin: 0 0 0 8px;
+  }
+  .h-time .track {
+    display: none;
+  }
+  .h-people .ran-by {
+    margin: 0 0 0 8px;
+  }
+}
+@media (max-width: 520px) {
+  .history-selects {
+    grid-template-columns: 1fr;
   }
 }
 

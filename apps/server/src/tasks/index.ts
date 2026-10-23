@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import {
   CreateTaskRequestSchema,
+  HistoryQuerySchema,
+  type HistoryResponse,
   UpdateTaskRequestSchema,
   type ImportTasksResponse,
   type TaskBoard,
@@ -49,6 +51,11 @@ export function registerTasks(
   });
 
   app.get('/api/tasks', async (req): Promise<TaskBoard> => svc.listMine(requireUser(req)));
+
+  app.get('/api/tasks/history', async (req): Promise<HistoryResponse> => {
+    const user = requireUser(req);
+    return svc.history(user, parseBody(HistoryQuerySchema, req.query));
+  });
 
   app.get('/api/tasks/:id', async (req): Promise<TaskView> => {
     const user = requireUser(req);

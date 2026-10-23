@@ -15,6 +15,7 @@ const Discover = pages['/discover'];
 const Pool = pages['/pool'];
 const Requests = pages['/requests'];
 const Backlog = pages['/backlog'];
+const History = pages['/history'];
 const Usage = pages['/usage'];
 const ClaudeCode = pages['/claude-code'];
 const MyServer = pages['/my-server'];
@@ -49,6 +50,7 @@ export function App() {
               <Route path="/pool" element={<Pool />} />
               <Route path="/requests" element={<Requests />} />
               <Route path="/backlog" element={<Backlog />} />
+              <Route path="/history" element={<History />} />
               <Route path="/usage" element={<Usage />} />
               <Route path="/claude-code" element={<ClaudeCode />} />
               <Route path="/my-server" element={<MyServer />} />
