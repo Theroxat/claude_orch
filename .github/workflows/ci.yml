@@ -32,8 +32,10 @@ jobs:
         run: ./dev typecheck
       - name: Test
         run: ./dev test
-      - name: Installer tests (shellcheck + bats)
+      - name: Installer and backup script tests (shellcheck + bats)
         run: ./dev test:install
+      - name: Backup integration (throwaway Postgres, backup, restore)
+        run: ./dev test:backup
 
   ui:
     name: Browser UI tests (Playwright, Docker)
@@ -43,6 +45,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # pnpm store (repo-local, see docker/tools.Dockerfile): `pnpm install` becomes a link step.
+      - uses: actions/cache@v6
+        with:
+          path: .pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
       # Self-contained: builds the web app, starts the e2e stack behind the production Caddy CSP,
       # runs Playwright (pinned image), tears everything down. CSP violations and axe
       # serious/critical findings fail the job.
@@ -55,7 +63,7 @@ jobs:
           name: ui-test-output
           path: |
             ~/.cache/orch-uitest/shots
-            ~/.cache/orch-uitest/work/report.json
+            ~/.cache/orch-uitest/work/report-*.json
             ~/.cache/orch-uitest/work/findings.jsonl
             ~/.cache/orch-uitest/work/test-results
           if-no-files-found: ignore
@@ -95,8 +103,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           push: false
-          # Only the agent image is loaded into the local daemon, for the smoke test below.
-          load: ${{ matrix.image == 'agent' }}
+          # The agent and server images are loaded into the local daemon, for the smoke tests below.
+          load: ${{ matrix.image == 'agent' || matrix.image == 'server' }}
           tags: orch-${{ matrix.image }}:ci
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
@@ -105,6 +113,21 @@ jobs:
         run: |
           docker run --rm --entrypoint sh orch-agent:ci -c \
             'test -x "$ORCH_CLAUDE_BIN" && "$ORCH_CLAUDE_BIN" --version && "$ORCH_CLAUDE_BIN" setup-token --help >/dev/null && command -v script && orch help >/dev/null'
+      - name: Server image smoke test (node ABI, ICU, CA certificates, crypto, tsx, Prisma CLI)
+        if: matrix.image == 'server'
+        run: |
+          # The node binary is copied from node:*-alpine onto a plain alpine: fail fast if their
+          # musl/libstdc++ ever drift apart (a missing shared library shows up as "not found").
+          docker run --rm --entrypoint sh orch-server:ci -c '! ldd /usr/local/bin/node | grep -i "not found" && tsx --version >/dev/null && prisma --version >/dev/null && test "$(id -u)" != 0'
+          docker run --rm --entrypoint node orch-server:ci -e "
+            const c = require('crypto');
+            const k = c.randomBytes(32), iv = c.randomBytes(12);
+            const e = c.createCipheriv('aes-256-gcm', k, iv); const ct = Buffer.concat([e.update('x'), e.final()]);
+            const d = c.createDecipheriv('aes-256-gcm', k, iv); d.setAuthTag(e.getAuthTag());
+            if (Buffer.concat([d.update(ct), d.final()]).toString() !== 'x') process.exit(1);
+            if (new Intl.DateTimeFormat('fr-FR', { dateStyle: 'full', timeZone: 'Europe/Paris' }).format(new Date(0)) !== 'jeudi 1 janvier 1970') process.exit(1);
+            fetch('https://api.github.com/zen').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(e => { console.error(e); process.exit(1); });
+          "
 
   gitleaks:
     name: Secret scan (gitleaks)

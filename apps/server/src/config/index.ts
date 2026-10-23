@@ -34,10 +34,65 @@ const ConfigSchema = z.object({
    * comma-separated list of addresses, CIDRs or the aliases loopback, linklocal, uniquelocal.
    * Default: private networks only, so the Caddy container is trusted and the internet is not.
    */
-  ORCH_TRUST_PROXY: z
-    .string()
-    .default('loopback,linklocal,uniquelocal')
-    .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+  ORCH_TRUST_PROXY: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .default('loopback,linklocal,uniquelocal')
+      .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
+  ),
+  /**
+   * Rate limiting (in-memory, single instance). Limits are per window (RATE_LIMIT_WINDOW_SEC):
+   * API per signed-in user (else per IP), auth/OAuth per IP, webhook per IP, MCP per token,
+   * expensive reads per user. 0 on a *_MAX value is not allowed; set RATE_LIMIT_ENABLED=false
+   * to turn the HTTP limiter off.
+   */
+  RATE_LIMIT_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+  ),
+  RATE_LIMIT_WINDOW_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  RATE_LIMIT_API_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(300),
+  ),
+  RATE_LIMIT_AUTH_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  RATE_LIMIT_WEBHOOK_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(600),
+  ),
+  RATE_LIMIT_MCP_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(120),
+  ),
+  RATE_LIMIT_HEAVY_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(60),
+  ),
+  /** Live-log streams (SSE) opened per user per window: counts connections, not events. */
+  RATE_LIMIT_STREAM_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(30),
+  ),
+  /** New agent WebSocket connections per IP per window. */
+  RATE_LIMIT_AGENT_CONNECT_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(30),
+  ),
+  /** Messages per second per agent connection; above it the socket is closed (4429). 0 = off. */
+  RATE_LIMIT_AGENT_MSG_PER_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().nonnegative().default(100),
+  ),
   /** Release version of this server (set at image build). `dev` for local builds. */
   ORCH_VERSION: z
     .string()
@@ -129,6 +184,15 @@ const ConfigSchema = z.object({
   PRO_WINDOW_WEIGHTED: z.coerce.number().positive().default(44_000),
   /** Grace added to the S/M/L execution timeouts before an auto run is declared lost. */
   EXEC_LEASE_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
+  /** Prometheus `/metrics`: 404 unless true. Never expose it publicly (see docs/observability.md). */
+  METRICS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /** Optional bearer token required on `/metrics` (in addition to keeping it off the public proxy). */
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+  /** OpenTelemetry traces: enabled only when set (OTLP/HTTP endpoint, e.g. http://otel:4318). */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyToUndefined, z.url().optional()),
   /** Running assignments of an agent unseen (and disconnected) for this long become LOST. */
   AGENT_LEASE_SEC: z.coerce.number().int().positive().default(1_800),
 });

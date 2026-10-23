@@ -23,6 +23,7 @@ import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
 import type { LiveLogStore } from '../logs/store';
 import { participationStatus } from '../projects/service';
+import { versionLabel, type Metrics } from '../observability';
 import { TaskService } from '../tasks/service';
 import { claudeAuthUpdate, purgeRetention, recordUsage } from '../usage';
 
@@ -37,6 +38,8 @@ interface Conn {
   maxConcurrent: number;
   /** True when `hello` announced `selfUpdate` (understands `agent.update`). */
   selfUpdate: boolean;
+  /** Agent version announced in `hello` (metrics label). */
+  agentVersion?: string;
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
 }
@@ -65,6 +68,7 @@ export interface GatewayDeps {
   isAllowed?: (user: User) => Promise<boolean>;
   /** Live task output buffers (`task.log`). Absent: live output is not offered to agents. */
   liveLogs?: LiveLogStore;
+  metrics?: Metrics;
 }
 
 /**
@@ -90,6 +94,7 @@ export class AgentGateway {
       prisma: deps.prisma,
       config: deps.config,
       github: deps.github,
+      metrics: deps.metrics,
     });
   }
 
@@ -116,6 +121,17 @@ export class AgentGateway {
 
   isConnected(agentId: string): boolean {
     return this.conns.get(agentId)?.helloed === true;
+  }
+
+  /** Live (helloed) agents per announced version, for the `orch_agents_connected` gauge. */
+  connectedByVersion(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const c of this.conns.values()) {
+      if (!c.helloed) continue;
+      const v = versionLabel(c.agentVersion);
+      out.set(v, (out.get(v) ?? 0) + 1);
+    }
+    return out;
   }
 
   /** Connected and able to update itself on request (`agent.update`). */
@@ -215,7 +231,24 @@ export class AgentGateway {
       queue: Promise.resolve(),
     };
     this.conns.set(agent.id, conn);
+    const maxPerSec = this.deps.config.RATE_LIMIT_ENABLED
+      ? this.deps.config.RATE_LIMIT_AGENT_MSG_PER_SEC
+      : 0;
+    let secStart = Date.now();
+    let secCount = 0;
     socket.on('message', (data, isBinary) => {
+      if (maxPerSec > 0) {
+        const now = Date.now();
+        if (now - secStart >= 1000) {
+          secStart = now;
+          secCount = 0;
+        }
+        if (++secCount > maxPerSec) {
+          this.deps.log.warn({ agentId: agent.id }, 'agent message flood; closing');
+          this.disconnect(agent.id, CloseCode.RATE_LIMITED, 'rate limited');
+          return;
+        }
+      }
       const raw = isBinary ? '' : data.toString();
       conn.queue = conn.queue
         .then(() => this.onFrame(conn, raw))
@@ -449,6 +482,7 @@ export class AgentGateway {
     if (this.conns.get(c.agentId) !== c) return; // superseded or closed
     const r = parseAgentMessage(raw);
     if (!r.ok) {
+      this.deps.metrics?.wsMessages.inc({ type: 'invalid' });
       this.sendError(c, r.code, r.error, r.id);
       if (r.code === 'version_mismatch') {
         this.disconnect(c.agentId, CloseCode.VERSION_MISMATCH, 'protocol version mismatch');
@@ -458,6 +492,7 @@ export class AgentGateway {
       return;
     }
     const m = r.message;
+    this.deps.metrics?.wsMessages.inc({ type: m.type });
     if (m.type !== 'ack' && this.deps.isAllowed) {
       // GitHub outages are handled by the allowlist (last known decision for a grace period,
       // then deny); any other failure throws and the frame is not processed (fail closed).
@@ -641,6 +676,7 @@ export class AgentGateway {
     c.helloed = true;
     c.maxConcurrent = m.payload.maxConcurrent;
     c.selfUpdate = m.payload.selfUpdate === true;
+    c.agentVersion = m.payload.agentVersion;
     const latest = normalizeVersion(this.deps.config.ORCH_VERSION);
     this.send(
       c,

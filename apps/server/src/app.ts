@@ -8,6 +8,7 @@ import type { PrismaClient } from './db';
 import type { GithubClient } from './github';
 import { Dispatcher } from './dispatch/dispatcher';
 import { installErrorHandling } from './http/errors';
+import { registerRateLimit } from './http/rate-limit';
 import { registerOffers } from './offers';
 import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
@@ -18,6 +19,7 @@ import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
 import { LiveLogStore, registerLiveLogs } from './logs';
+import { Metrics, registerObservability } from './observability';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -58,8 +60,12 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
       ...(logStream ? { stream: logStream } : {}),
     },
     trustProxy: config.ORCH_TRUST_PROXY,
+    // Explicit default (1 MiB); routes that take less set their own lower limit.
+    bodyLimit: 1024 * 1024,
   });
   installErrorHandling(app);
+  const metrics = new Metrics(config.ORCH_VERSION);
+  registerObservability(app, { config, prisma, metrics });
 
   const version = config.ORCH_VERSION;
   const health = async () => ({ status: 'ok' as const, version });
@@ -67,17 +73,20 @@ export function buildApp({ config, prisma, github, logStream }: AppDeps): Fastif
   app.get('/api/healthz', health);
 
   if (prisma) {
-    const deps = { config, prisma, github };
+    const deps = { config, prisma, github, metrics };
     const liveLogs = new LiveLogStore();
     const gateway = createAgentGateway(app, { ...deps, liveLogs });
-    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log });
+    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics });
     gateway.setDispatcher(dispatcher);
+    metrics.attach({ prisma, log: app.log, agentVersions: () => gateway.connectedByVersion() });
     app.decorate('dispatcher', dispatcher);
     app.addHook('onReady', async () => dispatcher.start());
     // Runs before the gateway's onClose (hooks run in order): no tick sends on closed sockets.
     app.addHook('preClose', async () => dispatcher.stop());
     const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
+    // After the session lookup hook: requests are keyed by user id when signed in.
+    registerRateLimit(app, config);
     registerAccess(app, deps);
     registerProjects(app, m4);
     registerParticipation(app, m4);

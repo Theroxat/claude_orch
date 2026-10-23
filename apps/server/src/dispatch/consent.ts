@@ -22,7 +22,7 @@ export async function assertAutoConsent(
   userId: string,
   projectId: string,
   agentId: string | null,
-): Promise<void> {
+): Promise<{ percent: number }> {
   const p = await db.participation.findUnique({
     where: { userId_projectId: { userId, projectId } },
     include: { project: true, user: true },
@@ -41,6 +41,7 @@ export async function assertAutoConsent(
     if (!agent || agent.userId !== userId || agent.revokedAt) throw new ConsentError('agent');
     if (agent.paused) throw new ConsentError('paused');
   }
+  return p;
 }
 
 /** Same for a member who explicitly accepts a request: participation is required, not AUTO mode. */

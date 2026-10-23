@@ -15,15 +15,17 @@ orch is for **small teams who trust each other**. It is a shared to-do list with
 - **Live task logs.** While a task runs in auto mode, the agent streams a compact form of Claude's output (messages, tool names and short arguments, the start of tool results, stderr) to the server, which shows it on the task card (see {ref}`live-logs`). The agent masks the member's Claude token, the GitHub tokens of that run, its own credential and every known token pattern before anything leaves the machine, strips terminal escape codes, and the server masks the token patterns again. That masking only catches known values and formats: a secret the repository itself prints (a `.env` value, an API key in a test fixture) can still appear. Logs are readable by exactly the people who can see the task board (project owner, active participants, GitHub collaborators, with the same rules for private repositories), are kept in server memory only (512 KB per run, 30 minutes after the run, never in the database or backups), and an open stream is re-authorized every 2 minutes, so removing someone stops their stream within that delay. Only the agent running an assignment can write to its log.
 - **Server side.** Only Caddy is published. Postgres and the server are internal. GitHub user tokens are encrypted with `ORCH_ENCRYPTION_KEY`. Agent credentials and personal MCP tokens are stored hashed. Webhooks are verified with HMAC and deduplicated by delivery id and by body hash. Caddy sends HSTS and a strict Content-Security-Policy, and the server never logs query strings (they carry the OAuth code). Every state change is written to an append-only audit log.
 
+- **Rate limiting.** Requests are limited per signed-in user (or per client IP), with much stricter limits on sign-in, OAuth and enrollment endpoints, the webhook (also capped at 1 MiB per body) and the MCP endpoint (per token). New agent connections are limited per IP and an agent that floods messages is disconnected. Limits are in memory (single instance) and configurable, see {ref}`rate-limits`. The client IP is read from `X-Forwarded-For` only when the request comes from the trusted proxy (`ORCH_TRUST_PROXY`), so a spoofed header does not change the key. This slows down abuse and brute force; it is not a substitute for a firewall or Cloudflare in front of a public server.
+
 Report vulnerabilities privately through GitHub security advisories on the repository.
 
 ## Limitations
 
-- Single server instance (in-process scheduler); no high availability. One host, nightly dumps.
+- Single server instance (in-process scheduler); no high availability. One host, scheduled dumps.
 - No egress control, devcontainer/compose sanitizing or token-injecting proxy for task containers (see "Future hardening" in {doc}`PLAN`).
 - Usage and budget are estimates; plans are declared by the member.
 - Repos must build from a `Dockerfile` or a simple `.devcontainer.json`; complex devcontainer features are not honored.
 - Manual-mode `screen` sessions end if the agent container restarts; the task container survives and `orch attach <n>` reopens a session.
 - One concurrent task per machine by default.
 - GitHub only. English UI only.
-- The production images run TypeScript through `tsx` rather than a compiled build; the server image is therefore large (~900 MB).
+- The production images run TypeScript through `tsx` rather than a compiled build; the server image is still about 380 MB (Alpine, trimmed Prisma CLI).
