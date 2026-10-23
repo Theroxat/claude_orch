@@ -64,7 +64,7 @@ const ConfigSchema = z.object({
   ),
   RATE_LIMIT_AUTH_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(20),
+    z.coerce.number().int().positive().default(60),
   ),
   RATE_LIMIT_WEBHOOK_MAX: z.preprocess(
     emptyToUndefined,
