@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { AGENTS_KEY } from '../components/AgentUpdate';
 import { fetchMyAgents, pauseAgent, resumeAgent, revokeAgent } from '../api/endpoints';
 import { AgentCard } from '../components/AgentCard';
+import { NotificationSettings } from '../components/NotificationSettings';
 import { InstallAgentCard } from '../components/InstallAgentCard';
 import { Modal, closeModal } from '../ui/Modal';
 import { usePresence } from '../ui/presence';
@@ -77,6 +78,7 @@ export function MyServer() {
           onRevoke={setToRevoke}
         />
       ))}
+      <NotificationSettings />
       {toRevoke && (
         <Modal
           label="Revoke machine"

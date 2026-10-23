@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { GithubRole } from '@orch/shared';
-import { buildApp } from '../src/app';
+import { buildApp, type AppDeps } from '../src/app';
 import { loadConfig } from '../src/config';
 import type {
   CreateIssueInput,
@@ -161,6 +161,8 @@ export interface MakeAppOptions {
   env?: Record<string, string>;
   /** Captures pino output. */
   logStream?: { write(msg: string): void };
+  /** Notifier test hooks (webhook HTTP client, e-mail transport). */
+  notify?: AppDeps['notify'];
 }
 
 export function makeApp(
@@ -177,9 +179,18 @@ export function makeApp(
     // M1-M3 suites drive tasks by hand; the M4 suite turns the dispatcher on.
     DISPATCHER_ENABLED: 'false',
     GITHUB_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
+    // The limiter stays ON in every suite, but with limits no suite approaches. Suites that
+    // test the limiter itself override these (see ratelimit.test.ts).
+    RATE_LIMIT_API_MAX: '1000000',
+    RATE_LIMIT_AUTH_MAX: '1000000',
+    RATE_LIMIT_WEBHOOK_MAX: '1000000',
+    RATE_LIMIT_MCP_MAX: '1000000',
+    RATE_LIMIT_HEAVY_MAX: '1000000',
+    RATE_LIMIT_STREAM_MAX: '1000000',
+    RATE_LIMIT_AGENT_CONNECT_MAX: '1000000',
     ...opts.env,
   });
-  return buildApp({ config, prisma, github, logStream: opts.logStream });
+  return buildApp({ config, prisma, github, logStream: opts.logStream, notify: opts.notify });
 }
 
 export interface TestUser {
