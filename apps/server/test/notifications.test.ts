@@ -563,7 +563,7 @@ describe('preferences', () => {
       );
     const fresh = await get();
     expect(fresh.preferences).toEqual(DEFAULT_NOTIFICATION_PREFERENCES);
-    expect(fresh.email).toEqual({ available: true, address: null });
+    expect(fresh.email).toEqual({ available: true, address: null, status: 'none' });
     expect(fresh.slack).toEqual({ configured: false, hint: null });
 
     const slack = 'https://hooks.slack.com/services/T000/B000/abcdefSECRETwxyz';
@@ -670,6 +670,12 @@ describe('external channels', () => {
         email: 'owner@example.com',
       },
     );
+    // The address must be confirmed before any mail goes to it.
+    await prisma.notificationSettings.update({
+      where: { userId: owner.userId },
+      data: { emailVerifiedAt: new Date() },
+    });
+    mails.length = 0; // the confirmation e-mail is not under test here
     const t = await createTask(owner, p.id, 'Fix <setup> & go');
     return { owner, p, t };
   }

@@ -8,6 +8,7 @@ import { ToastProvider } from './ui/Toast';
 
 const Login = pages['/login'];
 const OAuthConsent = pages['/oauth/consent'];
+const ConfirmEmail = pages['/confirm-email'];
 const Welcome = pages['/welcome'];
 const Projects = pages['/projects'];
 const Discover = pages['/discover'];
@@ -39,6 +40,7 @@ export function App() {
           <Route path="/oauth/consent" element={<OAuthConsent />} />
           <Route element={<AuthGate />}>
             <Route path="/welcome" element={<Welcome />} />
+            <Route path="/confirm-email" element={<ConfirmEmail />} />
             <Route element={<Layout />}>
               <Route index element={<Navigate to="/projects" replace />} />
               <Route path="/projects" element={<Projects />} />

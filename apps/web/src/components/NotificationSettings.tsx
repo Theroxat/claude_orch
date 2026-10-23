@@ -13,6 +13,7 @@ import { useLocation } from 'react-router';
 import { ApiError } from '../api/client';
 import {
   fetchNotificationSettings,
+  resendEmailConfirmation,
   sendTestNotification,
   updateNotificationSettings,
 } from '../api/endpoints';
@@ -55,7 +56,7 @@ const ROLE_NOTE: Partial<Record<NotificationEvent, string>> = {
 
 function configured(s: NotificationSettingsView, c: NotificationChannel): boolean {
   if (c === 'in_app') return true;
-  if (c === 'email') return s.email.available && !!s.email.address;
+  if (c === 'email') return s.email.available && s.email.status === 'verified';
   return s[c].configured;
 }
 
@@ -128,6 +129,13 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
       toast(`Test to ${CHANNEL_LABEL[channel]} failed: ${e.message}`, 'info'),
   });
 
+  const resend = useMutation({
+    mutationFn: resendEmailConfirmation,
+    onSuccess: () => toast('Confirmation e-mail sent. Check your inbox.'),
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : 'Could not send the confirmation e-mail', 'info'),
+  });
+
   const toggle = (event: NotificationEvent, channel: NotificationChannel, on: boolean) =>
     setPrefs((p) => {
       const current = p[event] ?? [];
@@ -157,7 +165,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
             <label htmlFor="notify-email">E-mail address</label>
             <span className="hint">
               {data.email.available
-                ? 'Notifications are sent to this address.'
+                ? 'Notifications are sent to this address once you have confirmed it.'
                 : 'This server has no mail settings, so e-mail is unavailable. Ask an admin to set them up.'}
             </span>
           </div>
@@ -180,6 +188,23 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
               onTest={() => test.mutate('email')}
             />
           </div>
+          {data.email.available && data.email.status !== 'none' && (
+            <div className="notify-status">
+              {data.email.status === 'verified' ? (
+                <span className="badge ok">Verified</span>
+              ) : (
+                <>
+                  <span className="badge pending">Pending confirmation</span>
+                  <span className="hint">
+                    Nothing is sent to this address until you open the link we e-mailed.
+                  </span>
+                  <button type="button" disabled={resend.isPending} onClick={() => resend.mutate()}>
+                    Resend confirmation
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
         {URL_CHANNELS.map((c) => {
           const copy = URL_COPY[c];

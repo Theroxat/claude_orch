@@ -13,6 +13,7 @@ import { decrypt } from '../auth/crypto';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import type { RecipientCheck } from './access';
+import { confirmationMessage } from './emailVerification';
 import { planNotifications, type NotificationDraft } from './events';
 import {
   absoluteLink,
@@ -92,7 +93,8 @@ export function channelTarget(
   hasMailer: boolean,
 ): string | null {
   if (!s) return null;
-  if (channel === 'email') return hasMailer ? s.email : null;
+  // Never to an address the member has not confirmed (SMTP would otherwise mail anyone).
+  if (channel === 'email') return hasMailer && s.emailVerifiedAt ? s.email : null;
   const enc =
     channel === 'slack' ? s.slackUrlEnc : channel === 'discord' ? s.discordUrlEnc : s.webhookUrlEnc;
   if (!enc || !config.ORCH_ENCRYPTION_KEY) return null;
@@ -268,6 +270,23 @@ export class Notifier {
       throw new DeliveryError(code ?? (err instanceof Error ? err.message : 'network_error'), true);
     }
     if (!res.ok) throw new DeliveryError(`HTTP ${res.status}`, RETRYABLE_STATUS(res.status));
+  }
+
+  /** The confirmation e-mail (the only mail that may go to an unverified address). Never throws. */
+  async sendConfirmation(to: string, token: string): Promise<boolean> {
+    if (!this.mailer) return false;
+    const link = absoluteLink(this.deps.config.ORCH_BASE_URL, `/confirm-email?token=${token}`);
+    try {
+      await this.mailer.sendMail({
+        from: smtpFrom(this.deps.config),
+        to,
+        ...confirmationMessage(link ?? ''),
+      });
+      return true;
+    } catch (err) {
+      this.deps.log.warn({ err }, 'confirmation e-mail failed');
+      return false;
+    }
   }
 
   /** Deletes in-app notifications past the retention period. */

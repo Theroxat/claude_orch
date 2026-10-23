@@ -3,6 +3,7 @@ import type { Notification, NotificationSettings, Prisma } from '@prisma/client'
 import {
   MarkNotificationsReadRequestSchema,
   NotificationEvent,
+  ConfirmEmailRequestSchema,
   SendTestNotificationRequestSchema,
   UpdateNotificationSettingsRequestSchema,
   type NotificationItem,
@@ -14,6 +15,7 @@ import {
 import { encrypt } from '../auth/crypto';
 import { requireUser, type AuthDeps } from '../auth';
 import { HttpError, parseBody } from '../http/errors';
+import { confirmToken, issueToken, overLimit } from './emailVerification';
 import { absoluteLink } from './format';
 import {
   DeliveryError,
@@ -57,7 +59,11 @@ function toSettingsView(
     slack: target(s?.slackUrlEnc, s?.slackHint),
     discord: target(s?.discordUrlEnc, s?.discordHint),
     webhook: target(s?.webhookUrlEnc, s?.webhookHint),
-    email: { available: emailAvailable, address: s?.email ?? null },
+    email: {
+      available: emailAvailable,
+      address: s?.email ?? null,
+      status: !s?.email ? 'none' : s.emailVerifiedAt ? 'verified' : 'pending',
+    },
   };
 }
 
@@ -141,13 +147,58 @@ export function registerNotifications(
       data[encCol] = encrypt(u.href, config.ORCH_ENCRYPTION_KEY);
       data[hintCol] = maskUrl(u);
     }
-    if (body.email !== undefined) data.email = body.email || null;
+    let confirmEmail = false;
+    if (body.email !== undefined) {
+      const next = body.email || null;
+      const cur = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
+      if (next?.toLowerCase() !== cur?.email?.toLowerCase()) {
+        // A new address starts unverified, whatever was confirmed before.
+        data.email = next;
+        data.emailVerifiedAt = null;
+        data.emailTokenHash = null;
+        data.emailTokenExpiresAt = null;
+        confirmEmail = !!next && !!notifier.mailer;
+      }
+    }
     if (body.preferences) data.preferences = effectivePreferences(body.preferences);
     const s = await prisma.notificationSettings.upsert({
       where: { userId: user.id },
       create: { ...(data as Prisma.NotificationSettingsUncheckedCreateInput), userId: user.id },
       update: data,
     });
+    if (confirmEmail) await sendConfirmation(user.id);
+    return toSettingsView(
+      confirmEmail
+        ? await prisma.notificationSettings.findUnique({ where: { userId: user.id } })
+        : s,
+      !!notifier.mailer,
+    );
+  });
+
+  /** Issues a fresh token and mails it; silently does nothing past the rate limits. */
+  async function sendConfirmation(userId: string): Promise<void> {
+    const issued = await issueToken(prisma, userId);
+    if (issued.ok) await notifier.sendConfirmation(issued.email, issued.token);
+  }
+
+  /** Same answer whether or not a mail was sent: the response reveals nothing about addresses. */
+  app.post('/api/notifications/email/resend', async (req): Promise<{ ok: true }> => {
+    const user = requireUser(req);
+    const s = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
+    if (overLimit(s?.emailSendLog ?? [], new Date())) {
+      throw new HttpError(429, 'rate_limited', 'Too many confirmation e-mails, try again later');
+    }
+    if (notifier.mailer) await sendConfirmation(user.id);
+    return { ok: true };
+  });
+
+  app.post('/api/notifications/email/confirm', async (req): Promise<NotificationSettingsView> => {
+    const user = requireUser(req);
+    const { token } = parseBody(ConfirmEmailRequestSchema, req.body);
+    if (!(await confirmToken(prisma, user.id, token))) {
+      throw new HttpError(400, 'invalid_token', 'This link is invalid or has expired');
+    }
+    const s = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
     return toSettingsView(s, !!notifier.mailer);
   });
 
@@ -168,6 +219,9 @@ export function registerNotifications(
     }
     const s = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
     if (channel === 'email' && !notifier.mailer) return { ok: false, error: 'smtp_not_configured' };
+    if (channel === 'email' && s?.email && !s.emailVerifiedAt) {
+      return { ok: false, error: 'email_not_verified' };
+    }
     const target = channelTarget(s, channel, config, !!notifier.mailer);
     if (!target) return { ok: false, error: 'not_configured' };
     try {

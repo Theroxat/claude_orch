@@ -21,6 +21,7 @@ import {
   ProjectViewSchema,
   NotificationListResponseSchema,
   NotificationSettingsViewSchema,
+  OkResponseSchema,
   SendTestNotificationResponseSchema,
   UnreadCountResponseSchema,
   type AddProjectRequest,
@@ -185,6 +186,13 @@ export const fetchNotificationSettings = () =>
   api('GET', '/notifications/settings', { schema: NotificationSettingsViewSchema });
 export const updateNotificationSettings = (body: UpdateNotificationSettingsRequest) =>
   api('PUT', '/notifications/settings', { body, schema: NotificationSettingsViewSchema });
+export const resendEmailConfirmation = () =>
+  api('POST', '/notifications/email/resend', { body: {}, schema: OkResponseSchema });
+export const confirmNotificationEmail = (token: string) =>
+  api('POST', '/notifications/email/confirm', {
+    body: { token },
+    schema: NotificationSettingsViewSchema,
+  });
 export const sendTestNotification = (channel: NotificationChannel) =>
   api('POST', '/notifications/test', {
     body: { channel },

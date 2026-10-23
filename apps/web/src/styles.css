@@ -1805,6 +1805,17 @@ progress::-moz-progress-bar {
   letter-spacing: -0.025em;
 }
 
+.confirm-email .card-foot {
+  margin-top: 18px;
+}
+.notify-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
 /* ---------- Access admin ---------- */
 .invite-form {
   display: flex;
