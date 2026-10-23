@@ -70,6 +70,8 @@ Dispatch modes:
 - **Broadcast** (owner only): offered to every eligible member at once; the first to accept wins and the other offers are cancelled.
 - **Claim** (`orch take`, MCP `take_task`): the same eligibility checks without ranking. Taking a task yourself counts as consent.
 
+Each tick reads its state once (participations, recent history, latest usage reports, runs holding a slot or budget) and decides in memory; the offers it makes are counted for the following tasks of the same tick. Before an auto offer is written, the member's row is locked and their slots and held runs are read again, so a run accepted meanwhile (from any server instance) is counted for both the concurrency limit and the budget. Only the usage report and the usage of finished runs can be up to one tick old, which is far below the usage report staleness limit.
+
 Consent is enforced twice: the server never creates an auto offer for someone who is not `active` and in `AUTO` mode, and the agent re-checks its latest participation, local pause, concurrency and its own budget before every start. `orch pause` applies locally before the server knows, so an offer cannot win the race against the pause button.
 
 Limits: at most 20 pending tasks per creator (an error is returned beyond that), 1 concurrent task per machine by default, and execution timeouts of 30, 90 and 180 minutes for sizes S, M and L.

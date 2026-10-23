@@ -104,7 +104,7 @@ const isClaudeAuthRefusal = (a: { status: string; reason: string | null }) =>
 const isRetryable = (a: { status: string; reason: string | null }) =>
   isNotParticipating(a) || a.status === 'FAILED';
 
-const dispatchTaskInclude = {
+export const dispatchTaskInclude = {
   project: { include: { installation: true } },
   createdBy: true,
   targets: true,
@@ -271,12 +271,17 @@ export class Dispatcher {
     now: Date,
     excludeTaskId?: string,
   ): Promise<Margin | null> {
-    const ledger = await BudgetLedger.load(this.prisma, this.estimateConfig, now, {
+    const ledger = await this.budgetLedger(userId, usage, now);
+    return ledger.marginOf(userId, projectId, percent, usage, excludeTaskId);
+  }
+
+  /** One member's ledger: `marginOf` on any of their projects without reading again. */
+  budgetLedger(userId: string, usage: UsageSnapshot, now: Date): Promise<BudgetLedger> {
+    return BudgetLedger.load(this.prisma, this.estimateConfig, now, {
       userIds: [userId],
       usage: new Map([[userId, usage]]),
-      projectIds: [projectId],
+      tasks: [],
     });
-    return ledger.marginOf(userId, projectId, percent, usage, excludeTaskId);
   }
 
   // ---------- eligibility ----------
@@ -681,10 +686,10 @@ export class Dispatcher {
         });
         if (clash > 0) return null;
         if (kind === 'AUTO_OFFER') {
-          await assertAutoConsent(tx, c.userId, task.projectId, c.agentId);
-          // The candidate comes from the tick's snapshot: re-count the slots now, so a run
-          // accepted since then cannot push the member or the machine past its limit.
-          if (!(await this.hasFreeSlot(tx, c, now))) return null;
+          const p = await assertAutoConsent(tx, c.userId, task.projectId, c.agentId);
+          // The candidate comes from the tick's snapshot: re-check slots and budget now, so a
+          // run accepted since then cannot push the member or the machine past its limit.
+          if (!(await this.hasRoom(tx, task, c, p.percent, snap))) return null;
         } else await assertParticipates(tx, c.userId, task.projectId);
         return tx.assignment.create({
           data: {
@@ -750,17 +755,37 @@ export class Dispatcher {
     }
   }
 
-  /** Live slot check (inside the offer transaction) for an auto offer to `c`. */
-  private async hasFreeSlot(tx: Prisma.TransactionClient, c: Candidate, now: Date) {
-    const user = await tx.user.findUniqueOrThrow({
-      where: { id: c.userId },
-      select: { maxConcurrent: true },
-    });
-    const counts = await this.slotCounts(tx, c.userId, now);
-    return (
-      counts.total < user.maxConcurrent &&
-      (counts.perAgent.get(c.agentId) ?? 0) < this.gateway.maxConcurrentOf(c.agentId)
-    );
+  /**
+   * Live slot and budget check, inside the offer transaction, for an auto offer to `c`. The
+   * member's row is locked first: offer and accept transactions of one member (from this or
+   * another instance) are serialized, so two of them cannot both see the last free slot. Under
+   * READ COMMITTED a plain re-count is not enough. The held runs are re-read (and kept in the
+   * snapshot for the rest of the tick); the usage report and finished runs stay those of the
+   * tick, which is at most one tick old.
+   */
+  private async hasRoom(
+    tx: Prisma.TransactionClient,
+    task: DispatchTask,
+    c: Candidate,
+    percent: number,
+    snap: TickSnapshot,
+  ): Promise<boolean> {
+    const [user] = await tx.$queryRaw<Array<{ maxConcurrent: number }>>`
+      SELECT "maxConcurrent" FROM "User" WHERE "id" = ${c.userId} FOR UPDATE`;
+    if (!user) return false;
+    await snap.ledger.refreshHeld(tx, c.userId);
+    const counts = snap.ledger.slotCounts(c.userId);
+    if (
+      counts.total >= user.maxConcurrent ||
+      (counts.perAgent.get(c.agentId) ?? 0) >= this.gateway.maxConcurrentOf(c.agentId)
+    ) {
+      return false;
+    }
+    const usage = snap.latestUsage(c.userId);
+    const margin = usage
+      ? snap.ledger.marginOf(c.userId, task.projectId, percent, usage, task.id)
+      : null;
+    return !!margin && margin.margin >= c.estimate && margin.globalMargin >= c.estimate;
   }
 
   offerPayload(
@@ -1026,6 +1051,9 @@ export class Dispatcher {
       accepted = await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ status: string }>>`
           SELECT "status"::text AS "status" FROM "Task" WHERE "id" = ${a.taskId} FOR UPDATE`;
+        // Serializes this member's accepts and auto offers (see hasRoom): the slot count
+        // below must not race another transaction taking the last slot.
+        await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${a.userId} FOR UPDATE`;
         const cur = await tx.assignment.findUniqueOrThrow({ where: { id: a.id } });
         if (
           cur.status !== 'PENDING' ||

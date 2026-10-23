@@ -80,7 +80,8 @@ export interface SlotCounts {
   perAgent: Map<string, number>;
 }
 
-type TaskLike = { projectId: string; size: TaskSize; model: Model };
+export type TaskLike = { projectId: string; size: TaskSize; model: Model };
+type Db = PrismaClient | Prisma.TransactionClient;
 const medianKey = (t: TaskLike) => `${t.projectId}:${t.size}:${t.model}`;
 
 function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
@@ -109,14 +110,14 @@ export class BudgetLedger {
 
   /**
    * Loads the ledger of `userIds`. `usage` gives each member's latest report (its window start
-   * bounds the finished runs to read); `projectIds` are the projects whose tasks will be
-   * estimated besides the held ones.
+   * bounds the finished runs to read); `tasks` are the tasks that will be estimated besides the
+   * held ones (only their (project, size, model) medians are read).
    */
   static async load(
     prisma: PrismaClient,
     cfg: EstimateConfig,
     now: Date,
-    scope: { userIds: string[]; usage: Map<string, UsageSnapshot>; projectIds: string[] },
+    scope: { userIds: string[]; usage: Map<string, UsageSnapshot>; tasks: TaskLike[] },
   ): Promise<BudgetLedger> {
     const { userIds, usage } = scope;
     const withUsage = userIds.filter((id) => usage.has(id));
@@ -125,34 +126,8 @@ export class BudgetLedger {
       const s = windowStartOf(usage.get(id)!, now);
       if (!since || s < since) since = s;
     }
-    const [heldRows, finishedRows] = await Promise.all([
-      userIds.length === 0
-        ? []
-        : prisma.assignment.findMany({
-            where: {
-              userId: { in: userIds },
-              OR: [
-                // A pushed run is not over yet (its usage is only known at task.finished): held.
-                { status: { in: [...HOLDS_SLOT, 'PUSHED'] } },
-                { status: 'PENDING', kind: 'AUTO_OFFER', expiresAt: { gt: now } },
-              ],
-            },
-            select: {
-              id: true,
-              userId: true,
-              agentId: true,
-              taskId: true,
-              status: true,
-              task: {
-                select: {
-                  projectId: true,
-                  size: true,
-                  model: true,
-                  project: { select: { sizeBudgets: true } },
-                },
-              },
-            },
-          }),
+    const [held, finishedRows] = await Promise.all([
+      loadHeld(prisma, userIds, now),
       since === null
         ? []
         : prisma.assignment.findMany({
@@ -169,27 +144,13 @@ export class BudgetLedger {
             },
           }),
     ]);
-    const held: HeldRun[] = heldRows.map((a) => ({
-      id: a.id,
-      userId: a.userId,
-      agentId: a.agentId,
-      taskId: a.taskId,
-      holdsSlot: a.status !== 'PUSHED',
-      task: {
-        projectId: a.task.projectId,
-        size: a.task.size,
-        model: a.task.model,
-        sizeBudgets: a.task.project.sizeBudgets,
-      },
-    }));
     const finished = finishedRows.map((a) => ({
       userId: a.userId,
       projectId: a.task.projectId,
       finishedAt: a.finishedAt!,
       weighted: Number(a.usageWeighted ?? 0),
     }));
-    const projectIds = new Set([...scope.projectIds, ...held.map((h) => h.task.projectId)]);
-    const medians = await loadMedians(prisma, [...projectIds]);
+    const medians = await loadMedians(prisma, [...scope.tasks, ...held.map((h) => h.task)]);
     return new BudgetLedger(
       cfg,
       now,
@@ -197,6 +158,20 @@ export class BudgetLedger {
       groupBy(finished, (f) => f.userId),
       medians,
     );
+  }
+
+  /**
+   * Re-reads the member's held runs from `db` (inside the offer transaction): a run accepted,
+   * pushed or finished since the snapshot was loaded is then counted, for this offer and for
+   * the rest of the tick. Medians of new (project, size, model) keys are read too.
+   */
+  async refreshHeld(db: Db, userId: string): Promise<void> {
+    const fresh = await loadHeld(db, [userId], this.now);
+    const missing = fresh.map((h) => h.task).filter((t) => !this.medians.has(medianKey(t)));
+    if (missing.length > 0) {
+      for (const [k, v] of await loadMedians(db, missing)) this.medians.set(k, v);
+    }
+    this.held.set(userId, fresh);
   }
 
   /** Estimate of a task (ESTIMATE): the median of past runs once there are enough of them. */
@@ -293,34 +268,88 @@ export class BudgetLedger {
   }
 }
 
-/** Medians of the latest successful runs per (project, size, model); null below 5 samples. */
-async function loadMedians(
-  prisma: PrismaClient,
-  projectIds: string[],
-): Promise<Map<string, number | null>> {
+/**
+ * Assignments of `userIds` that reserve budget: accepted, running, pushed or a live auto offer
+ * (accepted, running and live auto offers also hold a slot).
+ */
+async function loadHeld(db: Db, userIds: string[], now: Date): Promise<HeldRun[]> {
+  if (userIds.length === 0) return [];
+  const rows = await db.assignment.findMany({
+    where: {
+      userId: { in: userIds },
+      OR: [
+        // A pushed run is not over yet (its usage is only known at task.finished): held.
+        { status: { in: [...HOLDS_SLOT, 'PUSHED'] } },
+        { status: 'PENDING', kind: 'AUTO_OFFER', expiresAt: { gt: now } },
+      ],
+    },
+    select: {
+      id: true,
+      userId: true,
+      agentId: true,
+      taskId: true,
+      status: true,
+      task: {
+        select: {
+          projectId: true,
+          size: true,
+          model: true,
+          project: { select: { sizeBudgets: true } },
+        },
+      },
+    },
+  });
+  return rows.map((a) => ({
+    id: a.id,
+    userId: a.userId,
+    agentId: a.agentId,
+    taskId: a.taskId,
+    holdsSlot: a.status !== 'PUSHED',
+    task: {
+      projectId: a.task.projectId,
+      size: a.task.size,
+      model: a.task.model,
+      sizeBudgets: a.task.project.sizeBudgets,
+    },
+  }));
+}
+
+/**
+ * Medians of the latest successful runs per (project, size, model), for these keys only; null
+ * below 5 samples. One query; each key reads at most 50 rows (`LATERAL ... LIMIT`, newest
+ * first) instead of ranking the whole history of the projects at every tick.
+ */
+async function loadMedians(db: Db, tasks: TaskLike[]): Promise<Map<string, number | null>> {
   const out = new Map<string, number | null>();
-  if (projectIds.length === 0) return out;
+  const keys = new Map<string, TaskLike>();
+  for (const t of tasks) keys.set(medianKey(t), t);
+  if (keys.size === 0) return out;
+  const list = [...keys.values()];
   // Same rows as `findMany({ orderBy: { finishedAt: 'desc' }, take: 50 })` per key.
-  const rows = await prisma.$queryRaw<
-    Array<{ projectId: string; size: TaskSize; model: Model; usageWeighted: bigint | number }>
+  const rows = await db.$queryRaw<
+    Array<{ projectId: string; size: string; model: string; usageWeighted: bigint | number }>
   >`
-    SELECT "projectId", "size", "model", "usageWeighted"
-    FROM (
-      SELECT t."projectId", t."size"::text AS "size", t."model"::text AS "model",
-             a."usageWeighted",
-             ROW_NUMBER() OVER (
-               PARTITION BY t."projectId", t."size", t."model" ORDER BY a."finishedAt" DESC
-             ) AS rn
+    SELECT k."projectId", k."size", k."model", s."usageWeighted"
+    FROM unnest(
+      ${list.map((t) => t.projectId)}::text[],
+      ${list.map((t) => t.size)}::text[],
+      ${list.map((t) => t.model)}::text[]
+    ) AS k("projectId", "size", "model")
+    CROSS JOIN LATERAL (
+      SELECT a."usageWeighted"
       FROM "Assignment" a JOIN "Task" t ON t."id" = a."taskId"
       WHERE a."status" = 'SUCCEEDED' AND a."usageWeighted" > 0
-        AND t."projectId" IN (${Prisma.join(projectIds)})
-    ) s
-    WHERE rn <= ${MEDIAN_SAMPLES}`;
-  const samples = groupBy(rows, (r) => medianKey(r));
-  for (const [k, list] of samples) {
+        AND t."projectId" = k."projectId"
+        AND t."size"::text = k."size" AND t."model"::text = k."model"
+      ORDER BY a."finishedAt" DESC
+      LIMIT ${MEDIAN_SAMPLES}
+    ) s`;
+  const samples = groupBy(rows, (r) => `${r.projectId}:${r.size}:${r.model}`);
+  for (const k of keys.keys()) {
+    const got = samples.get(k) ?? [];
     out.set(
       k,
-      list.length >= MEDIAN_MIN_SAMPLES ? median(list.map((r) => Number(r.usageWeighted))) : null,
+      got.length >= MEDIAN_MIN_SAMPLES ? median(got.map((r) => Number(r.usageWeighted))) : null,
     );
   }
   return out;
@@ -357,15 +386,42 @@ export async function loadLatestUsage(
 ): Promise<Map<string, UsageSnapshot>> {
   const out = new Map<string, UsageSnapshot>();
   if (userIds.length === 0) return out;
+  // One index probe per member (userId, reportedAt DESC), not a scan of 30 days of reports.
   const latest = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT DISTINCT ON ("userId") "id" FROM "UsageReport"
-    WHERE "userId" IN (${Prisma.join(userIds)})
-    ORDER BY "userId", "reportedAt" DESC`;
+    SELECT r."id" FROM unnest(${userIds}::text[]) AS u("id")
+    CROSS JOIN LATERAL (
+      SELECT "id" FROM "UsageReport" WHERE "userId" = u."id"
+      ORDER BY "reportedAt" DESC LIMIT 1
+    ) r`;
   if (latest.length === 0) return out;
   const rows = await prisma.usageReport.findMany({
     where: { id: { in: latest.map((r) => r.id) } },
   });
   for (const r of rows) out.set(r.userId, toSnapshot(r));
+  return out;
+}
+
+/**
+ * When each member last accepted (or claimed) a task. One backward probe of the
+ * (userId, respondedAt) index per member instead of aggregating their whole history.
+ */
+async function loadLastAssigned(
+  prisma: PrismaClient,
+  userIds: string[],
+): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>();
+  if (userIds.length === 0) return out;
+  const rows = await prisma.$queryRaw<Array<{ userId: string; respondedAt: Date }>>`
+    SELECT u."id" AS "userId", l."respondedAt"
+    FROM unnest(${userIds}::text[]) AS u("id")
+    CROSS JOIN LATERAL (
+      SELECT a."respondedAt" FROM "Assignment" a
+      WHERE a."userId" = u."id" AND a."respondedAt" IS NOT NULL
+        AND a."status" NOT IN ('PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED')
+      ORDER BY a."respondedAt" DESC
+      LIMIT 1
+    ) l`;
+  for (const r of rows) out.set(r.userId, r.respondedAt);
   return out;
 }
 
@@ -386,7 +442,7 @@ export class TickSnapshot {
     prisma: PrismaClient,
     cfg: EstimateConfig,
     now: Date,
-    tasks: Array<{ id: string; projectId: string }>,
+    tasks: Array<TaskLike & { id: string }>,
   ): Promise<TickSnapshot> {
     const projectIds = [...new Set(tasks.map((t) => t.projectId))];
     const taskIds = tasks.map((t) => t.id);
@@ -416,27 +472,15 @@ export class TickSnapshot {
             select: historySelect,
           }),
       loadLatestUsage(prisma, userIds),
-      userIds.length === 0
-        ? []
-        : prisma.assignment.groupBy({
-            by: ['userId'],
-            where: {
-              userId: { in: userIds },
-              respondedAt: { not: null },
-              status: { notIn: ['PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED'] },
-            },
-            _max: { respondedAt: true },
-          }),
+      loadLastAssigned(prisma, userIds),
     ]);
-    const ledger = await BudgetLedger.load(prisma, cfg, now, { userIds, usage, projectIds });
-    const last = new Map<string, Date>();
-    for (const r of lastAssigned) if (r._max.respondedAt) last.set(r.userId, r._max.respondedAt);
+    const ledger = await BudgetLedger.load(prisma, cfg, now, { userIds, usage, tasks });
     return new TickSnapshot(
       ledger,
       groupBy(parts, (p) => p.projectId),
       groupBy(history, (a) => a.taskId),
       usage,
-      last,
+      lastAssigned,
     );
   }
 
