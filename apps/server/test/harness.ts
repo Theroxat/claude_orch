@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { GithubRole } from '@orch/shared';
-import { buildApp } from '../src/app';
+import { buildApp, type AppDeps } from '../src/app';
 import { loadConfig } from '../src/config';
 import type {
   CreateIssueInput,
@@ -161,6 +161,8 @@ export interface MakeAppOptions {
   env?: Record<string, string>;
   /** Captures pino output. */
   logStream?: { write(msg: string): void };
+  /** Notifier test hooks (webhook HTTP client, e-mail transport). */
+  notify?: AppDeps['notify'];
 }
 
 export function makeApp(
@@ -188,7 +190,7 @@ export function makeApp(
     RATE_LIMIT_AGENT_CONNECT_MAX: '1000000',
     ...opts.env,
   });
-  return buildApp({ config, prisma, github, logStream: opts.logStream });
+  return buildApp({ config, prisma, github, logStream: opts.logStream, notify: opts.notify });
 }
 
 export interface TestUser {

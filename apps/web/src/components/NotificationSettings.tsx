@@ -1,0 +1,344 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  NOTIFICATION_CHANNELS,
+  NOTIFICATION_EVENTS,
+  type NotificationChannel,
+  type NotificationEvent,
+  type NotificationPreferences,
+  type NotificationSettingsView,
+  type UpdateNotificationSettingsRequest,
+} from '@orch/shared';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useLocation } from 'react-router';
+import { ApiError } from '../api/client';
+import {
+  fetchNotificationSettings,
+  sendTestNotification,
+  updateNotificationSettings,
+} from '../api/endpoints';
+import { useMe } from '../auth';
+import { motionAllowed } from '../ui/motion';
+import { CHANNEL_LABEL, EVENT_META } from '../ui/notificationMeta';
+import { useToast } from '../ui/Toast';
+
+const KEY = ['notifications', 'settings'] as const;
+
+type UrlChannel = 'slack' | 'discord' | 'webhook';
+const URL_FIELD = {
+  slack: 'slackWebhookUrl',
+  discord: 'discordWebhookUrl',
+  webhook: 'webhookUrl',
+} as const;
+const URL_COPY: Record<UrlChannel, { label: string; placeholder: string; hint: string }> = {
+  slack: {
+    label: 'Slack incoming webhook URL',
+    placeholder: 'https://hooks.slack.com/services/...',
+    hint: 'Messages post to the channel the webhook was created for.',
+  },
+  discord: {
+    label: 'Discord webhook URL',
+    placeholder: 'https://discord.com/api/webhooks/...',
+    hint: 'Messages post to the channel the webhook was created for.',
+  },
+  webhook: {
+    label: 'JSON webhook URL',
+    placeholder: 'https://example.com/orch-hook',
+    hint: 'Receives each notification as a JSON POST.',
+  },
+};
+const URL_CHANNELS: UrlChannel[] = ['slack', 'discord', 'webhook'];
+
+const ROLE_NOTE: Partial<Record<NotificationEvent, string>> = {
+  access_request: 'Admins',
+  participation_request: 'Project owners',
+};
+
+function configured(s: NotificationSettingsView, c: NotificationChannel): boolean {
+  if (c === 'in_app') return true;
+  if (c === 'email') return s.email.available && !!s.email.address;
+  return s[c].configured;
+}
+
+/** The "Notifications" card of My server: where to send notifications and which events go where. */
+export function NotificationSettings() {
+  const settings = useQuery({ queryKey: KEY, queryFn: fetchNotificationSettings });
+  const section = useRef<HTMLElement>(null);
+  const { hash } = useLocation();
+  const ready = settings.isSuccess;
+  useEffect(() => {
+    if (hash !== '#notifications' || !ready) return;
+    section.current?.scrollIntoView?.({ behavior: motionAllowed() ? 'smooth' : 'auto' });
+  }, [hash, ready]);
+
+  return (
+    <section id="notifications" ref={section} className="notify" aria-labelledby="notify-title">
+      <div className="section-title">
+        <h2 id="notify-title">Notifications</h2>
+      </div>
+      <p className="lede">
+        Choose where orch reaches you when a task finishes, fails or waits for you.
+      </p>
+      {settings.isPending && <p className="hint">Loading notification settings...</p>}
+      {settings.error && <p className="error">{settings.error.message}</p>}
+      {settings.data && <SettingsForm key={JSON.stringify(settings.data)} data={settings.data} />}
+    </section>
+  );
+}
+
+function SettingsForm({ data }: { data: NotificationSettingsView }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const isAdmin = !!useMe().data?.isAdmin;
+  const [prefs, setPrefs] = useState<NotificationPreferences>(data.preferences);
+  const [email, setEmail] = useState(data.email.address ?? '');
+  const [urls, setUrls] = useState<Record<UrlChannel, string>>({
+    slack: '',
+    discord: '',
+    webhook: '',
+  });
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: updateNotificationSettings,
+    onSuccess: (view) => {
+      qc.setQueryData(KEY, view);
+      setProblem(null);
+      toast('Notification settings saved');
+    },
+    onError: (e) => setProblem(e instanceof ApiError ? e.message : 'Could not save the settings'),
+  });
+  const clear = useMutation({
+    mutationFn: updateNotificationSettings,
+    onSuccess: (view, vars) => {
+      qc.setQueryData(KEY, view);
+      setProblem(null);
+      toast(`${vars.email === '' ? 'E-mail address' : 'Webhook'} removed`);
+    },
+    onError: (e) => setProblem(e instanceof ApiError ? e.message : 'Could not remove the target'),
+  });
+  const test = useMutation({
+    mutationFn: sendTestNotification,
+    onSuccess: (r, channel) => {
+      const name = CHANNEL_LABEL[channel];
+      if (r.ok) toast(`Test sent to ${name}`);
+      else if (r.error === 'not_configured') toast(`${name} is not set up yet`, 'info');
+      else toast(`Test to ${name} failed: ${r.error ?? 'unknown error'}`, 'info');
+    },
+    onError: (e, channel) =>
+      toast(`Test to ${CHANNEL_LABEL[channel]} failed: ${e.message}`, 'info'),
+  });
+
+  const toggle = (event: NotificationEvent, channel: NotificationChannel, on: boolean) =>
+    setPrefs((p) => {
+      const current = p[event] ?? [];
+      const next = on ? [...current, channel] : current.filter((c) => c !== channel);
+      return { ...p, [event]: NOTIFICATION_CHANNELS.filter((c) => next.includes(c)) };
+    });
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const body: UpdateNotificationSettingsRequest = { preferences: prefs };
+    for (const c of URL_CHANNELS) {
+      const v = urls[c].trim();
+      if (v) body[URL_FIELD[c]] = v;
+    }
+    const trimmed = email.trim();
+    if (data.email.available && trimmed !== (data.email.address ?? '')) body.email = trimmed;
+    save.mutate(body);
+  };
+
+  const badUrl = problem !== null;
+  return (
+    <form className="card notify-card" onSubmit={onSubmit} noValidate>
+      <h3 className="notify-sub">Where to send</h3>
+      <div className="notify-targets">
+        <div className="notify-target">
+          <div className="notify-target-head">
+            <label htmlFor="notify-email">E-mail address</label>
+            <span className="hint">
+              {data.email.available
+                ? 'Notifications are sent to this address.'
+                : 'This server has no mail settings, so e-mail is unavailable. Ask an admin to set them up.'}
+            </span>
+          </div>
+          <div className="notify-target-body">
+            <input
+              id="notify-email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={email}
+              disabled={!data.email.available}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <TargetActions
+              name="E-mail"
+              canRemove={!!data.email.address}
+              canTest={configured(data, 'email')}
+              busy={clear.isPending}
+              onRemove={() => clear.mutate({ email: '' })}
+              onTest={() => test.mutate('email')}
+            />
+          </div>
+        </div>
+        {URL_CHANNELS.map((c) => {
+          const copy = URL_COPY[c];
+          const view = data[c];
+          return (
+            <div className="notify-target" key={c}>
+              <div className="notify-target-head">
+                <label htmlFor={`notify-${c}`}>{copy.label}</label>
+                <span className="hint">
+                  {view.configured ? (
+                    <>
+                      Set: <code>{view.hint ?? 'hidden'}</code>. Paste a new URL to replace it.
+                    </>
+                  ) : (
+                    copy.hint
+                  )}
+                </span>
+              </div>
+              <div className="notify-target-body">
+                <input
+                  id={`notify-${c}`}
+                  type="url"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={view.configured ? 'Replace the URL' : copy.placeholder}
+                  value={urls[c]}
+                  aria-invalid={(badUrl && urls[c].trim() !== '') || undefined}
+                  onChange={(e) => setUrls((u) => ({ ...u, [c]: e.target.value }))}
+                />
+                <TargetActions
+                  name={CHANNEL_LABEL[c]}
+                  canRemove={view.configured}
+                  canTest={view.configured}
+                  busy={clear.isPending}
+                  onRemove={() => clear.mutate({ [URL_FIELD[c]]: null })}
+                  onTest={() => test.mutate(c)}
+                />
+              </div>
+            </div>
+          );
+        })}
+        <div className="notify-target">
+          <div className="notify-target-head">
+            <span className="notify-label">In the app</span>
+            <span className="hint">The bell in the header. Always available.</span>
+          </div>
+          <div className="notify-target-body">
+            <TargetActions
+              name="In the app"
+              canRemove={false}
+              canTest
+              busy={false}
+              onRemove={() => undefined}
+              onTest={() => test.mutate('in_app')}
+            />
+          </div>
+        </div>
+      </div>
+
+      <h3 className="notify-sub">What to send</h3>
+      <div className="matrix-wrap">
+        <table className="matrix">
+          <thead>
+            <tr>
+              <th scope="col">Event</th>
+              {NOTIFICATION_CHANNELS.map((c) => (
+                <th scope="col" key={c} data-off={!configured(data, c) || undefined}>
+                  {CHANNEL_LABEL[c]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {NOTIFICATION_EVENTS.map((ev) => {
+              const meta = EVENT_META[ev];
+              const role = ROLE_NOTE[ev];
+              const relevant = ev !== 'access_request' || isAdmin;
+              return (
+                <tr key={ev} data-muted={!relevant || undefined}>
+                  <th scope="row">
+                    <span className="matrix-event">
+                      {meta.label}
+                      {role && <span className="tag">{role}</span>}
+                    </span>
+                    <span className="hint">{meta.description}</span>
+                  </th>
+                  {NOTIFICATION_CHANNELS.map((c) => {
+                    const ok = configured(data, c);
+                    return (
+                      <td key={c}>
+                        <input
+                          type="checkbox"
+                          checked={ok && (prefs[ev] ?? []).includes(c)}
+                          disabled={!ok}
+                          aria-label={`${meta.label} on ${CHANNEL_LABEL[c]}`}
+                          title={ok ? undefined : `${CHANNEL_LABEL[c]} is not set up`}
+                          onChange={(e) => toggle(ev, c, e.target.checked)}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="hint">Greyed-out channels need a target above. Save a target to turn it on.</p>
+
+      {problem && (
+        <p className="error" role="alert">
+          {problem}
+        </p>
+      )}
+      <div className="card-foot">
+        <button type="submit" className="primary" disabled={save.isPending}>
+          Save notification settings
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function TargetActions({
+  name,
+  canRemove,
+  canTest,
+  busy,
+  onRemove,
+  onTest,
+}: {
+  name: string;
+  canRemove: boolean;
+  canTest: boolean;
+  busy: boolean;
+  onRemove: () => void;
+  onTest: () => void;
+}) {
+  return (
+    <span className="notify-actions">
+      <button
+        type="button"
+        disabled={!canTest}
+        onClick={onTest}
+        aria-label={`Send test to ${name}`}
+      >
+        Send test
+      </button>
+      {canRemove && (
+        <button
+          type="button"
+          className="ghost"
+          disabled={busy}
+          onClick={onRemove}
+          aria-label={`Remove ${name}`}
+        >
+          Remove
+        </button>
+      )}
+    </span>
+  );
+}

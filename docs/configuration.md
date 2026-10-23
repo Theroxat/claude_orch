@@ -33,6 +33,17 @@
 | `BACKUP_S3_PRUNE`                                                                                      | no          | `true` also applies the rotation in the bucket (default: never delete remotely)                                   |
 | `POSTGRES_MAJOR`                                                                                       | no          | Postgres major for the database and the backup image (default 16)                                                 |
 
+### E-mail notifications (optional)
+
+| Variable        | Default              | Meaning                                                                          |
+| --------------- | -------------------- | -------------------------------------------------------------------------------- |
+| `SMTP_HOST`     | (unset)              | SMTP server. Without it the e-mail channel is unavailable ({doc}`notifications`) |
+| `SMTP_PORT`     | 587                  | SMTP port                                                                        |
+| `SMTP_SECURE`   | `false`              | `true`: TLS from the first byte (port 465). `false`: STARTTLS when offered       |
+| `SMTP_USER`     | (unset)              | SMTP login. No authentication when unset                                         |
+| `SMTP_PASSWORD` | (unset)              | SMTP password                                                                    |
+| `SMTP_FROM`     | `orch <orch@domain>` | Sender address; the default uses the host of the public URL                      |
+
 (access-control)=
 
 ### Who may sign in
@@ -91,6 +102,9 @@ These have defaults and are defined in `apps/server/src/config/index.ts`. To cha
 | `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability` |
 | `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)             |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset          |
+| `NOTIFY_MAX_ATTEMPTS`         | 4                           | Attempts per external notification delivery before giving up                     |
+| `NOTIFY_RETRY_BASE_MS`        | 2000                        | First retry delay of a notification; each next one is 4x longer                  |
+| `NOTIFY_RETENTION_DAYS`       | 90                          | In-app notifications older than this are deleted                                 |
 
 ## Agent environment
 

@@ -195,6 +195,25 @@ const ConfigSchema = z.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyToUndefined, z.url().optional()),
   /** Running assignments of an agent unseen (and disconnected) for this long become LOST. */
   AGENT_LEASE_SEC: z.coerce.number().int().positive().default(1_800),
+  // Notifications.
+  /** Attempts per external delivery (Slack, Discord, webhook, e-mail) before giving up. */
+  NOTIFY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(4),
+  /** First retry delay; each next one is 4x longer (2 s, 8 s, 32 s by default). */
+  NOTIFY_RETRY_BASE_MS: z.coerce.number().int().positive().default(2_000),
+  /** In-app notifications older than this are deleted. */
+  NOTIFY_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  /** Optional SMTP server for e-mail notifications. The e-mail channel exists only when set. */
+  SMTP_HOST: z.preprocess(emptyToUndefined, z.string().optional()),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  /** `true`: TLS from the first byte (port 465). `false`: STARTTLS when the server offers it. */
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  SMTP_USER: z.preprocess(emptyToUndefined, z.string().optional()),
+  SMTP_PASSWORD: z.preprocess(emptyToUndefined, z.string().optional()),
+  /** Sender, e.g. `orch <orch@example.com>`. Default: orch@<host of the public URL>. */
+  SMTP_FROM: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
