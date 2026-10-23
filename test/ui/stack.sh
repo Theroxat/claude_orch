@@ -35,14 +35,20 @@ NET="${ORCH_E2E_PROJECT}_default"
 dc() { docker compose -p "$ORCH_E2E_PROJECT" -f compose.e2e.yaml -f test/ui/compose.ui.yaml --profile agents "$@"; }
 pw() { # run node in the Playwright image on the stack network
   docker run --rm --init --ipc=host --network "$NET" -u "$HOST_UID:$HOST_GID" -e HOME=/tmp \
-    -e ORCH_UI_BASE -e ORCH_UI_GH -e ORCH_UI_REPORT -e ORCH_UI_VERSION -v "$PWD:/repo" -v "$WORK:/work" -v "$BASE/shots:/shots" -w /repo/test/ui "$PW_IMAGE" "$@"
+    -e ORCH_UI_BASE -e ORCH_UI_GH -e ORCH_UI_REPORT -e ORCH_UI_OUT -e ORCH_UI_STATE -e ORCH_UI_VERSION -v "$PWD:/repo" -v "$WORK:/work" -v "$BASE/shots:/shots" -w /repo/test/ui "$PW_IMAGE" "$@"
 }
 PW_WORKERS="${ORCH_UI_WORKERS:-4}"
 phases() { # every phase runs (one report each); the status is the worst of them
   rc=0
   ORCH_UI_REPORT=/work/report-early.json pw npx playwright test --project=early --workers=1 || rc=1
   ORCH_UI_REPORT=/work/report-pages.json pw npx playwright test --project=pages --workers="$PW_WORKERS" || rc=1
-  ORCH_UI_REPORT=/work/report-late.json pw npx playwright test --project=late --workers=1 || rc=1
+  # 'late' (20-23, ordered) and 'admin' (24, independent state) run side by side, one process each
+  ORCH_UI_REPORT=/work/report-late.json ORCH_UI_OUT=/work/test-results/late ORCH_UI_STATE=/work/state-late \
+    pw npx playwright test --project=late --workers=1 &
+  late=$!
+  ORCH_UI_REPORT=/work/report-admin.json ORCH_UI_OUT=/work/test-results/admin ORCH_UI_STATE=/work/state-admin \
+    pw npx playwright test --project=admin --workers=1 || rc=1
+  wait "$late" || rc=1
   return "$rc"
 }
 export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.7.0}" ORCH_VERSION="${ORCH_UI_VERSION:-0.7.0}"
@@ -55,7 +61,6 @@ case "${1:-up}" in
     "$0" down >/dev/null 2>&1 || true # stale stack of a previous run
     rm -rf "$BASE/shots" "$WORK/test-results" "$WORK"/report*.json "$WORK/findings.jsonl"
     mkdir -p "$BASE/shots"
-    docker pull -q "$PW_IMAGE" >/dev/null 2>&1 & # pulled while the stack builds
     "$0" up
     # Flow specs mutate the shared stack and are ordered: serial. 10-pages is read-only: parallel.
     if phases; then status=0; fi
@@ -81,6 +86,11 @@ case "${1:-up}" in
       dc exec -T postgres psql -U orch -d orch -q -v ON_ERROR_STOP=1 -f -
     pw node seed.mjs verify
     echo "stack up: browser base $ORCH_UI_BASE on network $NET"
+    ;;
+  prebuild) # independent of the web build: images built / pulled while the caller builds the tools image
+    dc build keygen alice
+    dc pull postgres web
+    docker pull -q "$PW_IMAGE" >/dev/null
     ;;
   pw) shift; pw "$@" ;;
   sql) shift; dc exec -T postgres psql -U orch -d orch -At -c "$1" ;;

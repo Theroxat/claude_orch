@@ -26,7 +26,10 @@ case "$cmd" in
     docker run --rm -v "$PWD:/mnt" -w /mnt bats/bats:latest test/install
     ;;
   test:ui)
+    ./test/ui/stack.sh prebuild & # keygen/alice images + pulls, in parallel with the tools image
+    pre=$!
     dc --profile tools build tools
+    wait "$pre" || true # a failed prebuild is redone (and reported) by `stack.sh up`
     exec ./test/ui/stack.sh test
     ;;
   build) tools pnpm build ;;
