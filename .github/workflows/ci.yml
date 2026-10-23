@@ -55,7 +55,7 @@ jobs:
           name: ui-test-output
           path: |
             ~/.cache/orch-uitest/shots
-            ~/.cache/orch-uitest/work/report.json
+            ~/.cache/orch-uitest/work/report-*.json
             ~/.cache/orch-uitest/work/findings.jsonl
             ~/.cache/orch-uitest/work/test-results
           if-no-files-found: ignore

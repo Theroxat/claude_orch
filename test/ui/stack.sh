@@ -6,7 +6,7 @@
 #   pw    runs a command in the Playwright image on the stack network (e.g. pw npx playwright test)
 #   down  removes the stack with its volumes and the work dir
 # Output (kept after `test`, uploaded by CI on failure): $ORCH_UITEST_HOME/shots (screenshots),
-#   $ORCH_UITEST_HOME/work/report.json, findings.jsonl (axe) and test-results/.
+#   $ORCH_UITEST_HOME/work/report-*.json, findings.jsonl (axe) and test-results/.
 #
 # Known environment caveats (filtered in test/ui/fixtures.mjs, the CSP is NOT loosened for them):
 #   - the stack is served over plain http://web, not a secure context: navigator.clipboard is
@@ -35,7 +35,15 @@ NET="${ORCH_E2E_PROJECT}_default"
 dc() { docker compose -p "$ORCH_E2E_PROJECT" -f compose.e2e.yaml -f test/ui/compose.ui.yaml --profile agents "$@"; }
 pw() { # run node in the Playwright image on the stack network
   docker run --rm --init --ipc=host --network "$NET" -u "$HOST_UID:$HOST_GID" -e HOME=/tmp \
-    -e ORCH_UI_BASE -e ORCH_UI_GH -e ORCH_UI_VERSION -v "$PWD:/repo" -v "$WORK:/work" -v "$BASE/shots:/shots" -w /repo/test/ui "$PW_IMAGE" "$@"
+    -e ORCH_UI_BASE -e ORCH_UI_GH -e ORCH_UI_REPORT -e ORCH_UI_VERSION -v "$PWD:/repo" -v "$WORK:/work" -v "$BASE/shots:/shots" -w /repo/test/ui "$PW_IMAGE" "$@"
+}
+PW_WORKERS="${ORCH_UI_WORKERS:-4}"
+phases() { # every phase runs (one report each); the status is the worst of them
+  rc=0
+  ORCH_UI_REPORT=/work/report-early.json pw npx playwright test --project=early --workers=1 || rc=1
+  ORCH_UI_REPORT=/work/report-pages.json pw npx playwright test --project=pages --workers="$PW_WORKERS" || rc=1
+  ORCH_UI_REPORT=/work/report-late.json pw npx playwright test --project=late --workers=1 || rc=1
+  return "$rc"
 }
 export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.7.0}" ORCH_VERSION="${ORCH_UI_VERSION:-0.7.0}"
 export ORCH_UI_BASE="${ORCH_UI_BASE:-http://web}" ORCH_UI_GH="${ORCH_UI_GH:-http://fake-github:8080}"
@@ -45,10 +53,11 @@ case "${1:-up}" in
     status=1
     trap '"$0" down >/dev/null 2>&1 || true' EXIT
     "$0" down >/dev/null 2>&1 || true # stale stack of a previous run
-    rm -rf "$BASE/shots" "$WORK/test-results" "$WORK/report.json" "$WORK/findings.jsonl"
+    rm -rf "$BASE/shots" "$WORK/test-results" "$WORK"/report*.json "$WORK/findings.jsonl"
     mkdir -p "$BASE/shots"
     "$0" up
-    if pw npx playwright test; then status=0; fi
+    # Flow specs mutate the shared stack and are ordered: serial. 10-pages is read-only: parallel.
+    if phases; then status=0; fi
     "$0" down
     trap - EXIT
     exit "$status"
