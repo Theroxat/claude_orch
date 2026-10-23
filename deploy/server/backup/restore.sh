@@ -8,6 +8,9 @@
 # --identity (the age private key file). The database content is REPLACED: the server is stopped,
 # pg_restore --clean --if-exists runs in a single transaction (all or nothing), then the server is
 # started again and its entrypoint runs `prisma migrate deploy`.
+#
+# The dump is staged in a private temp dir created in deploy/server (removed on exit). Set
+# ORCH_RESTORE_TMPDIR to stage it elsewhere (a directory with room for the dump).
 set -eu
 
 usage() {
@@ -73,7 +76,9 @@ if $LIST; then
   exit 0
 fi
 
-TMP="$(mktemp -d)"
+# Temp dir on disk next to compose.yaml (or ORCH_RESTORE_TMPDIR), not in /tmp: a dump can be
+# larger than a tmpfs /tmp.
+TMP="$(mktemp -d "${ORCH_RESTORE_TMPDIR:-$PWD}/.restore.XXXXXX")"
 SERVER_STOPPED=false
 # Whatever happens after the server was stopped (failure, Ctrl-C), bring it back.
 cleanup() {

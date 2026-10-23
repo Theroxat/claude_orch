@@ -94,6 +94,8 @@ backup/restore.sh ./downloaded.dump.age --identity ~/orch-backup.key --yes
 | `--yes`, `-y`     | skip the confirmation prompt (otherwise you must type `restore`)                           |
 | `--list`          | list the dumps in the volume and exit                                                      |
 
+The dump is staged in a private temporary directory created in `deploy/server` (`.restore.XXXXXX`, removed when the script exits), not in `/tmp`, which is often a small tmpfs. Set `ORCH_RESTORE_TMPDIR` to another directory with room for the dump to stage it there, for example `ORCH_RESTORE_TMPDIR=/srv/scratch backup/restore.sh`.
+
 What it does, in order: checks that the file is a `pg_dump` archive (nothing is touched otherwise), asks for confirmation, **stops the server**, runs `pg_restore --clean --if-exists --single-transaction --exit-on-error` (all or nothing: a failure leaves the database as it was), and starts the server again. The server's entrypoint runs `prisma migrate deploy`, so restoring a dump from an older release upgrades the schema on start.
 
 On a new host: install the stack as in {doc}`installation` with the same `.env` (notably the same `ORCH_ENCRYPTION_KEY`) and GitHub App key, start it once with `docker compose up -d postgres backup`, copy the dump to the host, then run `backup/restore.sh ./orch.dump`.
