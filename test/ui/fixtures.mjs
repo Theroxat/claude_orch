@@ -108,7 +108,22 @@ export async function settle(page) {
       { timeout: 5000 },
     )
     .catch(() => undefined);
-  await page.waitForTimeout(250); // let the entry animations finish before axe / screenshots
+  // Let the entry animations and view transitions (route / wizard step / dialog) finish before
+  // axe, screenshots and the focus probe: React runs a step's effects (e.g. moving focus to its
+  // title) only once its view transition is over. Infinite ones (spinners) never end: skipped.
+  await page
+    .waitForFunction(
+      () =>
+        document
+          .getAnimations()
+          .every(
+            (a) =>
+              a.playState !== 'running' || !Number.isFinite(a.effect?.getComputedTiming().endTime),
+          ),
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => undefined);
 }
 
 export async function shot(page, name) {
