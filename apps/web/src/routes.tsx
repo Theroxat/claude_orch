@@ -72,6 +72,10 @@ const table = {
     () => import('./pages/Login'),
     (m) => m.Login,
   ),
+  '/confirm-email': page(
+    () => import('./pages/ConfirmEmail'),
+    (m) => m.ConfirmEmail,
+  ),
   '/oauth/consent': page(
     () => import('./pages/OAuthConsent'),
     (m) => m.OAuthConsent,

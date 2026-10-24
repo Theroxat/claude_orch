@@ -18,7 +18,7 @@ const settings = (push: Record<string, unknown> = {}) => ({
   slack: { configured: false, hint: null },
   discord: { configured: false, hint: null },
   webhook: { configured: false, hint: null },
-  email: { available: false, address: null },
+  email: { available: false, address: null, status: 'none' },
   push: {
     available: true,
     publicKey: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9',

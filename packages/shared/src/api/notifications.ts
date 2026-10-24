@@ -10,6 +10,12 @@
  *   PUT  /api/notifications/settings      UpdateNotificationSettingsRequest -> NotificationSettingsView
  *        A target left out is kept, `null` or `''` clears it. Webhook URLs must be public `https`
  *        URLs (private, loopback and link-local addresses are refused, here and at delivery).
+ *   POST /api/notifications/email/resend  -> { ok: true } (generic; 429 past 3/hour or 10/day)
+ *        Sends a fresh confirmation link to the pending address (the previous link stops working).
+ *   POST /api/notifications/email/confirm ConfirmEmailRequest -> NotificationSettingsView
+ *        Confirms the pending address with the single-use token of the e-mailed link (400 when
+ *        invalid or expired, without saying which). The link opens a page of the web app, which
+ *        POSTs only when the member clicks, so link prefetchers cannot confirm.
  *   POST /api/notifications/test          SendTestNotificationRequest -> SendTestNotificationResponse
  *        Sends one test message on that channel right away (single attempt) and reports the result.
  *   POST /api/notifications/push/subscribe    PushSubscribeRequest -> PushStatus
@@ -113,6 +119,8 @@ export const NotificationSettingsViewSchema = z.object({
     /** False when the server has no SMTP settings: the e-mail channel is then unavailable. */
     available: z.boolean(),
     address: z.string().nullable(),
+    /** `pending`: a confirmation e-mail was sent, nothing is delivered to it until confirmed. */
+    status: z.enum(['none', 'pending', 'verified']),
   }),
   push: z.object({
     /** False when the server has no VAPID keys: browser notifications are then unavailable. */
@@ -138,6 +146,10 @@ export const UpdateNotificationSettingsRequestSchema = z.object({
 export type UpdateNotificationSettingsRequest = z.infer<
   typeof UpdateNotificationSettingsRequestSchema
 >;
+
+export const ConfirmEmailRequestSchema = z.object({ token: z.string().min(16).max(200) });
+export type ConfirmEmailRequest = z.infer<typeof ConfirmEmailRequestSchema>;
+export const OkResponseSchema = z.object({ ok: z.literal(true) });
 
 export const SendTestNotificationRequestSchema = z.object({ channel: NotificationChannel });
 export type SendTestNotificationRequest = z.infer<typeof SendTestNotificationRequestSchema>;

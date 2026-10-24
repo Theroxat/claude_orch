@@ -15,7 +15,7 @@ const settings = (over: Record<string, unknown> = {}) => ({
   slack: { configured: true, hint: 'https://hooks.slack.com/…a1b2' },
   discord: { configured: false, hint: null },
   webhook: { configured: false, hint: null },
-  email: { available: true, address: 'octo@example.com' },
+  email: { available: true, address: 'octo@example.com', status: 'verified' },
   push: { available: false, publicKey: null, subscriptions: 0 },
   ...over,
 });
@@ -49,7 +49,7 @@ describe('notification settings', () => {
   });
 
   it('disables the e-mail column and explains why when the server has no SMTP', async () => {
-    mockApi(base(settings({ email: { available: false, address: null } })));
+    mockApi(base(settings({ email: { available: false, address: null, status: 'none' } })));
     renderApp('/my-server');
     expect(await screen.findByText(/no mail settings/)).toBeTruthy();
     expect(box('Task done on E-mail').disabled).toBe(true);
@@ -139,5 +139,50 @@ describe('notification settings', () => {
     expect(
       (screen.getByRole('button', { name: 'Send test to Discord' }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it('shows a verified badge and no resend button for a confirmed address', async () => {
+    mockApi(base());
+    renderApp('/my-server');
+    expect(await screen.findByText('Verified')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resend confirmation' })).toBeNull();
+    expect(box('Task done on E-mail').disabled).toBe(false);
+  });
+
+  it('shows a pending badge, keeps e-mail off and resends the confirmation', async () => {
+    const calls = mockApi({
+      ...base(
+        settings({ email: { available: true, address: 'octo@example.com', status: 'pending' } }),
+      ),
+      'POST /notifications/email/resend': () => ({ json: { ok: true } }),
+    });
+    renderApp('/my-server');
+    expect(await screen.findByText('Pending confirmation')).toBeTruthy();
+    expect(screen.queryByText('Verified')).toBeNull();
+    // Nothing can be sent to it yet: no test, no event routing.
+    expect(box('Task done on E-mail').disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Send test to E-mail' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Resend confirmation' }));
+    expect(await screen.findByText(/Confirmation e-mail sent/)).toBeTruthy();
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/notifications/email/resend')).toBe(
+      true,
+    );
+  });
+
+  it('toasts the rate limit when resending too often', async () => {
+    mockApi({
+      ...base(
+        settings({ email: { available: true, address: 'octo@example.com', status: 'pending' } }),
+      ),
+      'POST /notifications/email/resend': () => ({
+        status: 429,
+        json: { error: { code: 'rate_limited', message: 'Too many confirmation e-mails' } },
+      }),
+    });
+    renderApp('/my-server');
+    fireEvent.click(await screen.findByRole('button', { name: 'Resend confirmation' }));
+    expect(await screen.findByText('Too many confirmation e-mails')).toBeTruthy();
   });
 });

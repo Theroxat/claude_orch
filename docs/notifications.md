@@ -28,7 +28,7 @@ Set them up on **My Server → Notifications**, then choose, per event, which ch
 | Channel | What you enter                                                                                     |
 | ------- | -------------------------------------------------------------------------------------------------- |
 | In-app  | Nothing. The bell shows the unread count; notifications are kept 90 days (`NOTIFY_RETENTION_DAYS`) |
-| E-mail  | An address. Only offered when the server has SMTP settings (see below)                             |
+| E-mail  | An address, confirmed by a link (see below). Only offered when the server has SMTP settings        |
 | Slack   | A Slack [incoming webhook](https://api.slack.com/messaging/webhooks) URL. Mattermost works too     |
 | Discord | A channel [webhook](https://support.discord.com/hc/en-us/articles/228383668) URL                   |
 | Webhook | Any `https` URL that accepts a JSON `POST`                                                         |
@@ -116,5 +116,19 @@ SMTP_FROM="orch <orch@example.com>"
 ```
 
 Without `SMTP_HOST` the e-mail column is greyed out in the settings. A permanent SMTP refusal (`5xx`, for example an unknown address) is not retried.
+
+### Confirming your e-mail address
+
+orch never sends a notification or a test message to an address you have not confirmed, otherwise anyone could make the server write to any mailbox.
+
+1. Enter your address and save. It shows as **Pending confirmation** and orch sends **one** e-mail with a confirmation link.
+2. Open the link. It lands on a page of the web app (sign in first if needed) with a **Confirm** button. Pressing it confirms the address, which then shows as **Verified**. Only that button confirms: mail scanners and link previews that merely open the link change nothing.
+3. If the e-mail did not arrive or the link expired, press **Resend confirmation**. Each new link cancels the previous one.
+
+Links work once and expire after 24 hours. Only a hash of the token is stored. Changing the address makes it pending again and cancels any link sent to the old one. Answers to the confirmation endpoints never say whether an address is known to the server.
+
+Confirmation e-mails are limited to 3 per hour and 10 per day per member (the first one and every resend count; past the limit the address is saved as pending and **Resend confirmation** answers `429` until the window moves on). **Send test** is limited to 5 per minute.
+
+Addresses saved before this check existed must be confirmed once: they stay pending, so no e-mail is sent to them until you press **Resend confirmation** and open the link. orch does not read your GitHub e-mail addresses (that needs an extra GitHub permission), so a matching address is not confirmed automatically.
 
 See {doc}`configuration` for every variable.

@@ -679,7 +679,14 @@ model NotificationSettings {
   discordHint   String?
   webhookUrlEnc Bytes?
   webhookHint   String?
+  /// Target address; only used once `emailVerifiedAt` is set.
   email         String?
+  emailVerifiedAt DateTime?
+  /// sha256 (hex) of the single-use confirmation token; the token itself is never stored.
+  emailTokenHash String?
+  emailTokenExpiresAt DateTime?
+  /// Times confirmation e-mails were sent (last 24 h), for the 3/hour and 10/day limits.
+  emailSendLog  DateTime[]
   /// { [event]: channel[] }; events missing here use the defaults.
   preferences   Json     @default("{}")
   createdAt     DateTime @default(now())
