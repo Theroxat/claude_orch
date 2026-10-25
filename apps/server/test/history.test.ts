@@ -209,6 +209,33 @@ describe('GET /api/tasks/history', () => {
     expect(await ids('_')).toEqual([b.id]);
   });
 
+  it('searches case-insensitively with short and long terms (trigram-indexed title)', async () => {
+    const { owner, p } = await world();
+    const a = await seed(p.id, owner, { title: 'Fix WebSocket reconnect' });
+    const b = await seed(p.id, owner, { title: 'Add socket pooling' });
+    const ids = async (q: string) =>
+      (await history(owner, `?project=${p.id}&q=${encodeURIComponent(q)}`)).items
+        .map((i) => i.id)
+        .sort();
+    expect(await ids('WEBSOCKET')).toEqual([a.id]);
+    expect(await ids('sock')).toEqual([a.id, b.id].sort());
+    expect(await ids('ck')).toEqual([a.id, b.id].sort()); // under 3 chars: no index, same result
+    expect(await ids('so')).toEqual([a.id, b.id].sort());
+  });
+
+  it('has the pg_trgm title index and the planner can use it', async () => {
+    const idx = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes WHERE indexname = 'Task_title_trgm_idx'`;
+    expect(idx[0]?.indexdef).toMatch(/USING gin \(title gin_trgm_ops\)/);
+    const plan = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET LOCAL enable_seqscan = off');
+      return tx.$queryRawUnsafe<Record<string, string>[]>(
+        `EXPLAIN SELECT id FROM "Task" WHERE "title"::text ILIKE '%websocket%'`,
+      );
+    });
+    expect(plan.map((r) => r['QUERY PLAN']).join('\n')).toContain('Task_title_trgm_idx');
+  });
+
   it('a crafted cursor cannot widen visibility', async () => {
     const { owner, p } = await world();
     const stranger = await loginAs(app, gh);
