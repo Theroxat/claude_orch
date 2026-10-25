@@ -4,8 +4,9 @@
 
 **How do you hand a teammate's idle Claude capacity a to-do list, without ever sharing an account?**
 
-[**orch.selfhostr.io**](https://orch.selfhostr.io) · [Docs](https://claude-orch.readthedocs.io) · [Source](https://github.com/Theroxat/claude_orch) · [Design notes](docs/PLAN.md) · [Deploy](#deploy-the-server)
+[**orch.selfhostr.io**](https://orch.selfhostr.io) · [Website](https://theroxat.github.io/claude_orch/) · [Docs](https://claude-orch.readthedocs.io) · [Source](https://github.com/Theroxat/claude_orch) · [Design notes](docs/PLAN.md) · [Deploy](#deploy-the-server)
 
+[![Website](https://img.shields.io/badge/website-theroxat.github.io-d97757)](https://theroxat.github.io/claude_orch/)
 [![Docs](https://readthedocs.org/projects/claude-orch/badge/?version=latest)](https://claude-orch.readthedocs.io)
 ![Node >=22](https://img.shields.io/badge/node-%E2%89%A522-339933?logo=nodedotjs&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-793%20passing-2ea44f)
