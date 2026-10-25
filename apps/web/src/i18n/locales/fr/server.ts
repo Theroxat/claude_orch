@@ -25,7 +25,7 @@ export default {
     offline: 'Hors ligne',
     version: 'Version {version}',
     versionUnknown: 'inconnue',
-    lastSeen: 'Vue {when}',
+    lastSeen: 'Dernière activité {when}',
     pausedNotice: 'En pause : aucune nouvelle tâche ne démarrera sur cette machine',
     pauseLabel: 'Mettre {machine} en pause',
     revokeLabel: 'Révoquer {machine}',
@@ -48,7 +48,7 @@ export default {
     couldNotVerify: 'Vérification impossible ({error}) {when}',
     verified: 'Connexion à Claude vérifiée {when}',
     notVerified: 'Connexion à Claude pas encore vérifiée : exécuter <code>orch doctor</code>',
-    notConnected: 'Claude : non connecté : exécuter <code>orch login</code>',
+    notConnected: 'Claude non connecté : exécuter <code>orch login</code>',
   },
   usage: {
     none: 'Estimation : aucune consommation signalée pour l’instant',
@@ -81,7 +81,7 @@ export default {
     generateNew: 'Générer une nouvelle commande',
     generate: 'Générer la commande d’installation',
     shownOnce:
-      'Affichée une seule fois : cette commande contient un jeton à usage unique. La copier maintenant, elle ne pourra pas être affichée à nouveau.',
+      'Cette commande contient un jeton à usage unique et ne s’affiche qu’une fois. La copier maintenant.',
     installs:
       'Cette commande installe l’agent, connecte ton compte Claude et ajoute la commande <code>orch</code>.',
     expired: 'Jeton expiré. En générer un nouveau.',

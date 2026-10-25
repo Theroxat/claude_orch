@@ -267,7 +267,7 @@ describe('My server', () => {
     expect(screen.getByRole('button', { name: 'Générer la commande d’installation' })).toBeTruthy();
     const card = await screen.findByRole('article', { name: 'laptop' });
     expect(within(card).getByText('En ligne')).toBeTruthy();
-    expect(within(card).getByText('Vue il y a 5 min')).toBeTruthy();
+    expect(within(card).getByText('Dernière activité il y a 5 min')).toBeTruthy();
     expect(within(card).getByRole('switch', { name: 'Mettre laptop en pause' })).toBeTruthy();
     expect(within(card).getByText('Reprendre')).toBeTruthy();
     expect(card.textContent).toMatch(/≈ 12\s345 jetons dans la fenêtre de 5\sh/);

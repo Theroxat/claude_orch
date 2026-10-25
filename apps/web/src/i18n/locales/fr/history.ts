@@ -58,7 +58,7 @@ export default {
   issueOnGithub: 'ticket sur GitHub',
   prOnGithub: 'sur GitHub',
   runs: { one: '{count} exécution', other: '{count} exécutions' },
-  lastFailureClass: 'Type de la dernière exécution échouée',
+  lastFailureClass: 'Type d’échec de la dernière exécution',
   ranBy: 'exécutée par {person}',
   moreError: 'Impossible de charger d’autres tâches.',
   end: 'Voilà toutes les tâches correspondantes.',

@@ -99,7 +99,7 @@ export default {
     branch: 'Branche d’intégration (facultatif)',
     sendTo: 'Envoyer à',
     toPool: 'Pool',
-    toMembers: 'Membres précis',
+    toMembers: 'Membres choisis',
     toEveryone: 'Tout le monde',
     poolHint: 'Le meilleur membre disponible du pool reçoit la tâche.',
     members: 'Membres',

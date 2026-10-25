@@ -70,7 +70,7 @@ export default {
     days: 'Expire dans (jours, facultatif)',
     submit: 'Créer le jeton',
     shownOnce:
-      'Affichée une seule fois : cette commande contient ton jeton. La copier maintenant, elle ne pourra pas être affichée à nouveau.',
+      'Cette commande contient ton jeton et ne s’affiche qu’une fois. La copier maintenant.',
   },
   mcp: {
     copy: 'Copier la commande',

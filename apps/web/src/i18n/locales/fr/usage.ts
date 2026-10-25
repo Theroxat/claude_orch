@@ -96,12 +96,14 @@ export default {
   split: {
     title: 'Types de jetons',
     hintAdmin: {
-      one: 'Décomptes bruts de tous les agents, usage personnel inclus. Conservés {count} jour.',
-      other: 'Décomptes bruts de tous les agents, usage personnel inclus. Conservés {count} jours.',
+      one: 'Décomptes bruts de tous les agents, consommation personnelle incluse. Conservés {count} jour.',
+      other:
+        'Décomptes bruts de tous les agents, consommation personnelle incluse. Conservés {count} jours.',
     },
     hintOwn: {
-      one: 'Décomptes bruts de mes agents, usage personnel inclus. Conservés {count} jour.',
-      other: 'Décomptes bruts de mes agents, usage personnel inclus. Conservés {count} jours.',
+      one: 'Décomptes bruts de mes agents, consommation personnelle incluse. Conservés {count} jour.',
+      other:
+        'Décomptes bruts de mes agents, consommation personnelle incluse. Conservés {count} jours.',
     },
     input: 'Entrée',
     output: 'Sortie',

@@ -51,7 +51,7 @@ export default {
     hintShared:
       'Toute personne pouvant soumettre des tâches à ce projet peut en démarrer une à partir de ces modèles. Seul le propriétaire peut les modifier.',
     hintMine:
-      'Des squelettes pour le travail récurrent, visibles uniquement par leur auteur. Les modèles intégrés ci-dessous peuvent être copiés et adaptés.',
+      'Des trames pour le travail récurrent, visibles uniquement par leur auteur. Les modèles intégrés ci-dessous peuvent être copiés et adaptés.',
     loading: 'Chargement des modèles…',
     emptyTitle: 'Aucun modèle pour l’instant.',
     emptyCanManage: 'En créer un, ou copier un modèle intégré pour partir d’une bonne base.',

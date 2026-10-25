@@ -32,7 +32,7 @@ export default {
     sharedTemplates: 'Modèles partagés',
     participateHelp: {
       GITHUB:
-        'Seules les personnes collaboratrices du dépôt GitHub peuvent prêter leur capacité Claude. Les autres sont invitées à demander l’accès au propriétaire.',
+        'Seuls les collaborateurs du dépôt GitHub peuvent prêter leur capacité Claude. Les autres sont invitées à demander l’accès au propriétaire.',
       ALLOWLIST:
         'Seules les personnes explicitement autorisées sur ce serveur par le propriétaire ou un administrateur peuvent prêter leur capacité Claude, qu’elles soient ou non collaboratrices GitHub.',
       ALL_MEMBERS:
@@ -121,7 +121,7 @@ export default {
     step4: 'Cliquer sur <b>Install</b>. GitHub renvoie ensuite vers orch.',
     step5: 'Cliquer sur <b>Actualiser</b> ci-dessous.',
     refresh: 'Actualiser',
-    missing: 'Un dépôt manque ? <link>Installer la GitHub App</link> dessus.',
+    missing: 'Un dépôt manque ? <link>Installer la GitHub App</link> sur ce dépôt.',
     adminNote:
       'Seuls les dépôts dont tu es administrateur sont listés : le propriétaire du projet doit être administrateur du dépôt.',
   },

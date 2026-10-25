@@ -3,7 +3,7 @@ import type { Catalog } from '../../types.ts';
 
 export default {
   title: 'Pool',
-  lede: 'Qui prête de la capacité en ce moment, quelle marge il lui reste, et ce qui s’exécute sur leurs machines. Tous les chiffres de consommation sont des estimations.',
+  lede: 'Qui prête de la capacité en ce moment, quelle marge lui reste et ce qui s’exécute sur sa machine. Tous les chiffres de consommation sont des estimations.',
   project: 'Projet',
   allProjects: 'Tous mes projets',
   empty: 'Aucun membre dans le pool pour l’instant.',
@@ -19,7 +19,8 @@ export default {
     paused: 'En pause',
     pausedOffline: 'En pause, hors ligne',
     machinesAria: 'Machines de {login}',
-    usageStale: 'Consommation périmée : aucun rapport récent, non éligible aux demandes auto.',
+    usageStale:
+      'Données de consommation périmées : aucun rapport récent, non éligible aux demandes auto.',
     rateLimited: 'Limite de débit atteinte, nouvel essai {when}.',
     resets: 'La fenêtre se réinitialise {when} (estimation)',
     auto: 'Auto',

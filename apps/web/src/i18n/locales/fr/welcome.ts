@@ -48,8 +48,7 @@ export default {
     repo: {
       already: 'Tu as déjà un dépôt dans orch.',
       lend: 'Facultatif : prêter ta propre capacité à {name}',
-      waiting:
-        'En attente de l’apparition des dépôts. Cette page vérifie toutes les quelques secondes.',
+      waiting: 'En attente de l’apparition des dépôts. Cette page se met à jour toute seule.',
     },
     join: {
       none: 'Aucun projet à rejoindre pour l’instant. Demander à un membre de l’équipe d’ajouter son dépôt et de t’en donner l’accès.',

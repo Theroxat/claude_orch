@@ -57,6 +57,26 @@ describe('t', () => {
     expect(screen.getByText(/is out of date \(v1\.0\.0 → v1\.1\.0\)/)).toBeTruthy();
   });
 
+  it('never interprets markup or placeholders inside parameter values', () => {
+    function Probe() {
+      const rich = useRich();
+      return (
+        <p data-testid="p">
+          {rich(
+            'layout.agentUpdate.outdated',
+            { strong: (c) => <strong>{c}</strong> },
+            { machine: '<strong>x</strong> {from}', from: '1.0.0', to: '1.1.0' },
+          )}
+        </p>
+      );
+    }
+    render(<Probe />);
+    const p = screen.getByTestId('p');
+    // Only the catalog's own <strong> is an element; the one in the value stays literal text.
+    expect(p.querySelectorAll('strong')).toHaveLength(1);
+    expect(p.textContent).toContain('<strong>x</strong> {from}');
+  });
+
   it('formats relative times in the active locale', async () => {
     const now = Date.parse('2026-01-01T12:00:00Z');
     expect(relative('2026-01-01T14:05:00Z', now)).toBe('in 2h 5m');
