@@ -30,6 +30,8 @@ import { McpCommand } from '../components/McpCommand';
 import { OwnerParticipation } from '../components/OwnerParticipation';
 import { ParticipationForm } from '../components/ParticipationForm';
 import { VersionFooter } from '../components/VersionFooter';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { Brand } from '../ui/Brand';
 
 /** Step changes slide in the direction of travel (a view transition when supported). */
@@ -48,24 +50,34 @@ export const ADVANCE_DELAY_MS = 1200;
 type ScreenId = 'welcome' | 'repo' | 'join' | 'machine' | 'claude' | 'mcp' | 'done';
 type Path = 'own' | 'join';
 
-const TITLES: Record<ScreenId, string> = {
-  welcome: 'Welcome to orch',
-  repo: 'Add your repository',
-  join: 'Join a project',
-  machine: 'Install your machine',
-  claude: 'Connect Claude on your machine',
-  mcp: 'Connect Claude Code (MCP)',
-  done: "You're all set",
-};
+const TITLES = {
+  welcome: 'welcome.wizard.title.welcome',
+  repo: 'welcome.wizard.title.repo',
+  join: 'welcome.wizard.title.join',
+  machine: 'welcome.wizard.title.machine',
+  claude: 'welcome.wizard.title.claude',
+  mcp: 'welcome.wizard.title.mcp',
+  done: 'welcome.wizard.title.done',
+} as const satisfies Record<ScreenId, MessageKey>;
 
-const SUMMARY: [OnboardingStepId, string][] = [
-  ['github_app_installed', 'GitHub App installed'],
-  ['project_added', 'Project added or joined'],
-  ['participation_set', 'Participation set'],
-  ['agent_connected', 'Machine connected'],
-  ['claude_connected', 'Claude connected on your machine'],
-  ['mcp_connected', 'Claude Code connected (MCP)'],
-];
+const EXPLAIN = {
+  welcome: 'welcome.wizard.explain.welcome',
+  repo: 'welcome.wizard.explain.repo',
+  join: 'welcome.wizard.explain.join',
+  machine: 'welcome.wizard.explain.machine',
+  claude: 'welcome.wizard.explain.claude',
+  mcp: 'welcome.wizard.explain.mcp',
+  done: 'welcome.wizard.explain.done',
+} as const satisfies Record<ScreenId, MessageKey>;
+
+const SUMMARY = [
+  ['github_app_installed', 'welcome.wizard.summary.github_app_installed'],
+  ['project_added', 'welcome.wizard.summary.project_added'],
+  ['participation_set', 'welcome.wizard.summary.participation_set'],
+  ['agent_connected', 'welcome.wizard.summary.agent_connected'],
+  ['claude_connected', 'welcome.wizard.summary.claude_connected'],
+  ['mcp_connected', 'welcome.wizard.summary.mcp_connected'],
+] as const satisfies readonly (readonly [OnboardingStepId, MessageKey])[];
 
 function Status({
   done,
@@ -92,6 +104,7 @@ function Status({
 }
 
 function RepoScreen({ done }: { done: boolean }) {
+  const t = useT();
   const mine = useQuery({
     queryKey: ['projects', 'mine'],
     queryFn: fetchMyProjects,
@@ -101,12 +114,12 @@ function RepoScreen({ done }: { done: boolean }) {
   return done ? (
     <>
       <p className="wizard-status ok" role="status" aria-live="polite">
-        <span aria-hidden="true">✓</span> You already have a repository in orch.
+        <span aria-hidden="true">✓</span> {t('welcome.wizard.repo.already')}
       </p>
       {first && (
         <OwnerParticipation
           project={first}
-          title={`Optional: lend your own capacity to ${first.fullName}`}
+          title={t('welcome.wizard.repo.lend', { name: first.fullName })}
         />
       )}
     </>
@@ -114,13 +127,14 @@ function RepoScreen({ done }: { done: boolean }) {
     <>
       <RepoPicker onAdded={() => undefined} pollMs={POLL_MS} />
       <p className="hint" role="status" aria-live="polite">
-        Waiting for repositories to appear. This page checks every few seconds.
+        {t('welcome.wizard.repo.waiting')}
       </p>
     </>
   );
 }
 
 function JoinScreen() {
+  const t = useT();
   const q = useQuery({
     queryKey: ['projects', 'discover'],
     queryFn: fetchDiscover,
@@ -130,23 +144,21 @@ function JoinScreen() {
   const pending = items.some((i) => i.myParticipation?.status === 'pending');
   return (
     <>
-      {q.isPending && <p className="hint">Loading...</p>}
-      {q.error && <p className="error">{q.error.message}</p>}
-      {q.isSuccess && items.length === 0 && (
-        <p className="hint">
-          No project to join yet. Ask a teammate to add their repository and give you access.
-        </p>
-      )}
+      {q.isPending && <p className="hint">{t('common.status.loading')}</p>}
+      {q.error && <p className="error">{errorMessage(q.error)}</p>}
+      {q.isSuccess && items.length === 0 && <p className="hint">{t('welcome.wizard.join.none')}</p>}
       {items.map((item) => (
         <article className="card" key={item.project.id} aria-label={item.project.fullName}>
           <h2>{item.project.fullName}</h2>
-          <p className="hint">owner: {item.owner.githubLogin}</p>
+          <p className="hint">
+            {t('welcome.wizard.join.owner', { login: item.owner.githubLogin })}
+          </p>
           <ParticipationForm key={item.myParticipation?.id ?? 'new'} item={item} />
         </article>
       ))}
       {pending && (
         <p className="hint" role="status" aria-live="polite">
-          Waiting for the owner&apos;s approval. You can carry on, nothing is blocked.
+          {t('welcome.wizard.join.waitingApproval')}
         </p>
       )}
     </>
@@ -154,6 +166,7 @@ function JoinScreen() {
 }
 
 function MachineScreen({ done }: { done: boolean }) {
+  const t = useT();
   const agents = useQuery({
     queryKey: ['agents', 'mine'],
     queryFn: fetchMyAgents,
@@ -164,54 +177,54 @@ function MachineScreen({ done }: { done: boolean }) {
   return (
     <>
       <InstallCommandBlock big />
-      <p className="hint">Run this on the machine where you develop (it needs Docker).</p>
-      <Status done={done} waiting="Waiting for your machine to connect…">
-        Connected{machine ? `: ${machine}` : ''}
+      <p className="hint">{t('welcome.wizard.machine.hint')}</p>
+      <Status done={done} waiting={t('welcome.wizard.machine.waiting')}>
+        {machine
+          ? t('welcome.wizard.machine.connectedNamed', { name: machine })
+          : t('welcome.wizard.machine.connected')}
       </Status>
     </>
   );
 }
 
 function ClaudeScreen({ done, machineUp }: { done: boolean; machineUp: boolean }) {
+  const t = useT();
   return (
     <>
-      <p>
-        At the end of the install you were asked to connect Claude. If you skipped it, run this on
-        your machine:
-      </p>
+      <p>{t('welcome.wizard.claude.intro')}</p>
       <pre className="code">{LOGIN_COMMAND}</pre>
       <div className="row">
         <CopyButton text={LOGIN_COMMAND} big />
       </div>
-      {!machineUp && !done && (
-        <p className="hint">Your machine is not connected yet (previous step).</p>
-      )}
-      <Status done={done} waiting="Waiting for Claude to be connected…">
-        Claude is connected on your machine
+      {!machineUp && !done && <p className="hint">{t('welcome.wizard.claude.machineDown')}</p>}
+      <Status done={done} waiting={t('welcome.wizard.claude.waiting')}>
+        {t('welcome.wizard.claude.connected')}
       </Status>
     </>
   );
 }
 
 function McpScreen({ done }: { done: boolean }) {
+  const t = useT();
+  const rich = useRich();
   return (
     <>
       <McpCommand big />
-      <p>
-        Then, in Claude Code, type <code>/mcp</code> → <code>orch</code> → Authenticate.
-      </p>
-      <Status done={done} waiting="Waiting for Claude Code to connect…">
-        Claude Code is connected
+      <p>{rich('welcome.wizard.mcp.then', { code: (c) => <code>{c}</code> })}</p>
+      <Status done={done} waiting={t('welcome.wizard.mcp.waiting')}>
+        {t('welcome.wizard.mcp.connected')}
       </Status>
-      <p className="hint">Then try a prompt such as:</p>
-      <blockquote className="wizard-prompt">
-        Split this feature into small tasks and send them to the orch pool
-      </blockquote>
+      <p className="hint">{t('welcome.wizard.mcp.tryPrompt')}</p>
+      <blockquote className="wizard-prompt">{t('welcome.wizard.mcp.prompt')}</blockquote>
     </>
   );
 }
 
 function DoneScreen({ states }: { states: Map<OnboardingStepId, boolean> }) {
+  const t = useT();
+  const rich = useRich();
+  const code = (c: ReactNode) => <code>{c}</code>;
+  const n = '<n>';
   return (
     <>
       <ul className="plain wizard-summary">
@@ -219,46 +232,43 @@ function DoneScreen({ states }: { states: Map<OnboardingStepId, boolean> }) {
           <li key={id}>
             <span
               role="img"
-              aria-label={states.get(id) ? 'Done' : 'Not done'}
+              aria-label={
+                states.get(id)
+                  ? t('welcome.wizard.done.stepDone')
+                  : t('welcome.wizard.done.stepNotDone')
+              }
               className={states.get(id) ? 'ok' : ''}
             >
               {states.get(id) ? '✓' : '○'}
             </span>{' '}
-            {label}
+            {t(label)}
           </li>
         ))}
       </ul>
       <p className="row">
         <Link className="btn primary" to="/backlog">
-          Backlog
+          {t('welcome.wizard.done.backlog')}
         </Link>
         <Link className="btn" to="/pool">
-          Pool
+          {t('welcome.wizard.done.pool')}
         </Link>
         <Link className="btn" to="/projects">
-          Projects
+          {t('welcome.wizard.done.projects')}
         </Link>
       </p>
-      <h2>Cheat sheet</h2>
+      <h2>{t('welcome.wizard.done.cheatSheet')}</h2>
       <ul className="plain">
-        <li>
-          <code>orch status</code>: check your agent
-        </li>
-        <li>
-          <code>orch take &lt;n&gt;</code>: take task n
-        </li>
-        <li>
-          <code>orch attach &lt;n&gt;</code>: watch or join task n
-        </li>
-        <li>
-          <code>orch done &lt;n&gt;</code>: finish task n
-        </li>
+        <li>{rich('welcome.wizard.done.status', { code })}</li>
+        <li>{rich('welcome.wizard.done.take', { code }, { n })}</li>
+        <li>{rich('welcome.wizard.done.attach', { code }, { n })}</li>
+        <li>{rich('welcome.wizard.done.finish', { code }, { n })}</li>
       </ul>
     </>
   );
 }
 
 export function Welcome() {
+  const t = useT();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const me = useMe().data;
@@ -349,28 +359,16 @@ export function Welcome() {
     });
   const last = index === order.length - 1;
 
-  const explain: Record<ScreenId, string> = {
-    welcome:
-      'orch shares a to-do list between teammates; each of you runs tasks on your own machine with your own Claude subscription.',
-    repo: 'Install the orch GitHub App on your repository, then pick it. It joins the shared to-do list.',
-    join: 'Pick a teammate’s project and choose how much of your Claude capacity you lend to it.',
-    machine:
-      'The agent runs tasks on the machine that has your Claude subscription. Generate your install command and run it there.',
-    claude: 'Sign in to Claude once on that machine so tasks can run with your subscription.',
-    mcp: 'Let Claude Code view the pool and send tasks to it through orch.',
-    done: 'Here is what is set up, and a few commands you will use every day.',
-  };
-
   return (
     <div className="wizard">
       <header className="wizard-top">
         <Brand />
         <div className="wizard-actions">
           <button className="ghost" onClick={() => exit.mutate()} disabled={exit.isPending}>
-            Exit setup
+            {t('welcome.wizard.exit')}
           </button>
           <button className="ghost" onClick={() => logout.mutate()} disabled={logout.isPending}>
-            Log out
+            {t('welcome.wizard.logout')}
           </button>
         </div>
       </header>
@@ -378,17 +376,17 @@ export function Welcome() {
         <div
           className="wizard-progress"
           role="progressbar"
-          aria-label="Setup progress"
+          aria-label={t('welcome.wizard.progress')}
           aria-valuemin={1}
           aria-valuemax={order.length}
           aria-valuenow={index + 1}
-          aria-valuetext={`Step ${index + 1} of ${order.length}`}
+          aria-valuetext={t('welcome.wizard.stepText', { step: index + 1, total: order.length })}
           style={{ '--steps': order.length } as CSSProperties}
         >
           <div style={{ width: `${((index + 1) / order.length) * 100}%` }} />
         </div>
         <p className="wizard-step">
-          Step {index + 1} of {order.length}
+          {t('welcome.wizard.stepText', { step: index + 1, total: order.length })}
         </p>
         <ViewTransition
           key={screen}
@@ -398,24 +396,24 @@ export function Welcome() {
         >
           <div className="wizard-screen">
             <h1 ref={title} tabIndex={-1}>
-              {TITLES[screen]}
+              {t(TITLES[screen])}
             </h1>
-            <p className="wizard-explain">{explain[screen]}</p>
+            <p className="wizard-explain">{t(EXPLAIN[screen])}</p>
             {screen === 'join' && done && (
               <p className="wizard-status ok" role="status">
-                <span aria-hidden="true">✓</span> Already done. You can continue.
+                <span aria-hidden="true">✓</span> {t('welcome.wizard.alreadyDone')}
               </p>
             )}
 
             {screen === 'welcome' && (
               <div className="wizard-choice">
                 <button className="primary big" onClick={() => choose('own')}>
-                  I want to add my own repository
+                  {t('welcome.wizard.chooseOwn')}
                 </button>
                 <button className="big" onClick={() => choose('join')}>
-                  I&apos;m joining a teammate&apos;s project
+                  {t('welcome.wizard.chooseJoin')}
                 </button>
-                <p className="hint">You can do both later.</p>
+                <p className="hint">{t('welcome.wizard.both')}</p>
               </div>
             )}
             {screen === 'repo' && <RepoScreen done={done} />}
@@ -429,24 +427,24 @@ export function Welcome() {
           </div>
         </ViewTransition>
 
-        <nav className="wizard-nav" aria-label="Wizard navigation">
+        <nav className="wizard-nav" aria-label={t('welcome.wizard.nav')}>
           <button onClick={back} disabled={index === 0}>
-            Back
+            {t('welcome.wizard.back')}
           </button>
           <span className="spacer" />
           {screen !== 'welcome' && !last && (
             <>
-              <button onClick={next}>Skip for now</button>
+              <button onClick={next}>{t('welcome.wizard.skip')}</button>
               {done && (
                 <button className="primary" onClick={next}>
-                  Continue
+                  {t('welcome.wizard.continue')}
                 </button>
               )}
             </>
           )}
           {last && (
             <button className="primary" onClick={() => navigate('/projects')}>
-              Finish
+              {t('welcome.wizard.finish')}
             </button>
           )}
         </nav>

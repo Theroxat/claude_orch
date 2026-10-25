@@ -9,13 +9,10 @@ export default {
     retry: 'Try again',
     copy: 'Copy',
     copied: 'Copied',
-    copyFailed: 'Copy failed',
     loadMore: 'Load more',
   },
   status: {
     loading: 'Loading…',
-    loadingPage: 'Loading page',
-    saving: 'Saving…',
   },
   time: {
     now: 'now',

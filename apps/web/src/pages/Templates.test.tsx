@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { builtinViews } from '@orch/shared';
 import { describe, expect, it } from 'vitest';
-import { mockApi, me, project, renderApp, type Routes } from '../test/helpers';
+import { mockApi, me, project, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const personal = {
   id: 'tpl1',
@@ -231,5 +231,34 @@ describe('My templates', () => {
     await waitFor(() =>
       expect(calls.some((c) => c.method === 'DELETE' && c.path === '/templates/tpl1')).toBe(true),
     );
+  });
+});
+
+describe('Templates in French', () => {
+  it('translates the manager, its editor and the delete dialog', async () => {
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /agents/mine': () => ({ json: [] }),
+      'GET /templates': () => ({ json: [...builtinViews(), personal] }),
+    });
+    await switchToFrench();
+    renderApp('/my-server');
+    const section = await screen.findByRole('region', { name: 'Mes modèles' });
+    expect(await within(section).findByText('Release notes')).toBeTruthy();
+    expect(within(section).getByText(/^Modèles intégrés \(4\)$/)).toBeTruthy();
+    expect(within(section).getByText('Personnel')).toBeTruthy();
+    expect(within(section).getAllByText('taille S / sonnet').length).toBeGreaterThan(0);
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Nouveau modèle' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Nouveau modèle' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enregistrer le modèle' }));
+    expect(within(dialog).getByRole('alert').textContent).toBe('Le nom est obligatoire.');
+    expect(within(dialog).getByText('Aucun champ à remplir pour l’instant.')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Annuler' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Supprimer' }));
+    const del = await screen.findByRole('dialog', { name: 'Supprimer le modèle' });
+    expect(within(del).getByText(/ne sont pas affectées/)).toBeTruthy();
   });
 });

@@ -2,14 +2,17 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import type { UsageBudgetRow, UsageDashboard, UsageRange, UsageTotals } from '@orch/shared';
 import { fetchUsage } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { formatNumber } from '../i18n/format.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { UsageChart } from '../components/UsageChart';
 import { formatDay, formatPercent, formatTokens } from '../usageFormat';
 import '../usage.css';
 
-const RANGES: Array<{ id: UsageRange; label: string }> = [
-  { id: '7d', label: '7 days' },
-  { id: '30d', label: '30 days' },
-  { id: '90d', label: '90 days' },
+const RANGES: Array<{ id: UsageRange; label: MessageKey }> = [
+  { id: '7d', label: 'usage.range.d7' },
+  { id: '30d', label: 'usage.range.d30' },
+  { id: '90d', label: 'usage.range.d90' },
 ];
 
 const level = (fraction: number) => (fraction < 0.7 ? 'ok' : fraction < 0.9 ? 'warn' : 'stop');
@@ -73,13 +76,14 @@ function Breakdown<T extends UsageTotals>({
   cell: (r: T) => ReactNode;
   rowKey: (r: T) => string;
 }) {
+  const t = useT();
   const max = Math.max(0, ...rows.map((r) => r.weighted));
   const id = `h-${title.toLowerCase().replace(/\s+/g, '-')}`;
   return (
     <section className="usage-block" aria-labelledby={id}>
       <h2 id={id}>{title}</h2>
       {rows.length === 0 ? (
-        <p className="empty">Nothing to show for this range.</p>
+        <p className="empty">{t('usage.empty.range')}</p>
       ) : (
         <div className="table-wrap" tabIndex={0} role="region" aria-label={caption}>
           <table className="usage-table">
@@ -88,13 +92,13 @@ function Breakdown<T extends UsageTotals>({
               <tr>
                 <th scope="col">{head}</th>
                 <th scope="col" className="num">
-                  Runs
+                  {t('usage.cols.runs')}
                 </th>
                 <th scope="col" className="num">
-                  Failed
+                  {t('usage.cols.failed')}
                 </th>
                 <th scope="col" className="num">
-                  Tokens
+                  {t('usage.cols.tokens')}
                 </th>
               </tr>
             </thead>
@@ -102,14 +106,14 @@ function Breakdown<T extends UsageTotals>({
               {rows.map((r) => (
                 <tr key={rowKey(r)}>
                   <th scope="row">{cell(r)}</th>
-                  <td className="num">{r.runs}</td>
+                  <td className="num">{formatNumber(r.runs)}</td>
                   <td className="num">
-                    {r.failed > 0 ? r.failed : <span className="dim">0</span>}
+                    {r.failed > 0 ? formatNumber(r.failed) : <span className="dim">0</span>}
                   </td>
                   <td className="num tokens">
                     <Share value={r.weighted} max={max} />
                     <span
-                      title={`${Math.round(r.weighted).toLocaleString('en-US')} weighted tokens`}
+                      title={t('usage.tokensTitle.weighted', { count: Math.round(r.weighted) })}
                     >
                       {formatTokens(r.weighted)}
                     </span>
@@ -125,11 +129,12 @@ function Breakdown<T extends UsageTotals>({
 }
 
 function Budgets({ rows }: { rows: UsageBudgetRow[] }) {
+  const t = useT();
   if (rows.length === 0) return null;
   return (
     <section className="usage-block" aria-labelledby="h-budgets">
-      <h2 id="h-budgets">Budget in this 5-hour window</h2>
-      <p className="hint">What each project has taken from the share of capacity you gave it.</p>
+      <h2 id="h-budgets">{t('usage.budget.title')}</h2>
+      <p className="hint">{t('usage.budget.hint')}</p>
       <ul className="plain budgets">
         {rows.map((b) => {
           const f = b.usedFraction;
@@ -139,25 +144,31 @@ function Budgets({ rows }: { rows: UsageBudgetRow[] }) {
                 <span className="name">{b.fullName}</span>
                 <span className="hint">
                   {f === null
-                    ? `${b.percent}% of capacity, budget unknown`
-                    : `${formatTokens(b.used)} of ${formatTokens(b.budget ?? 0)} (${b.percent}% of capacity)`}
+                    ? t('usage.budget.unknown', { percent: b.percent })
+                    : t('usage.budget.used', {
+                        used: formatTokens(b.used),
+                        budget: formatTokens(b.budget ?? 0),
+                        percent: b.percent,
+                      })}
                 </span>
               </div>
               <div
                 className="meter"
                 role="meter"
-                aria-label={`Budget used by ${b.fullName}`}
+                aria-label={t('usage.budget.meter', { name: b.fullName })}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={f === null ? undefined : Math.min(100, Math.round(f * 100))}
-                aria-valuetext={f === null ? 'unknown' : formatPercent(f)}
+                aria-valuetext={f === null ? t('usage.budget.valueUnknown') : formatPercent(f)}
                 data-level={f === null ? 'none' : level(f)}
               >
                 <span style={{ width: `${Math.min(100, (f ?? 0) * 100)}%` }} />
               </div>
               <span className="meter-value">
-                {f === null ? 'n/a' : formatPercent(f)}
-                {f !== null && f >= 0.9 && <span className="badge stop">Near limit</span>}
+                {f === null ? t('usage.na') : formatPercent(f)}
+                {f !== null && f >= 0.9 && (
+                  <span className="badge stop">{t('usage.budget.nearLimit')}</span>
+                )}
               </span>
             </li>
           );
@@ -168,30 +179,31 @@ function Budgets({ rows }: { rows: UsageBudgetRow[] }) {
 }
 
 function Split({ data }: { data: UsageDashboard }) {
+  const t = useT();
   const s = data.tokenSplit;
   if (!s) return null;
   const rows = [
-    ['Input', s.input],
-    ['Output', s.output],
-    ['Cache write', s.cacheWrite],
-    ['Cache read', s.cacheRead],
+    ['usage.split.input', s.input],
+    ['usage.split.output', s.output],
+    ['usage.split.cacheWrite', s.cacheWrite],
+    ['usage.split.cacheRead', s.cacheRead],
   ] as const;
   const max = Math.max(...rows.map((r) => r[1]));
   return (
     <section className="usage-block" aria-labelledby="h-split">
-      <h2 id="h-split">Token types</h2>
+      <h2 id="h-split">{t('usage.split.title')}</h2>
       <p className="hint">
-        Raw counts from {data.scope === 'admin' ? 'every' : 'your'} agent
-        {data.scope === 'admin' ? '' : 's'}, personal use included. Kept {data.splitRetentionDays}{' '}
-        days.
+        {t(data.scope === 'admin' ? 'usage.split.hintAdmin' : 'usage.split.hintOwn', {
+          count: data.splitRetentionDays,
+        })}
       </p>
       <dl className="token-split">
         {rows.map(([label, v]) => (
           <div key={label}>
-            <dt>{label}</dt>
+            <dt>{t(label)}</dt>
             <dd>
               <Share value={v} max={max} />
-              <span title={`${Math.round(v).toLocaleString('en-US')} tokens`}>
+              <span title={t('usage.tokensTitle.raw', { count: Math.round(v) })}>
                 {formatTokens(v)}
               </span>
             </dd>
@@ -203,8 +215,9 @@ function Split({ data }: { data: UsageDashboard }) {
 }
 
 function Skeleton() {
+  const t = useT();
   return (
-    <div className="usage-skeleton" role="status" aria-label="Loading usage">
+    <div className="usage-skeleton" role="status" aria-label={t('usage.loading')}>
       <div className="tiles">
         {[0, 1, 2, 3].map((i) => (
           <span key={i} className="sk" />
@@ -216,6 +229,8 @@ function Skeleton() {
 }
 
 export function Usage() {
+  const t = useT();
+  const rich = useRich();
   const [range, setRange] = useState<UsageRange>('30d');
   const q = useQuery({
     queryKey: ['usage', range],
@@ -223,7 +238,8 @@ export function Usage() {
     placeholderData: keepPreviousData,
   });
   const d = q.data;
-  const days = RANGES.find((r) => r.id === range)!.label;
+  const days = t(RANGES.find((r) => r.id === range)!.label);
+  const lastDays = t('usage.range.last', { days });
   const rate = d && d.totals.runs > 0 ? d.totals.succeeded / d.totals.runs : null;
   const busiest = d?.budgets.reduce<UsageBudgetRow | null>(
     (best, b) => ((b.usedFraction ?? -1) > (best?.usedFraction ?? -1) ? b : best),
@@ -234,13 +250,10 @@ export function Usage() {
     <section aria-busy={q.isFetching}>
       <header className="page-head">
         <div>
-          <h1>Usage</h1>
-          <p className="lede">
-            Tokens and task runs{d?.scope === 'admin' ? ' across all members' : ' you can see'}:
-            your own runs, plus everything that ran in projects you own. All figures are estimates.
-          </p>
+          <h1>{t('usage.title')}</h1>
+          <p className="lede">{t(d?.scope === 'admin' ? 'usage.lede.admin' : 'usage.lede.own')}</p>
         </div>
-        <div className="segmented" role="group" aria-label="Time range">
+        <div className="segmented" role="group" aria-label={t('usage.range.label')}>
           {RANGES.map((r) => (
             <button
               key={r.id}
@@ -249,66 +262,78 @@ export function Usage() {
               aria-pressed={range === r.id}
               onClick={() => setRange(r.id)}
             >
-              {r.label}
+              {t(r.label)}
             </button>
           ))}
         </div>
       </header>
 
       {q.isLoading && <Skeleton />}
-      {q.error && !d && <p className="error">{q.error.message}</p>}
+      {q.error && !d && <p className="error">{errorMessage(q.error)}</p>}
 
       {d && (
         <div className="usage-body" data-stale={q.isPlaceholderData || undefined}>
           <div className="tiles">
             <Tile
-              label="Tokens"
+              label={t('usage.tiles.tokens')}
               value={formatTokens(d.totals.weighted)}
-              title={`${Math.round(d.totals.weighted).toLocaleString('en-US')} weighted tokens`}
-              note={`weighted, last ${days}`}
+              title={t('usage.tokensTitle.weighted', { count: Math.round(d.totals.weighted) })}
+              note={t('usage.tiles.tokensNote', { range: lastDays })}
             />
             <Tile
-              label="Task runs"
-              value={d.totals.runs}
-              note={`${d.totals.succeeded} succeeded, ${d.totals.failed} failed`}
+              label={t('usage.tiles.runs')}
+              value={formatNumber(d.totals.runs)}
+              note={`${t('usage.runs.succeeded', { count: d.totals.succeeded })}, ${t('usage.runs.failed', { count: d.totals.failed })}`}
             />
             <Tile
-              label="Success rate"
-              value={rate === null ? 'n/a' : formatPercent(rate)}
-              note={rate === null ? 'no finished run yet' : 'of finished runs'}
+              label={t('usage.tiles.successRate')}
+              value={rate === null ? t('usage.na') : formatPercent(rate)}
+              note={
+                rate === null ? t('usage.tiles.successRateNone') : t('usage.tiles.successRateNote')
+              }
             />
             <Tile
-              label="Busiest budget"
-              value={busiest?.usedFraction == null ? 'n/a' : formatPercent(busiest.usedFraction)}
-              note={busiest ? busiest.fullName : 'you have no active participation'}
+              label={t('usage.tiles.busiest')}
+              value={
+                busiest?.usedFraction == null ? t('usage.na') : formatPercent(busiest.usedFraction)
+              }
+              note={busiest ? busiest.fullName : t('usage.tiles.busiestNone')}
             />
           </div>
 
           {d.totals.runs === 0 ? (
             <p className="empty">
-              <strong>No finished runs in the last {days}.</strong> Runs show up here once a task
-              succeeds or fails on one of your projects. Try a longer range.
+              {rich(
+                'usage.empty.runs',
+                { strong: (c) => <strong>{c}</strong> },
+                { range: lastDays },
+              )}
             </p>
           ) : (
             <section className="usage-block chart-block" aria-labelledby="h-chart">
-              <h2 id="h-chart">Tokens per day</h2>
+              <h2 id="h-chart">{t('usage.chart.title')}</h2>
               <UsageChart key={range} series={d.series} />
               <details className="chart-table">
-                <summary>View as a table</summary>
-                <div className="table-wrap" tabIndex={0} role="region" aria-label="Daily usage">
+                <summary>{t('usage.chart.viewTable')}</summary>
+                <div
+                  className="table-wrap"
+                  tabIndex={0}
+                  role="region"
+                  aria-label={t('usage.chart.dailyUsage')}
+                >
                   <table className="usage-table">
-                    <caption className="sr-only">Weighted tokens and runs per day</caption>
+                    <caption className="sr-only">{t('usage.chart.tableCaption')}</caption>
                     <thead>
                       <tr>
-                        <th scope="col">Day</th>
+                        <th scope="col">{t('usage.cols.day')}</th>
                         <th scope="col" className="num">
-                          Runs
+                          {t('usage.cols.runs')}
                         </th>
                         <th scope="col" className="num">
-                          Failed
+                          {t('usage.cols.failed')}
                         </th>
                         <th scope="col" className="num">
-                          Tokens
+                          {t('usage.cols.tokens')}
                         </th>
                       </tr>
                     </thead>
@@ -316,9 +341,9 @@ export function Usage() {
                       {[...d.series].reverse().map((p) => (
                         <tr key={p.day}>
                           <th scope="row">{formatDay(p.day, true)}</th>
-                          <td className="num">{p.runs}</td>
-                          <td className="num">{p.failed}</td>
-                          <td className="num">{Math.round(p.weighted).toLocaleString('en-US')}</td>
+                          <td className="num">{formatNumber(p.runs)}</td>
+                          <td className="num">{formatNumber(p.failed)}</td>
+                          <td className="num">{formatNumber(Math.round(p.weighted))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -332,17 +357,17 @@ export function Usage() {
 
           <div className="usage-split-grid">
             <Breakdown
-              title="By project"
-              caption="Usage per project"
-              head="Project"
+              title={t('usage.byProject.title')}
+              caption={t('usage.byProject.caption')}
+              head={t('usage.byProject.head')}
               rows={d.projects}
               rowKey={(r) => r.projectId}
               cell={(r) => <span className="name">{r.fullName}</span>}
             />
             <Breakdown
-              title="By member"
-              caption="Usage per member"
-              head="Member"
+              title={t('usage.byMember.title')}
+              caption={t('usage.byMember.caption')}
+              head={t('usage.byMember.head')}
               rows={d.members}
               rowKey={(r) => r.userId}
               cell={(r) => <Person login={r.login} avatarUrl={r.avatarUrl} />}
@@ -351,34 +376,39 @@ export function Usage() {
 
           {d.topTasks.length > 0 && (
             <section className="usage-block" aria-labelledby="h-top">
-              <h2 id="h-top">Most expensive tasks</h2>
-              <div className="table-wrap" tabIndex={0} role="region" aria-label="Top tasks">
+              <h2 id="h-top">{t('usage.top.title')}</h2>
+              <div
+                className="table-wrap"
+                tabIndex={0}
+                role="region"
+                aria-label={t('usage.top.label')}
+              >
                 <table className="usage-table">
-                  <caption className="sr-only">Tasks that used the most tokens</caption>
+                  <caption className="sr-only">{t('usage.top.caption')}</caption>
                   <thead>
                     <tr>
-                      <th scope="col">Task</th>
+                      <th scope="col">{t('usage.cols.task')}</th>
                       <th scope="col" className="num">
-                        Runs
+                        {t('usage.cols.runs')}
                       </th>
                       <th scope="col" className="num">
-                        Tokens
+                        {t('usage.cols.tokens')}
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {d.topTasks.map((t) => (
-                      <tr key={t.taskId}>
+                    {d.topTasks.map((task) => (
+                      <tr key={task.taskId}>
                         <th scope="row">
-                          <a href={`/backlog?task=${t.taskId}`}>
-                            #{t.issueNumber} {t.title}
+                          <a href={`/backlog?task=${task.taskId}`}>
+                            #{task.issueNumber} {task.title}
                           </a>
-                          <span className="hint block">{t.projectFullName}</span>
+                          <span className="hint block">{task.projectFullName}</span>
                         </th>
-                        <td className="num">{t.runs}</td>
+                        <td className="num">{formatNumber(task.runs)}</td>
                         <td className="num tokens">
-                          <Share value={t.weighted} max={d.topTasks[0]!.weighted} />
-                          <span>{formatTokens(t.weighted)}</span>
+                          <Share value={task.weighted} max={d.topTasks[0]!.weighted} />
+                          <span>{formatTokens(task.weighted)}</span>
                         </td>
                       </tr>
                     ))}

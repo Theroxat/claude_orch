@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { me, mockApi, renderApp } from '../test/helpers';
+import { me, mockApi, renderApp, switchToFrench } from '../test/helpers';
 import { niceMax } from '../components/UsageChart';
 import { formatTokens } from '../usageFormat';
 
@@ -190,6 +190,40 @@ describe('Usage', () => {
     const link = await screen.findByRole('link', { name: 'Usage' });
     expect(link.getAttribute('href')).toBe('/usage');
     expect(link.className).toContain('active');
+  });
+});
+
+describe('Usage in French', () => {
+  it('translates the page and formats numbers and dates for fr-FR', async () => {
+    await switchToFrench();
+    mockApi({
+      ...base,
+      'GET /usage?range=30d': () => ({ json: dashboard('30d', { totals: totals(1, 0, 14_500) }) }),
+    });
+    renderApp('/usage');
+    expect(await screen.findByRole('heading', { name: 'Consommation' })).toBeTruthy();
+    const tokens = await screen.findByRole('group', { name: 'Jetons' });
+    expect(within(tokens).getByText('14,5 k')).toBeTruthy();
+    expect(within(tokens).getByText('pondérés, sur 30 jours')).toBeTruthy();
+    // Plurals: 0 and 1 take the singular form in French.
+    const runs = screen.getByRole('group', { name: 'Exécutions de tâches' });
+    expect(within(runs).getByText('1 réussie, 0 échouée')).toBeTruthy();
+    expect(
+      within(screen.getByRole('group', { name: 'Taux de réussite' })).getByText(/^100\s%$/),
+    ).toBeTruthy();
+    expect(screen.getByText('Limite proche')).toBeTruthy();
+    expect(screen.getByRole('table', { name: 'Consommation par projet' })).toBeTruthy();
+    const table = screen.getByRole('table', { name: 'Jetons pondérés et exécutions par jour' });
+    const newest = within(table).getAllByRole('row')[1]!;
+    expect(newest.textContent).toContain('jeu. 22 oct.');
+    expect(newest.textContent).toMatch(/12\s000/);
+  });
+  it('formats compact counts and percents in French', async () => {
+    await switchToFrench();
+    expect(formatTokens(12_300)).toBe('12,3 k');
+    expect(formatTokens(4_100_000)).toBe('4,1 M');
+    expect(formatTokens(1_200_000_000)).toBe('1,2 Md');
+    expect(formatTokens(950)).toBe('950');
   });
 });
 

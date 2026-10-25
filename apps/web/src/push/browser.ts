@@ -1,3 +1,5 @@
+import { t } from '../i18n/index.ts';
+
 /**
  * Browser side of Web Push. The push service worker lives on its own scope so it never competes
  * with another service worker (the app's PWA worker controls "/"): a registration is all a push
@@ -32,11 +34,11 @@ export function keyBytes(b64url: string): Uint8Array<ArrayBuffer> {
 async function activated(reg: ServiceWorkerRegistration): Promise<ServiceWorkerRegistration> {
   if (reg.active) return reg;
   const worker = reg.installing ?? reg.waiting;
-  if (!worker) throw new Error('The push service worker did not install');
+  if (!worker) throw new Error(t('notifications.push.workerNotInstalled'));
   await new Promise<void>((resolve, reject) => {
     worker.addEventListener('statechange', () => {
       if (worker.state === 'activated') resolve();
-      if (worker.state === 'redundant') reject(new Error('The push service worker failed'));
+      if (worker.state === 'redundant') reject(new Error(t('notifications.push.workerFailed')));
     });
   });
   return reg;

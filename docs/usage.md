@@ -14,6 +14,12 @@ Issues carrying the project's pool label (default `pool`) become tasks.
 - **Claude Code** shows the MCP command for your domain and the connected apps ({doc}`mcp`).
 - **Access** (`/admin/access`, admins only) manages who can sign in.
 
+## Language
+
+The web interface is available in English and French. On the first visit it follows the browser's preferred language (French for any `fr-*` setting, English otherwise). To change it, use the **EN | FR** switch in the header, next to the theme toggle, or at the top right of the sign-in page. The choice is remembered on this browser (local storage) and applies at once, without a reload; it does not follow your account to other browsers.
+
+Dates and numbers follow the chosen language (`Oct 14, 2026` and `12,345` in English, `14 oct. 2026` and `12 345` in French). Some texts stay in English whatever the language: data written by people (task titles, template content, project names), notifications composed by the server (in the app, e-mail, Slack, Discord, push), the CLI and the MCP tools, and the detail of some server error messages.
+
 ## Task templates
 
 A template is a reusable task skeleton: a title, a Markdown description, acceptance criteria, a default size, model and GitHub labels. Write `{{placeholders}}` where the author of a task fills in a value, for example `Upgrade {{package}} to {{version}}`.

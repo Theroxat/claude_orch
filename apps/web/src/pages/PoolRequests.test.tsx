@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { mockApi, me, project, renderApp, type Routes } from '../test/helpers';
+import { mockApi, me, project, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
 
@@ -385,5 +385,27 @@ describe('New task dispatch selector', () => {
     const dialog = await openDialog();
     expect(within(dialog).queryByRole('option', { name: 'Everyone' })).toBeNull();
     expect(within(dialog).getByRole('option', { name: 'Specific members' })).toBeTruthy();
+  });
+});
+
+describe('Pool and Requests (French)', () => {
+  it('translates a member card', async () => {
+    await switchToFrench();
+    mockApi(base({ 'GET /pool': () => ({ json: { estimate: true, members: [member()] } }) }));
+    renderApp('/pool');
+    const alice = await screen.findByRole('article', { name: 'Membre alice' });
+    expect(within(alice).getByText('En ligne')).toBeTruthy();
+    expect(within(alice).getByText(/Estimation : 40 % de marge restante/)).toBeTruthy();
+    expect(within(alice).getByText(/se réinitialise dans 2 h [45] min/)).toBeTruthy();
+  });
+
+  it('translates an offer', async () => {
+    await switchToFrench();
+    mockApi(base({ 'GET /offers/mine': () => ({ json: [offer()] }) }));
+    renderApp('/requests');
+    const card = await screen.findByRole('article', { name: 'Demande #12' });
+    expect(within(card).getByRole('button', { name: 'Accepter' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Refuser' })).toBeTruthy();
+    expect(within(card).getByText('demandée par bob')).toBeTruthy();
   });
 });

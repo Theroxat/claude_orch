@@ -4,6 +4,8 @@ import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { fetchNotifications, fetchUnreadCount, markNotificationsRead } from '../api/endpoints';
 import { useMe } from '../auth';
+import { errorMessage } from '../i18n/errors.ts';
+import { useT } from '../i18n/index.ts';
 import { relative } from '../time';
 import { Icon } from '../ui/Icon';
 import { EXIT_MS, motionAllowed } from '../ui/motion';
@@ -15,6 +17,7 @@ const LIST_KEY = ['notifications', 'list'] as const;
 
 /** Bell with an unread badge in the header; opens the latest notifications. */
 export function NotificationBell() {
+  const t = useT();
   const signedIn = !!useMe().data;
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -97,7 +100,10 @@ export function NotificationBell() {
     else if (/^https?:\/\//i.test(n.url)) window.open(n.url, '_blank', 'noopener,noreferrer');
   };
 
-  const label = unread > 0 ? `Notifications, ${unread} unread` : 'Notifications';
+  const label =
+    unread > 0
+      ? t('notifications.bell.labelUnread', { count: unread })
+      : t('notifications.bell.title');
   const items = list.data?.items;
   return (
     <div className="bell" ref={root}>
@@ -106,7 +112,7 @@ export function NotificationBell() {
         type="button"
         className="ghost icon-button bell-button"
         aria-label={label}
-        title="Notifications"
+        title={t('notifications.bell.title')}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
@@ -130,29 +136,25 @@ export function NotificationBell() {
           id={panelId}
           className="bell-panel"
           role="dialog"
-          aria-label="Notifications"
+          aria-label={t('notifications.bell.title')}
           tabIndex={-1}
           data-closing={closing || undefined}
         >
           <div className="bell-head">
-            <h2>Notifications</h2>
+            <h2>{t('notifications.bell.title')}</h2>
             <button
               type="button"
               className="ghost"
               disabled={unread === 0 || markRead.isPending}
               onClick={() => markRead.mutate({ all: true })}
             >
-              Mark all read
+              {t('notifications.bell.markAllRead')}
             </button>
           </div>
           <div className="bell-body">
-            {list.isPending && <p className="hint bell-note">Loading...</p>}
-            {list.error && <p className="error bell-note">{list.error.message}</p>}
-            {items?.length === 0 && (
-              <p className="bell-empty">
-                Nothing yet. Task results and requests that need you show up here.
-              </p>
-            )}
+            {list.isPending && <p className="hint bell-note">{t('common.status.loading')}</p>}
+            {list.error && <p className="error bell-note">{errorMessage(list.error)}</p>}
+            {items?.length === 0 && <p className="bell-empty">{t('notifications.bell.empty')}</p>}
             {items && items.length > 0 && (
               <ul className="bell-list">
                 {items.map((n) => {
@@ -174,7 +176,13 @@ export function NotificationBell() {
                           {n.body && <span className="bell-copy">{n.body}</span>}
                           <span className="bell-time">{relative(n.createdAt)}</span>
                         </span>
-                        {!n.readAt && <span className="bell-dot" role="img" aria-label="Unread" />}
+                        {!n.readAt && (
+                          <span
+                            className="bell-dot"
+                            role="img"
+                            aria-label={t('notifications.bell.unread')}
+                          />
+                        )}
                       </button>
                     </li>
                   );
@@ -184,7 +192,7 @@ export function NotificationBell() {
           </div>
           <div className="bell-foot">
             <Link to="/my-server#notifications" onClick={() => close(false)}>
-              Notification settings
+              {t('notifications.bell.settings')}
             </Link>
           </div>
         </div>

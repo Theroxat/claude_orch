@@ -11,13 +11,10 @@ export default {
     retry: 'Réessayer',
     copy: 'Copier',
     copied: 'Copié',
-    copyFailed: 'Échec de la copie',
     loadMore: 'Charger plus',
   },
   status: {
     loading: 'Chargement…',
-    loadingPage: 'Chargement de la page',
-    saving: 'Enregistrement…',
   },
   time: {
     now: 'maintenant',

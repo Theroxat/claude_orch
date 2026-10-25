@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { me, mockApi, renderApp, project } from '../test/helpers';
+import { me, mockApi, renderApp, project, switchToFrench } from '../test/helpers';
 
 const IDS = [
   'github_app_installed',
@@ -247,6 +247,23 @@ describe('setup wizard', () => {
       expect(calls.some((c) => c.method === 'POST' && c.path === '/onboarding/dismiss')).toBe(true),
     );
     expect(await screen.findByRole('heading', { name: 'My projects' })).toBeTruthy();
+  });
+});
+
+describe('setup wizard in French', () => {
+  it('translates the steps, navigation and cheat sheet', async () => {
+    await switchToFrench();
+    mockApi(routes(() => ALL_TODO));
+    renderApp('/welcome');
+    expect((await title()).textContent).toBe('Bienvenue sur orch');
+    expect(screen.getByText('Étape 1 sur 7')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuetext')).toBe('Étape 1 sur 7');
+    expect(screen.getByRole('button', { name: 'Quitter la configuration' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Se déconnecter' })).toBeTruthy();
+    click('Je rejoins le projet d’un membre de l’équipe');
+    expect((await title()).textContent).toBe('Rejoindre un projet');
+    expect(screen.getByRole('button', { name: 'Passer pour l’instant' })).toBeTruthy();
+    expect(screen.getByText('Étape 2 sur 7')).toBeTruthy();
   });
 });
 

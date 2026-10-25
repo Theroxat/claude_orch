@@ -1,6 +1,6 @@
 import { screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { me, mockApi, renderApp } from '../test/helpers';
+import { me, mockApi, renderApp, switchToFrench } from '../test/helpers';
 
 const agent = (over: Record<string, unknown>) => ({
   id: 'a1',
@@ -138,5 +138,22 @@ describe('Pool member machines', () => {
     renderApp('/pool');
     const card = (await screen.findByText('bob')).closest('article')!;
     expect(within(card).getAllByText('Paused')).toHaveLength(1);
+  });
+});
+
+describe('Pool (French)', () => {
+  it('translates the expired-login warning', async () => {
+    await switchToFrench();
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/mine': () => ({ json: [] }),
+      'GET /projects/discover': () => ({ json: [] }),
+      'GET /pool': () => ({ json: { members: [] } }),
+      'GET /agents/mine': () => ({ json: [agent({ claudeAuthValid: false })] }),
+    });
+    renderApp('/pool');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('sur laptop');
+    expect(alert.textContent).toContain('Aucune tâche n’est proposée à cette machine d’ici là.');
   });
 });

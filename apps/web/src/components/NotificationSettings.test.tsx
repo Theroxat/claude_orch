@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { me, mockApi, renderApp, type Routes } from '../test/helpers';
+import { me, mockApi, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const settings = (over: Record<string, unknown> = {}) => ({
   preferences: {
@@ -184,5 +184,21 @@ describe('notification settings', () => {
     renderApp('/my-server');
     fireEvent.click(await screen.findByRole('button', { name: 'Resend confirmation' }));
     expect(await screen.findByText('Too many confirmation e-mails')).toBeTruthy();
+  });
+
+  it('speaks French: events, channels and targets', async () => {
+    await switchToFrench();
+    mockApi(base());
+    renderApp('/my-server#notifications');
+    expect(await screen.findByText('Où envoyer')).toBeTruthy();
+    expect(screen.getByText('Quoi envoyer')).toBeTruthy();
+    expect(box('Tâche terminée\u00a0: Slack').checked).toBe(true);
+    expect(box('Tâche terminée\u00a0: Dans l’application').checked).toBe(true);
+    expect(screen.getByLabelText('Adresse e-mail')).toBeTruthy();
+    expect(screen.getByLabelText('URL du webhook Discord')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Envoyer un test à Slack' })).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Enregistrer les paramètres de notification' }),
+    ).toBeTruthy();
   });
 });

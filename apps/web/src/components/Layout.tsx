@@ -179,8 +179,14 @@ export function Layout() {
                   <span className="avatar" data-initial={me.githubLogin.slice(0, 1)} />
                 )}
                 <span className="user-name">{me.name ?? me.githubLogin}</span>
-                <button type="button" className="ghost" onClick={() => logout.mutate()}>
-                  {t('layout.header.logOut')}
+                <button
+                  type="button"
+                  className="ghost logout-button"
+                  onClick={() => logout.mutate()}
+                  title={t('layout.header.logOut')}
+                >
+                  <Icon name="logout" />
+                  <span className="logout-label">{t('layout.header.logOut')}</span>
                 </button>
               </div>
             )}

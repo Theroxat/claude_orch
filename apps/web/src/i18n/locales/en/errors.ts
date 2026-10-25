@@ -5,7 +5,7 @@ export default {
   requestFailed: 'Request failed ({status})',
   api: {
     access_suspended: 'Your access to this server was removed by an admin.',
-    agent_offline: 'The agent is offline.',
+    agent_offline: 'Agent is offline',
     already_added: 'This repository is already added.',
     already_taken: 'This task has already been taken.',
     cannot_reject_owner: 'The owner cannot be rejected.',

@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { loginPathFor, safeReturnPath } from '../returnPath';
 import { mockApi, renderApp } from '../test/helpers';
@@ -40,5 +40,22 @@ describe('sign-in return path', () => {
     expect(safeReturnPath('/a\nb')).toBeNull();
     expect(safeReturnPath(undefined)).toBeNull();
     expect(loginPathFor({ pathname: '/pool', search: '', hash: '' })).toBe('/login?next=%2Fpool');
+  });
+});
+
+describe('sign-in page language', () => {
+  it('switches to French from the language lever and remembers it', async () => {
+    mockApi(unauthenticated);
+    renderApp('/login');
+    const fr = await screen.findByRole('button', { name: 'Français' });
+    expect(screen.getByRole('button', { name: 'English' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    fireEvent.click(fr);
+    expect(await screen.findByRole('link', { name: /Se connecter avec GitHub/ })).toBeTruthy();
+    expect(screen.getByText(/réunis dans un pool commun/)).toBeTruthy();
+    expect(fr.getAttribute('aria-pressed')).toBe('true');
+    expect(document.documentElement.lang).toBe('fr');
+    expect(localStorage.getItem('orch.locale')).toBe('fr');
   });
 });

@@ -12,6 +12,7 @@ const PATHS = {
     'M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z',
   pr: 'M6 8a2 2 0 100-4 2 2 0 000 4zM6 8v8M6 20a2 2 0 100-4 2 2 0 000 4zM18 20a2 2 0 100-4 2 2 0 000 4zM18 16V9a3 3 0 00-3-3h-2M15 3l-2 3 2 3',
   user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
+  logout: 'M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10',
 } as const;
 
 export type IconName = keyof typeof PATHS;

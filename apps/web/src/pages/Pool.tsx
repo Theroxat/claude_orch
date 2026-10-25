@@ -3,6 +3,8 @@ import type { PoolMember } from '@orch/shared';
 import { useState } from 'react';
 import { fetchDiscover, fetchMyAgents, fetchMyProjects, fetchPool } from '../api/endpoints';
 import { claudeCheckLine, claudeRejectedText } from '../components/AgentCard';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT } from '../i18n/index.ts';
 import { POLL_MS, relative } from '../time';
 import { presenceProps, useChangeCount, usePresence, type Phase } from '../ui/presence';
 
@@ -11,6 +13,7 @@ function level(fraction: number): 'low' | 'mid' | 'high' {
 }
 
 function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
+  const t = useT();
   const onlineChanges = useChangeCount(m.online);
   // Display-only freshness check; re-evaluated on every refetch.
   // eslint-disable-next-line react-hooks/purity
@@ -22,7 +25,7 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
   return (
     <article
       className="card pool-member"
-      aria-label={`Member ${m.login}`}
+      aria-label={t('pool.member.aria', { login: m.login })}
       {...presenceProps(phase)}
     >
       <div className="member-head">
@@ -38,42 +41,47 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
             className={`badge ${m.online ? 'ok' : 'off'}`}
             data-changed={onlineChanges > 0 || undefined}
           >
-            {m.online ? 'Online' : 'Offline'}
+            {m.online ? t('pool.member.online') : t('pool.member.offline')}
           </span>
-          {paused && <span className="badge pending">Paused</span>}
+          {paused && <span className="badge pending">{t('pool.member.paused')}</span>}
         </div>
       </div>
       {machines.length > 0 && (
-        <ul className="plain machines" aria-label={`Machines of ${m.login}`}>
+        <ul
+          className="plain machines"
+          aria-label={t('pool.member.machinesAria', { login: m.login })}
+        >
           {machines.map((x) => (
             <li key={x.name}>
               <span className="name">{x.name}</span>{' '}
               <span className={`badge ${x.online ? (x.paused ? 'pending' : 'ok') : 'off'}`}>
                 {x.paused
                   ? x.online
-                    ? 'Paused'
-                    : 'Paused, offline'
+                    ? t('pool.member.paused')
+                    : t('pool.member.pausedOffline')
                   : x.online
-                    ? 'Online'
-                    : 'Offline'}
+                    ? t('pool.member.online')
+                    : t('pool.member.offline')}
               </span>
             </li>
           ))}
         </ul>
       )}
-      {m.usageStale && (
-        <p className="warning">Usage stale: no recent report, not eligible for auto requests.</p>
-      )}
+      {m.usageStale && <p className="warning">{t('pool.member.usageStale')}</p>}
       {limited && m.rateLimitedUntil && (
-        <p className="warning">Rate limited, retry {relative(m.rateLimitedUntil)}.</p>
+        <p className="warning">
+          {t('pool.member.rateLimited', { when: relative(m.rateLimitedUntil) })}
+        </p>
       )}
-      {m.resetAt && <p className="hint">Window resets {relative(m.resetAt)} (estimate)</p>}
+      {m.resetAt && (
+        <p className="hint">{t('pool.member.resets', { when: relative(m.resetAt) })}</p>
+      )}
       {m.projects.map((p) => (
         <div key={p.projectId} className="pool-project">
           <div className="row between">
             <span className="name">{p.fullName}</span>
             <span className={`badge ${p.mode === 'AUTO' ? 'ok' : 'pending'}`}>
-              {p.mode === 'AUTO' ? 'Auto' : 'Approval'}
+              {p.mode === 'AUTO' ? t('pool.member.auto') : t('pool.member.approval')}
             </span>
           </div>
           {p.marginFraction !== null ? (
@@ -82,34 +90,34 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
                 data-level={level(p.marginFraction)}
                 max={100}
                 value={Math.round(Math.min(1, Math.max(0, p.marginFraction)) * 100)}
-                aria-label={`Estimate margin ${p.fullName}`}
+                aria-label={t('pool.member.marginAria', { name: p.fullName })}
               />
               <span className="hint">
-                Estimate: {Math.round(p.marginFraction * 100)}% margin left
+                {t('pool.member.margin', { percent: Math.round(p.marginFraction * 100) })}
               </span>
             </div>
           ) : (
-            <p className="hint">Estimate: margin unknown</p>
+            <p className="hint">{t('pool.member.marginUnknown')}</p>
           )}
         </div>
       ))}
       {m.runningTasks.length > 0 && (
         <div className="running">
-          <strong>Running</strong>
+          <strong>{t('pool.member.running')}</strong>
           <ul className="plain">
-            {m.runningTasks.map((t) => (
-              <li key={t.taskId}>
-                {t.projectFullName && <span className="hint">{t.projectFullName} </span>}
-                {t.issueUrl ? (
-                  <a href={t.issueUrl} target="_blank" rel="noreferrer">
-                    #{t.issueNumber} {t.title}
+            {m.runningTasks.map((rt) => (
+              <li key={rt.taskId}>
+                {rt.projectFullName && <span className="hint">{rt.projectFullName} </span>}
+                {rt.issueUrl ? (
+                  <a href={rt.issueUrl} target="_blank" rel="noreferrer">
+                    #{rt.issueNumber} {rt.title}
                   </a>
                 ) : (
-                  <a href={`/backlog?task=${t.taskId}`}>
-                    #{t.issueNumber} {t.title}
+                  <a href={`/backlog?task=${rt.taskId}`}>
+                    #{rt.issueNumber} {rt.title}
                   </a>
                 )}{' '}
-                <span className="badge ok">{t.status}</span>
+                <span className="badge ok">{t(`pool.offerStatus.${rt.status}`)}</span>
               </li>
             ))}
           </ul>
@@ -120,6 +128,8 @@ function MemberCard({ m, phase }: { m: PoolMember; phase: Phase }) {
 }
 
 export function Pool() {
+  const t = useT();
+  const rich = useRich();
   const [filter, setFilter] = useState('');
   const mine = useQuery({ queryKey: ['projects', 'mine'], queryFn: fetchMyProjects });
   const discover = useQuery({ queryKey: ['projects', 'discover'], queryFn: fetchDiscover });
@@ -144,16 +154,13 @@ export function Pool() {
     <section>
       <header className="page-head">
         <div>
-          <h1>Pool</h1>
-          <p className="lede">
-            Who is lending capacity right now, how much margin they have left, and what is running
-            on their machines. All usage figures are estimates.
-          </p>
+          <h1>{t('pool.title')}</h1>
+          <p className="lede">{t('pool.lede')}</p>
         </div>
         <label className="field inline">
-          Project
+          {t('pool.project')}
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-            <option value="">All my projects</option>
+            <option value="">{t('pool.allProjects')}</option>
             {[...names].map(([id, fullName]) => (
               <option key={id} value={id}>
                 {fullName}
@@ -164,22 +171,20 @@ export function Pool() {
       </header>
       {expired.map((a) => (
         <p key={a.id} className="warning" role="alert">
-          {claudeRejectedText(a, <> on {a.machineName}</>)}. No task is offered to that machine
-          until then.
+          {claudeRejectedText(a, <> {t('pool.expired.onMachine', { machine: a.machineName })}</>)}.{' '}
+          {t('pool.expired.noTask')}
         </p>
       ))}
       {(agents.data ?? [])
         .filter((a) => !a.revokedAt && a.claudeAuthValid !== false && a.claudeAuthCheckedAt)
         .map((a) => (
           <p key={a.id} className="hint">
-            {a.machineName}: {claudeCheckLine(a)}
+            {rich('pool.machineLine', {}, { machine: a.machineName, line: claudeCheckLine(a) })}
           </p>
         ))}
-      {pool.isLoading && <p className="hint">Loading...</p>}
-      {pool.error && <p className="error">{pool.error.message}</p>}
-      {pool.data && pool.data.members.length === 0 && (
-        <p className="empty">No members in the pool yet.</p>
-      )}
+      {pool.isLoading && <p className="hint">{t('common.status.loading')}</p>}
+      {pool.error && <p className="error">{errorMessage(pool.error)}</p>}
+      {pool.data && pool.data.members.length === 0 && <p className="empty">{t('pool.empty')}</p>}
       <div className="pool-grid">
         {members.map(({ key, item, phase }) => (
           <MemberCard key={key} m={item} phase={phase} />

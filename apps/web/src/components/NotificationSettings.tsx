@@ -20,6 +20,8 @@ import {
   updateNotificationSettings,
 } from '../api/endpoints';
 import { useMe } from '../auth';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { motionAllowed } from '../ui/motion';
 import {
   currentSubscription,
@@ -38,28 +40,31 @@ const URL_FIELD = {
   discord: 'discordWebhookUrl',
   webhook: 'webhookUrl',
 } as const;
-const URL_COPY: Record<UrlChannel, { label: string; placeholder: string; hint: string }> = {
+const URL_COPY = {
   slack: {
-    label: 'Slack incoming webhook URL',
+    label: 'notifications.settings.slack.label',
     placeholder: 'https://hooks.slack.com/services/...',
-    hint: 'Messages post to the channel the webhook was created for.',
+    hint: 'notifications.settings.slack.hint',
   },
   discord: {
-    label: 'Discord webhook URL',
+    label: 'notifications.settings.discord.label',
     placeholder: 'https://discord.com/api/webhooks/...',
-    hint: 'Messages post to the channel the webhook was created for.',
+    hint: 'notifications.settings.discord.hint',
   },
   webhook: {
-    label: 'JSON webhook URL',
+    label: 'notifications.settings.webhook.label',
     placeholder: 'https://example.com/orch-hook',
-    hint: 'Receives each notification as a JSON POST.',
+    hint: 'notifications.settings.webhook.hint',
   },
-};
+} as const satisfies Record<
+  UrlChannel,
+  { label: MessageKey; placeholder: string; hint: MessageKey }
+>;
 const URL_CHANNELS: UrlChannel[] = ['slack', 'discord', 'webhook'];
 
-const ROLE_NOTE: Partial<Record<NotificationEvent, string>> = {
-  access_request: 'Admins',
-  participation_request: 'Project owners',
+const ROLE_NOTE: Partial<Record<NotificationEvent, MessageKey>> = {
+  access_request: 'notifications.settings.roleAdmins',
+  participation_request: 'notifications.settings.roleOwners',
 };
 
 function configured(s: NotificationSettingsView, c: NotificationChannel): boolean {
@@ -71,6 +76,7 @@ function configured(s: NotificationSettingsView, c: NotificationChannel): boolea
 
 /** The "Notifications" card of My server: where to send notifications and which events go where. */
 export function NotificationSettings() {
+  const t = useT();
   const settings = useQuery({ queryKey: KEY, queryFn: fetchNotificationSettings });
   const section = useRef<HTMLElement>(null);
   const { hash } = useLocation();
@@ -83,13 +89,11 @@ export function NotificationSettings() {
   return (
     <section id="notifications" ref={section} className="notify" aria-labelledby="notify-title">
       <div className="section-title">
-        <h2 id="notify-title">Notifications</h2>
+        <h2 id="notify-title">{t('notifications.settings.title')}</h2>
       </div>
-      <p className="lede">
-        Choose where orch reaches you when a task finishes, fails or waits for you.
-      </p>
-      {settings.isPending && <p className="hint">Loading notification settings...</p>}
-      {settings.error && <p className="error">{settings.error.message}</p>}
+      <p className="lede">{t('notifications.settings.lede')}</p>
+      {settings.isPending && <p className="hint">{t('notifications.settings.loading')}</p>}
+      {settings.error && <p className="error">{errorMessage(settings.error)}</p>}
       {settings.data && <SettingsForm key={formKey(settings.data)} data={settings.data} />}
     </section>
   );
@@ -102,6 +106,8 @@ export function NotificationSettings() {
 const formKey = (d: NotificationSettingsView) => JSON.stringify({ ...d, push: undefined });
 
 function SettingsForm({ data }: { data: NotificationSettingsView }) {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const toast = useToast();
   const isAdmin = !!useMe().data?.isAdmin;
@@ -119,36 +125,61 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
     onSuccess: (view) => {
       qc.setQueryData(KEY, view);
       setProblem(null);
-      toast('Notification settings saved');
+      toast(t('notifications.settings.saved'));
     },
-    onError: (e) => setProblem(e instanceof ApiError ? e.message : 'Could not save the settings'),
+    onError: (e) =>
+      setProblem(e instanceof ApiError ? errorMessage(e) : t('notifications.settings.saveFailed')),
   });
   const clear = useMutation({
     mutationFn: updateNotificationSettings,
     onSuccess: (view, vars) => {
       qc.setQueryData(KEY, view);
       setProblem(null);
-      toast(`${vars.email === '' ? 'E-mail address' : 'Webhook'} removed`);
+      toast(
+        vars.email === ''
+          ? t('notifications.settings.emailRemoved')
+          : t('notifications.settings.webhookRemoved'),
+      );
     },
-    onError: (e) => setProblem(e instanceof ApiError ? e.message : 'Could not remove the target'),
+    onError: (e) =>
+      setProblem(
+        e instanceof ApiError ? errorMessage(e) : t('notifications.settings.removeFailed'),
+      ),
   });
   const test = useMutation({
     mutationFn: sendTestNotification,
     onSuccess: (r, channel) => {
-      const name = CHANNEL_LABEL[channel];
-      if (r.ok) toast(`Test sent to ${name}`);
-      else if (r.error === 'not_configured') toast(`${name} is not set up yet`, 'info');
-      else toast(`Test to ${name} failed: ${r.error ?? 'unknown error'}`, 'info');
+      const name = t(CHANNEL_LABEL[channel]);
+      if (r.ok) toast(t('notifications.settings.testSent', { name }));
+      else if (r.error === 'not_configured')
+        toast(t('notifications.settings.testNotSetUp', { name }), 'info');
+      else
+        toast(
+          t('notifications.settings.testFailed', {
+            name,
+            error: r.error ?? t('notifications.settings.unknownError'),
+          }),
+          'info',
+        );
     },
     onError: (e, channel) =>
-      toast(`Test to ${CHANNEL_LABEL[channel]} failed: ${e.message}`, 'info'),
+      toast(
+        t('notifications.settings.testFailed', {
+          name: t(CHANNEL_LABEL[channel]),
+          error: errorMessage(e),
+        }),
+        'info',
+      ),
   });
 
   const resend = useMutation({
     mutationFn: resendEmailConfirmation,
-    onSuccess: () => toast('Confirmation e-mail sent. Check your inbox.'),
+    onSuccess: () => toast(t('notifications.settings.email.resent')),
     onError: (e) =>
-      toast(e instanceof ApiError ? e.message : 'Could not send the confirmation e-mail', 'info'),
+      toast(
+        e instanceof ApiError ? errorMessage(e) : t('notifications.settings.email.resendFailed'),
+        'info',
+      ),
   });
 
   const toggle = (event: NotificationEvent, channel: NotificationChannel, on: boolean) =>
@@ -173,15 +204,15 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
   const badUrl = problem !== null;
   return (
     <form className="card notify-card" onSubmit={onSubmit} noValidate>
-      <h3 className="notify-sub">Where to send</h3>
+      <h3 className="notify-sub">{t('notifications.settings.whereToSend')}</h3>
       <div className="notify-targets">
         <div className="notify-target">
           <div className="notify-target-head">
-            <label htmlFor="notify-email">E-mail address</label>
+            <label htmlFor="notify-email">{t('notifications.settings.email.label')}</label>
             <span className="hint">
               {data.email.available
-                ? 'Notifications are sent to this address once you have confirmed it.'
-                : 'This server has no mail settings, so e-mail is unavailable. Ask an admin to set them up.'}
+                ? t('notifications.settings.email.available')
+                : t('notifications.settings.email.unavailable')}
             </span>
           </div>
           <div className="notify-target-body">
@@ -195,7 +226,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
               onChange={(e) => setEmail(e.target.value)}
             />
             <TargetActions
-              name="E-mail"
+              name={t(CHANNEL_LABEL.email)}
               canRemove={!!data.email.address}
               canTest={configured(data, 'email')}
               busy={clear.isPending}
@@ -206,15 +237,13 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
           {data.email.available && data.email.status !== 'none' && (
             <div className="notify-status">
               {data.email.status === 'verified' ? (
-                <span className="badge ok">Verified</span>
+                <span className="badge ok">{t('notifications.settings.email.verified')}</span>
               ) : (
                 <>
-                  <span className="badge pending">Pending confirmation</span>
-                  <span className="hint">
-                    Nothing is sent to this address until you open the link we e-mailed.
-                  </span>
+                  <span className="badge pending">{t('notifications.settings.email.pending')}</span>
+                  <span className="hint">{t('notifications.settings.email.pendingHint')}</span>
                   <button type="button" disabled={resend.isPending} onClick={() => resend.mutate()}>
-                    Resend confirmation
+                    {t('notifications.settings.email.resend')}
                   </button>
                 </>
               )}
@@ -227,15 +256,15 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
           return (
             <div className="notify-target" key={c}>
               <div className="notify-target-head">
-                <label htmlFor={`notify-${c}`}>{copy.label}</label>
+                <label htmlFor={`notify-${c}`}>{t(copy.label)}</label>
                 <span className="hint">
-                  {view.configured ? (
-                    <>
-                      Set: <code>{view.hint ?? 'hidden'}</code>. Paste a new URL to replace it.
-                    </>
-                  ) : (
-                    copy.hint
-                  )}
+                  {view.configured
+                    ? rich(
+                        'notifications.settings.urlSet',
+                        { code: (c) => <code>{c}</code> },
+                        { hint: view.hint ?? t('notifications.settings.urlHidden') },
+                      )
+                    : t(copy.hint)}
                 </span>
               </div>
               <div className="notify-target-body">
@@ -244,13 +273,15 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
                   type="url"
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder={view.configured ? 'Replace the URL' : copy.placeholder}
+                  placeholder={
+                    view.configured ? t('notifications.settings.replaceUrl') : copy.placeholder
+                  }
                   value={urls[c]}
                   aria-invalid={(badUrl && urls[c].trim() !== '') || undefined}
                   onChange={(e) => setUrls((u) => ({ ...u, [c]: e.target.value }))}
                 />
                 <TargetActions
-                  name={CHANNEL_LABEL[c]}
+                  name={t(CHANNEL_LABEL[c])}
                   canRemove={view.configured}
                   canTest={view.configured}
                   busy={clear.isPending}
@@ -264,12 +295,12 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
         <BrowserTarget data={data} onTest={() => test.mutate('push')} />
         <div className="notify-target">
           <div className="notify-target-head">
-            <span className="notify-label">In the app</span>
-            <span className="hint">The bell in the header. Always available.</span>
+            <span className="notify-label">{t(CHANNEL_LABEL.in_app)}</span>
+            <span className="hint">{t('notifications.settings.inApp.hint')}</span>
           </div>
           <div className="notify-target-body">
             <TargetActions
-              name="In the app"
+              name={t(CHANNEL_LABEL.in_app)}
               canRemove={false}
               canTest
               busy={false}
@@ -280,15 +311,15 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
         </div>
       </div>
 
-      <h3 className="notify-sub">What to send</h3>
+      <h3 className="notify-sub">{t('notifications.settings.whatToSend')}</h3>
       <div className="matrix-wrap">
         <table className="matrix">
           <thead>
             <tr>
-              <th scope="col">Event</th>
+              <th scope="col">{t('notifications.settings.event')}</th>
               {NOTIFICATION_CHANNELS.map((c) => (
                 <th scope="col" key={c} data-off={!configured(data, c) || undefined}>
-                  {CHANNEL_LABEL[c]}
+                  {t(CHANNEL_LABEL[c])}
                 </th>
               ))}
             </tr>
@@ -302,10 +333,10 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
                 <tr key={ev} data-muted={!relevant || undefined}>
                   <th scope="row">
                     <span className="matrix-event">
-                      {meta.label}
-                      {role && <span className="tag">{role}</span>}
+                      {t(meta.label)}
+                      {role && <span className="tag">{t(role)}</span>}
                     </span>
-                    <span className="hint">{meta.description}</span>
+                    <span className="hint">{t(meta.description)}</span>
                   </th>
                   {NOTIFICATION_CHANNELS.map((c) => {
                     const ok = configured(data, c);
@@ -315,8 +346,17 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
                           type="checkbox"
                           checked={ok && (prefs[ev] ?? []).includes(c)}
                           disabled={!ok}
-                          aria-label={`${meta.label} on ${CHANNEL_LABEL[c]}`}
-                          title={ok ? undefined : `${CHANNEL_LABEL[c]} is not set up`}
+                          aria-label={t('notifications.settings.eventOnChannel', {
+                            event: t(meta.label),
+                            channel: t(CHANNEL_LABEL[c]),
+                          })}
+                          title={
+                            ok
+                              ? undefined
+                              : t('notifications.settings.channelNotSetUp', {
+                                  channel: t(CHANNEL_LABEL[c]),
+                                })
+                          }
                           onChange={(e) => toggle(ev, c, e.target.checked)}
                         />
                       </td>
@@ -328,7 +368,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
           </tbody>
         </table>
       </div>
-      <p className="hint">Greyed-out channels need a target above. Save a target to turn it on.</p>
+      <p className="hint">{t('notifications.settings.greyedHint')}</p>
 
       {problem && (
         <p className="error" role="alert">
@@ -337,7 +377,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
       )}
       <div className="card-foot">
         <button type="submit" className="primary" disabled={save.isPending}>
-          Save notification settings
+          {t('notifications.settings.save')}
         </button>
       </div>
     </form>
@@ -348,6 +388,7 @@ type BrowserState = 'checking' | 'unsupported' | 'unavailable' | 'denied' | 'off
 
 /** "Enable browser notifications": subscribes this browser to Web Push, after asking permission. */
 function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTest: () => void }) {
+  const t = useT();
   const toast = useToast();
   const qc = useQueryClient();
   const { available, publicKey, subscriptions } = data.push;
@@ -381,24 +422,26 @@ function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTes
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') {
         setState(permission === 'denied' ? 'denied' : 'off');
-        if (permission !== 'denied') toast('Browser notifications were not enabled', 'info');
+        if (permission !== 'denied') toast(t('notifications.settings.browser.notEnabled'), 'info');
         return;
       }
       const sub = await subscribeBrowser(publicKey);
       const json = sub.toJSON();
       if (!json.endpoint || !json.keys?.p256dh || !json.keys.auth) {
-        throw new Error('The browser returned an incomplete subscription');
+        throw new Error(t('notifications.push.incompleteSubscription'));
       }
       await pushSubscribe({
         endpoint: json.endpoint,
         keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
       });
       setState('on');
-      toast('Browser notifications enabled');
+      toast(t('notifications.settings.browser.enabled'));
       await refresh();
     } catch (e) {
       toast(
-        `Could not enable browser notifications: ${e instanceof Error ? e.message : e}`,
+        t('notifications.settings.browser.enableFailed', {
+          error: e instanceof Error ? e.message : String(e),
+        }),
         'info',
       );
     } finally {
@@ -415,11 +458,13 @@ function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTes
         await sub.unsubscribe();
       }
       setState('off');
-      toast('Browser notifications turned off');
+      toast(t('notifications.settings.browser.disabled'));
       await refresh();
     } catch (e) {
       toast(
-        `Could not turn off browser notifications: ${e instanceof Error ? e.message : e}`,
+        t('notifications.settings.browser.disableFailed', {
+          error: e instanceof Error ? e.message : String(e),
+        }),
         'info',
       );
     } finally {
@@ -428,25 +473,22 @@ function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTes
   };
 
   const hint: Record<BrowserState, string> = {
-    checking: 'Checking this browser...',
-    unsupported:
-      'This browser cannot show notifications. On iPhone and iPad, add orch to the Home Screen first.',
-    unavailable:
-      'This server has no push keys, so browser notifications are unavailable. Ask an admin to set them up.',
-    denied:
-      "Notifications are blocked for this site. Allow them in your browser's site settings, then try again.",
-    off: 'Show a system notification on this device, even when orch is closed.',
+    checking: t('notifications.settings.browser.checking'),
+    unsupported: t('notifications.settings.browser.unsupported'),
+    unavailable: t('notifications.settings.browser.unavailable'),
+    denied: t('notifications.settings.browser.denied'),
+    off: t('notifications.settings.browser.off'),
     on:
       subscriptions > 1
-        ? `This browser is on. ${subscriptions} browsers receive notifications.`
-        : 'This browser receives notifications.',
+        ? t('notifications.settings.browser.onMany', { count: subscriptions })
+        : t('notifications.settings.browser.onOne'),
   };
   const locked = busy || state === 'checking' || state === 'unsupported' || state === 'unavailable';
 
   return (
     <div className="notify-target">
       <div className="notify-target-head">
-        <span className="notify-label">Browser</span>
+        <span className="notify-label">{t(CHANNEL_LABEL.push)}</span>
         <span className="hint" id="notify-browser-hint">
           {hint[state]}
         </span>
@@ -461,10 +503,10 @@ function BrowserTarget({ data, onTest }: { data: NotificationSettingsView; onTes
             aria-describedby="notify-browser-hint"
             onChange={(e) => void (e.target.checked ? enable() : disable())}
           />
-          Enable browser notifications
+          {t('notifications.settings.browser.enable')}
         </label>
         <TargetActions
-          name="Browser"
+          name={t(CHANNEL_LABEL.push)}
           canRemove={false}
           canTest={available && subscriptions > 0}
           busy={busy}
@@ -491,15 +533,16 @@ function TargetActions({
   onRemove: () => void;
   onTest: () => void;
 }) {
+  const t = useT();
   return (
     <span className="notify-actions">
       <button
         type="button"
         disabled={!canTest}
         onClick={onTest}
-        aria-label={`Send test to ${name}`}
+        aria-label={t('notifications.settings.sendTo', { name })}
       >
-        Send test
+        {t('notifications.settings.send')}
       </button>
       {canRemove && (
         <button
@@ -507,9 +550,9 @@ function TargetActions({
           className="ghost"
           disabled={busy}
           onClick={onRemove}
-          aria-label={`Remove ${name}`}
+          aria-label={t('notifications.settings.removeTarget', { name })}
         >
-          Remove
+          {t('notifications.settings.remove')}
         </button>
       )}
     </span>

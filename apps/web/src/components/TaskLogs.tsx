@@ -1,6 +1,7 @@
 import { stripAnsi, type LiveLogLine, type TaskView } from '@orch/shared';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useLiveLog, type LiveLogState } from '../api/liveLog';
+import { useT, type MessageKey } from '../i18n/index.ts';
 import { Modal } from '../ui/Modal';
 import { CopyButton } from './CopyButton';
 
@@ -29,6 +30,7 @@ export function lineText(l: LiveLogLine): string {
 }
 
 function Line({ l }: { l: LiveLogLine }) {
+  const t = useT();
   const text = stripAnsi(l.text);
   return (
     <li className="log-line" data-kind={l.kind} data-error={l.error || undefined}>
@@ -41,23 +43,28 @@ function Line({ l }: { l: LiveLogLine }) {
           {text && <span className="log-args"> {text}</span>}
         </span>
       ) : (
-        <span className="log-body">{text || (l.kind === 'tool_result' ? '(no output)' : '')}</span>
+        <span className="log-body">
+          {text || (l.kind === 'tool_result' ? t('backlog.logs.noOutputLine') : '')}
+        </span>
       )}
     </li>
   );
 }
 
-function statusOf(s: LiveLogState): { label: string; tone: 'ok' | 'pending' | 'stop' | 'off' } {
-  if (s.connection === 'closed') return { label: 'Disconnected', tone: 'stop' };
-  if (s.connection === 'reconnecting') return { label: 'Reconnecting', tone: 'pending' };
-  if (!s.meta || s.connection === 'connecting') return { label: 'Connecting', tone: 'off' };
-  if (s.meta.state === 'live') return { label: 'Live', tone: 'ok' };
-  if (s.meta.state === 'finished') return { label: 'Run ended', tone: 'off' };
-  return { label: 'Waiting for a run', tone: 'off' };
+function statusOf(s: LiveLogState): { label: MessageKey; tone: 'ok' | 'pending' | 'stop' | 'off' } {
+  if (s.connection === 'closed') return { label: 'backlog.logs.disconnected', tone: 'stop' };
+  if (s.connection === 'reconnecting')
+    return { label: 'backlog.logs.reconnecting', tone: 'pending' };
+  if (!s.meta || s.connection === 'connecting')
+    return { label: 'backlog.logs.connecting', tone: 'off' };
+  if (s.meta.state === 'live') return { label: 'backlog.logs.live', tone: 'ok' };
+  if (s.meta.state === 'finished') return { label: 'backlog.logs.runEnded', tone: 'off' };
+  return { label: 'backlog.logs.waiting', tone: 'off' };
 }
 
 /** The log viewer itself: follows the tail until the reader scrolls up. */
 export function TaskLogsPanel({ log }: { log: LiveLogState }) {
+  const t = useT();
   const box = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   /** Id of the last line shown when the reader scrolled up (counts survive the client cap). */
@@ -96,18 +103,21 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
           data-live={status.tone === 'ok' || undefined}
           role="status"
         >
-          {status.label}
+          {t(status.label)}
         </span>
         {meta && meta.truncated > 0 && (
-          <span className="hint">{meta.truncated} earlier lines not kept</span>
+          <span className="hint">{t('backlog.logs.truncated', { count: meta.truncated })}</span>
         )}
         <span className="task-logs-actions">
           {log.connection === 'closed' && (
             <button type="button" onClick={log.reconnect}>
-              Reconnect
+              {t('backlog.logs.reconnect')}
             </button>
           )}
-          <CopyButton text={lines.map(lineText).join('\n') || undefined} label="Copy log" />
+          <CopyButton
+            text={lines.map(lineText).join('\n') || undefined}
+            label={t('backlog.logs.copy')}
+          />
         </span>
       </div>
       <div
@@ -116,14 +126,12 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
         onScroll={onScroll}
         tabIndex={0}
         role="region"
-        aria-label="Task output"
+        aria-label={t('backlog.logs.output')}
         data-testid="log-view"
       >
         {lines.length === 0 ? (
           <p className="log-empty">
-            {meta?.state === 'live'
-              ? 'Claude has not printed anything yet.'
-              : 'No output yet. It appears here while the task runs on a member machine (auto mode), and stays for 30 minutes after the run.'}
+            {meta?.state === 'live' ? t('backlog.logs.liveEmpty') : t('backlog.logs.empty')}
           </p>
         ) : (
           <ol className="log-lines" role="log" aria-live="off">
@@ -135,7 +143,7 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
       </div>
       {!follow && (
         <button type="button" className="log-jump primary" onClick={jump}>
-          {unseen > 0 ? `Jump to latest (${unseen} new)` : 'Jump to latest'}
+          {unseen > 0 ? t('backlog.logs.jumpNew', { count: unseen }) : t('backlog.logs.jump')}
         </button>
       )}
     </div>
@@ -143,11 +151,12 @@ export function TaskLogsPanel({ log }: { log: LiveLogState }) {
 }
 
 function TaskLogsDialog({ task, onClose }: { task: TaskView; onClose: () => void }) {
+  const t = useT();
   const log = useLiveLog(task.id);
   return (
     <Modal
-      label={`Logs of task #${task.issueNumber}`}
-      title={`Logs #${task.issueNumber}`}
+      label={t('backlog.logs.dialogLabel', { number: String(task.issueNumber) })}
+      title={t('backlog.logs.dialogTitle', { number: String(task.issueNumber) })}
       onClose={onClose}
       side
     >
@@ -159,17 +168,18 @@ function TaskLogsDialog({ task, onClose }: { task: TaskView; onClose: () => void
 
 /** "Logs" button for a task card; opens the live log sheet. */
 export function TaskLogsButton({ task }: { task: TaskView }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   return (
     <>
       <button
         type="button"
         className="task-logs-open"
-        aria-label={`Logs of #${task.issueNumber}`}
+        aria-label={t('backlog.logs.openLabel', { number: String(task.issueNumber) })}
         onClick={() => setOpen(true)}
       >
         {task.status === 'IN_PROGRESS' && <span className="lamp" aria-hidden="true" />}
-        Logs
+        {t('backlog.logs.open')}
       </button>
       {open && <TaskLogsDialog task={task} onClose={() => setOpen(false)} />}
     </>

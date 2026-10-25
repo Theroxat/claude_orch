@@ -806,10 +806,49 @@ button.ghost:hover:not(:disabled) {
   border-radius: 999px;
 }
 .gate-tools {
-  position: fixed;
+  position: absolute;
   top: 14px;
   right: 16px;
   z-index: 2;
+}
+.gate:has(> .gate-tools) {
+  position: relative;
+  padding-top: 72px;
+}
+/* The header is tight on phones: Log out becomes an icon (its label stays for screen readers) and
+   the lever shows only the language to switch to. */
+.logout-button .icon {
+  display: none;
+}
+@media (max-width: 720px) {
+  .logout-button {
+    width: 34px;
+    min-height: 34px;
+    padding: 0;
+  }
+  .logout-button .icon {
+    display: inline;
+  }
+  .logout-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .lang-switch {
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .lang-switch .lang-option {
+    min-height: 34px;
+    padding-inline: 7px;
+  }
+  .lang-switch .lang-option[aria-pressed='true'] {
+    display: none;
+  }
 }
 button.big,
 .btn.big {
@@ -1313,6 +1352,12 @@ ul.plain li {
   flex-wrap: wrap;
   gap: 8px;
   margin: -8px 0 16px;
+}
+/* Labels run longer in some languages: let an import button wrap instead of widening the page. */
+.board-tools button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
 }
 .kanban {
   display: grid;

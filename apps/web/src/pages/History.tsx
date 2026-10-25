@@ -3,32 +3,42 @@ import type { FailureClass, HistoryItem, HistoryStatus, TaskUser } from '@orch/s
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { fetchHistory } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { formatDate, formatNumber } from '../i18n/format.ts';
+import { t as tg, useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { Icon } from '../ui/Icon';
 
-const STATUSES: { value: HistoryStatus; label: string }[] = [
-  { value: 'DONE', label: 'Done' },
-  { value: 'IN_REVIEW', label: 'In review' },
-  { value: 'IN_PROGRESS', label: 'In progress' },
-  { value: 'TODO', label: 'Back in queue' },
-  { value: 'CANCELLED', label: 'Cancelled' },
-];
-const STATUS_LABEL = Object.fromEntries(STATUSES.map((s) => [s.value, s.label])) as Record<
-  HistoryStatus,
-  string
->;
+const STATUS_LABEL = {
+  DONE: 'history.status.DONE',
+  IN_REVIEW: 'history.status.IN_REVIEW',
+  IN_PROGRESS: 'history.status.IN_PROGRESS',
+  TODO: 'history.status.TODO',
+  CANCELLED: 'history.status.CANCELLED',
+} as const satisfies Record<HistoryStatus, MessageKey>;
+const STATUSES = (Object.keys(STATUS_LABEL) as HistoryStatus[]).map((value) => ({ value }));
 
 const MODELS = [
   { value: 'SONNET', label: 'Sonnet' },
   { value: 'OPUS', label: 'Opus' },
 ];
 
-const FAILURE_LABEL: Record<FailureClass, string> = {
-  env: 'Repository setup',
-  claude_auth: 'Claude login',
-  rate_limited: 'Rate limit',
-  timeout: 'Timeout',
-  task: 'Task failed',
-};
+const FAILURE_LABEL = {
+  env: 'history.failure.env',
+  claude_auth: 'history.failure.claude_auth',
+  rate_limited: 'history.failure.rate_limited',
+  timeout: 'history.failure.timeout',
+  task: 'history.failure.task',
+} as const satisfies Record<FailureClass, MessageKey>;
+
+const COLUMNS = {
+  status: 'history.columns.status',
+  task: 'history.columns.task',
+  runs: 'history.columns.runs',
+  duration: 'history.columns.duration',
+  tokens: 'history.columns.tokens',
+  people: 'history.columns.people',
+  created: 'history.columns.created',
+} as const satisfies Record<string, MessageKey>;
 
 const LIST_KEYS = ['status', 'project', 'model'] as const;
 const VALUE_KEYS = ['creator', 'executor', 'from', 'to', 'q'] as const;
@@ -73,22 +83,35 @@ export function filtersOf(params: URLSearchParams): URLSearchParams {
 
 export function formatDuration(ms: number | null): string {
   if (ms === null) return '-';
-  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  if (ms < 60_000)
+    return tg('history.duration.seconds', { n: String(Math.max(1, Math.round(ms / 1000))) });
   const m = Math.round(ms / 60_000);
-  if (m < 60) return `${m}m`;
+  if (m < 60) return tg('history.duration.minutes', { n: String(m) });
   const h = Math.floor(m / 60);
-  return m % 60 === 0 ? `${h}h` : `${h}h ${String(m % 60).padStart(2, '0')}m`;
+  return m % 60 === 0
+    ? tg('history.duration.hours', { n: String(h) })
+    : tg('history.duration.hoursMinutes', { h: String(h), m: String(m % 60).padStart(2, '0') });
 }
 
 export function formatTokens(n: number | null): string {
   if (n === null) return '-';
   if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, '')}k`;
-  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1).replace(/\.?0+$/, '')}M`;
+  if (n < 1_000_000) {
+    const k = formatNumber(n / 1000, {
+      maximumFractionDigits: n < 10_000 ? 1 : 0,
+      useGrouping: false,
+    });
+    return tg('history.tokens.thousands', { n: k });
+  }
+  const mil = formatNumber(n / 1_000_000, {
+    maximumFractionDigits: n < 10_000_000 ? 2 : 1,
+    useGrouping: false,
+  });
+  return tg('history.tokens.millions', { n: mil });
 }
 
-const dateFmt = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric' });
-const formatDay = (iso: string) => dateFmt.format(new Date(iso));
+const formatDay = (iso: string) =>
+  formatDate(iso, { day: 'numeric', month: 'short', year: 'numeric' });
 
 function Person({ user }: { user: TaskUser }) {
   return (
@@ -104,62 +127,62 @@ function Person({ user }: { user: TaskUser }) {
 }
 
 function Row({ item, maxDuration }: { item: HistoryItem; maxDuration: number }) {
+  const t = useT();
+  const rich = useRich();
   const share = item.durationMs && maxDuration > 0 ? item.durationMs / maxDuration : 0;
   const same = item.executor?.id === item.createdBy.id;
   return (
     <tr className="history-row" data-status={item.status}>
-      <td className="h-status" data-label="Status">
+      <td className="h-status" data-label={t(COLUMNS.status)}>
         <span className="status-mark">
           <span className="lamp" aria-hidden="true" />
-          {STATUS_LABEL[item.status]}
+          {t(STATUS_LABEL[item.status])}
         </span>
       </td>
-      <td className="h-task" data-label="Task">
+      <td className="h-task" data-label={t(COLUMNS.task)}>
         <span className="h-title">{item.title}</span>
         <span className="h-refs">
           <span className="h-repo">{item.projectFullName}</span>
           <a href={item.issueUrl} target="_blank" rel="noopener noreferrer">
             #{item.issueNumber}
-            <span className="sr-only"> issue on GitHub</span>
+            <span className="sr-only"> {t('history.issueOnGithub')}</span>
           </a>
           {item.prUrl && item.prNumber !== null && (
             <a href={item.prUrl} target="_blank" rel="noopener noreferrer">
               PR #{item.prNumber}
-              <span className="sr-only"> on GitHub</span>
+              <span className="sr-only"> {t('history.prOnGithub')}</span>
             </a>
           )}
           <span className="tag">{item.model === 'OPUS' ? 'opus' : 'sonnet'}</span>
           <span className="tag">{item.size}</span>
         </span>
       </td>
-      <td className="h-runs" data-label="Runs">
-        <span>
-          {item.attempts} {item.attempts === 1 ? 'run' : 'runs'}
-        </span>
+      <td className="h-runs" data-label={t(COLUMNS.runs)}>
+        <span>{t('history.runs', { count: item.attempts })}</span>
         {item.lastFailureClass && (
-          <span className="badge stop" title="Class of the last failed run">
-            {FAILURE_LABEL[item.lastFailureClass]}
+          <span className="badge stop" title={t('history.lastFailureClass')}>
+            {t(FAILURE_LABEL[item.lastFailureClass])}
           </span>
         )}
       </td>
-      <td className="h-time" data-label="Duration">
+      <td className="h-time" data-label={t(COLUMNS.duration)}>
         <span className="num">{formatDuration(item.durationMs)}</span>
         <span className="track" aria-hidden="true">
           <span style={{ width: `${Math.max(share, item.durationMs ? 0.04 : 0) * 100}%` }} />
         </span>
       </td>
-      <td className="h-tokens num" data-label="Tokens">
+      <td className="h-tokens num" data-label={t(COLUMNS.tokens)}>
         {formatTokens(item.tokens)}
       </td>
-      <td className="h-people" data-label="People">
+      <td className="h-people" data-label={t(COLUMNS.people)}>
         <Person user={item.createdBy} />
         {item.executor && !same && (
           <span className="ran-by">
-            ran by <Person user={item.executor} />
+            {rich('history.ranBy', {}, { person: <Person user={item.executor} /> })}
           </span>
         )}
       </td>
-      <td className="h-date" data-label="Created">
+      <td className="h-date" data-label={t(COLUMNS.created)}>
         <time dateTime={item.createdAt}>{formatDay(item.createdAt)}</time>
       </td>
     </tr>
@@ -177,6 +200,8 @@ function SkeletonRows() {
 }
 
 export function History() {
+  const t = useT();
+  const rich = useRich();
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => filtersOf(params), [params]);
   const key = filters.toString();
@@ -276,26 +301,23 @@ export function History() {
     <section className="history">
       <header className="page-head">
         <div>
-          <h1>History</h1>
-          <p className="lede">
-            Every task that has run, in the projects you can see. Filters are kept in the address,
-            so you can share a view.
-          </p>
+          <h1>{t('history.title')}</h1>
+          <p className="lede">{t('history.lede')}</p>
         </div>
       </header>
 
       <form
         className="history-filters"
         role="search"
-        aria-label="Filter task history"
+        aria-label={t('history.filters.label')}
         onSubmit={(e) => e.preventDefault()}
       >
         <label className="field history-search">
-          Search
+          {t('history.filters.search')}
           <input
             type="search"
             value={text}
-            placeholder="Title, issue number or PR number"
+            placeholder={t('history.filters.searchPlaceholder')}
             onChange={(e) => setText(e.target.value)}
           />
         </label>
@@ -306,12 +328,12 @@ export function History() {
           aria-controls="history-more-filters"
           onClick={() => setOpen((o) => !o)}
         >
-          {open ? 'Hide filters' : 'More filters'}
+          {open ? t('history.filters.hide') : t('history.filters.more')}
           {activeCount > 0 && <span className="tag">{activeCount}</span>}
         </button>
         <div id="history-more-filters" className="history-more-filters" data-open={open}>
           <fieldset className="chips">
-            <legend>Status</legend>
+            <legend>{t('history.filters.status')}</legend>
             {STATUSES.map((s) => (
               <button
                 key={s.value}
@@ -322,12 +344,12 @@ export function History() {
                 onClick={() => toggle('status', s.value)}
               >
                 <span className="lamp" aria-hidden="true" />
-                {s.label}
+                {t(STATUS_LABEL[s.value])}
               </button>
             ))}
           </fieldset>
           <fieldset className="chips">
-            <legend>Model</legend>
+            <legend>{t('history.filters.model')}</legend>
             {MODELS.map((m) => (
               <button
                 key={m.value}
@@ -342,7 +364,7 @@ export function History() {
           </fieldset>
           <div className="history-selects">
             <label className="field">
-              Project
+              {t('history.filters.project')}
               <select
                 value={picked('project')[0] ?? ''}
                 onChange={(e) =>
@@ -352,7 +374,7 @@ export function History() {
                   })
                 }
               >
-                <option value="">All projects</option>
+                <option value="">{t('history.filters.allProjects')}</option>
                 {(facets?.projects ?? []).map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.fullName}
@@ -365,12 +387,12 @@ export function History() {
               </select>
             </label>
             <label className="field">
-              Created by
+              {t('history.filters.createdBy')}
               <select
                 value={filters.get('creator') ?? ''}
                 onChange={(e) => setOne('creator', e.target.value)}
               >
-                <option value="">Anyone</option>
+                <option value="">{t('history.filters.anyone')}</option>
                 {withCurrent(peopleOptions, filters.get('creator')).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
@@ -379,12 +401,12 @@ export function History() {
               </select>
             </label>
             <label className="field">
-              Run by
+              {t('history.filters.runBy')}
               <select
                 value={filters.get('executor') ?? ''}
                 onChange={(e) => setOne('executor', e.target.value)}
               >
-                <option value="">Anyone</option>
+                <option value="">{t('history.filters.anyone')}</option>
                 {withCurrent(peopleOptions, filters.get('executor')).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
@@ -393,7 +415,7 @@ export function History() {
               </select>
             </label>
             <label className="field">
-              Created from
+              {t('history.filters.from')}
               <input
                 type="date"
                 value={filters.get('from') ?? ''}
@@ -402,7 +424,7 @@ export function History() {
               />
             </label>
             <label className="field">
-              Created until
+              {t('history.filters.until')}
               <input
                 type="date"
                 value={filters.get('to') ?? ''}
@@ -411,7 +433,7 @@ export function History() {
               />
             </label>
             <button type="button" className="ghost" disabled={!active} onClick={clear}>
-              Clear filters
+              {t('history.filters.clear')}
             </button>
           </div>
         </div>
@@ -419,7 +441,7 @@ export function History() {
 
       <p className="sr-only" role="status" aria-live="polite">
         {query.isSuccess
-          ? `${items.length} ${items.length === 1 ? 'task' : 'tasks'} loaded${hasNextPage ? ', more available' : ''}`
+          ? t(hasNextPage ? 'history.loadedMore' : 'history.loaded', { count: items.length })
           : ''}
       </p>
 
@@ -427,10 +449,14 @@ export function History() {
       {query.isError && (
         <div className="empty" role="alert">
           <p>
-            <strong>The history could not be loaded.</strong> {query.error.message}
+            {rich(
+              'history.loadError',
+              { strong: (c) => <strong>{c}</strong> },
+              { message: errorMessage(query.error) },
+            )}
           </p>
           <button type="button" onClick={() => void query.refetch()}>
-            Try again
+            {t('common.actions.retry')}
           </button>
         </div>
       )}
@@ -438,34 +464,29 @@ export function History() {
         <div className="empty">
           {active ? (
             <>
-              <p>
-                <strong>No task matches these filters.</strong> Widen the dates or remove a filter.
-              </p>
+              <p>{rich('history.noMatch', { strong: (c) => <strong>{c}</strong> })}</p>
               <button type="button" onClick={clear}>
-                Clear filters
+                {t('history.filters.clear')}
               </button>
             </>
           ) : (
-            <p>
-              <strong>Nothing has run yet.</strong> Tasks show up here once a teammate&apos;s agent
-              starts them.
-            </p>
+            <p>{rich('history.empty', { strong: (c) => <strong>{c}</strong> })}</p>
           )}
         </div>
       )}
       {items.length > 0 && (
         <div className="history-scroll" data-stale={query.isPlaceholderData || undefined}>
           <table className="history-table">
-            <caption className="sr-only">Task history, newest first</caption>
+            <caption className="sr-only">{t('history.caption')}</caption>
             <thead>
               <tr>
-                <th scope="col">Status</th>
-                <th scope="col">Task</th>
-                <th scope="col">Runs</th>
-                <th scope="col">Duration</th>
-                <th scope="col">Tokens</th>
-                <th scope="col">People</th>
-                <th scope="col">Created</th>
+                <th scope="col">{t(COLUMNS.status)}</th>
+                <th scope="col">{t(COLUMNS.task)}</th>
+                <th scope="col">{t(COLUMNS.runs)}</th>
+                <th scope="col">{t(COLUMNS.duration)}</th>
+                <th scope="col">{t(COLUMNS.tokens)}</th>
+                <th scope="col">{t(COLUMNS.people)}</th>
+                <th scope="col">{t(COLUMNS.created)}</th>
               </tr>
             </thead>
             <tbody>
@@ -479,18 +500,18 @@ export function History() {
       {hasNextPage && (
         <div className="history-more" ref={sentinel}>
           <button type="button" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
-            {isFetchingNextPage ? 'Loading...' : 'Load more'}
+            {isFetchingNextPage ? t('common.status.loading') : t('common.actions.loadMore')}
           </button>
         </div>
       )}
       {query.isFetchNextPageError && (
         <p className="error" role="alert">
-          {query.error?.message ?? 'More tasks could not be loaded.'}
+          {query.error ? errorMessage(query.error) : t('history.moreError')}
         </p>
       )}
       {query.isSuccess && !hasNextPage && items.length > 0 && (
         <p className="hint history-end">
-          <Icon name="check" /> That is every matching task.
+          <Icon name="check" /> {t('history.end')}
         </p>
       )}
     </section>

@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { mockApi, me, project, renderApp } from '../test/helpers';
+import { mockApi, me, project, renderApp, switchToFrench } from '../test/helpers';
 
 const participant = (status: string, over: object = {}, who = { id: 'u2', login: 'alice' }) => ({
   user: { id: who.id, githubLogin: who.login, name: null, avatarUrl: null },
@@ -219,5 +219,33 @@ describe('My projects', () => {
     expect(
       within(card).getByRole('button', { name: 'Undo rejection of bob: back to pending' }),
     ).toBeTruthy();
+  });
+});
+
+describe('My projects (French)', () => {
+  it('translates the list, the card and the participants', async () => {
+    await switchToFrench();
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /projects/mine': () => ({ json: [project] }),
+      'GET /projects/p1/participants': () => ({
+        json: [
+          participant('pending', {
+            rejectionReason: 'trop occupé',
+            previouslyRejectedAt: '2026-10-01T00:00:00Z',
+          }),
+        ],
+      }),
+    });
+    renderApp('/projects');
+    expect(await screen.findByRole('heading', { name: 'Mes projets' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Ajouter un dépôt' })).toBeTruthy();
+    const card = await screen.findByRole('article', { name: 'octo/repo' });
+    expect(within(card).getByLabelText('Visibilité')).toBeTruthy();
+    expect(within(card).getByLabelText('Qui peut participer')).toBeTruthy();
+    expect(within(card).getByRole('heading', { name: 'Participants en attente' })).toBeTruthy();
+    expect(await within(card).findByText('déjà refusé (trop occupé)')).toBeTruthy();
+    expect(within(card).getByText('30 %')).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Approuver alice' })).toBeTruthy();
   });
 });

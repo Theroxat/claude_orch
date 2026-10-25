@@ -41,7 +41,7 @@ test('access admin: approve/deny/remove, pre-approve, invites, declined list; me
   await page.goto('/admin/access');
   await settle(page);
   await expect(
-    page.getByRole('link', { name: /Access/ }).getByLabel(/pending access requests/),
+    page.getByRole('link', { name: /Access/ }).getByLabel(/pending access requests?/),
   ).toBeVisible();
   const pending = page.getByRole('region', { name: 'Pending requests' });
   await pending

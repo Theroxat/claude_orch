@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentView } from '@orch/shared';
 import { updateAgent } from '../api/endpoints';
+import { t, useT } from '../i18n/index.ts';
+import { errorMessage } from '../i18n/errors.ts';
 
 export const AGENTS_KEY = ['agents', 'mine'];
 
@@ -14,17 +16,19 @@ export function updateStatusText(a: AgentView): string | null {
   if (!u) return null;
   switch (u.status) {
     case 'pending':
-      return 'Update requested';
+      return t('server.update.requested');
     case 'deferred':
-      return 'Waiting for running tasks to finish';
+      return t('server.update.deferred');
     case 'pulling':
-      return `Downloading v${u.targetVersion}`;
+      return t('server.update.pulling', { version: u.targetVersion });
     case 'restarting':
-      return 'Restarting...';
+      return t('server.update.restarting');
     case 'failed':
-      return `Update failed: ${u.detail ?? u.code ?? 'unknown error'}`;
+      return t('server.update.failed', {
+        detail: u.detail ?? u.code ?? t('server.update.unknownError'),
+      });
     case 'done':
-      return 'Updated';
+      return t('server.update.done');
     default:
       return null;
   }
@@ -43,6 +47,7 @@ export function useAgentUpdate() {
 
 /** Status line and actions (Update now / Update when idle) for one agent. */
 export function AgentUpdateActions({ agent }: { agent: AgentView }) {
+  const t = useT();
   const m = useAgentUpdate();
   const inProgress = updateInProgress(agent);
   const status = updateStatusText(agent);
@@ -55,7 +60,7 @@ export function AgentUpdateActions({ agent }: { agent: AgentView }) {
         <p
           className={agent.update?.status === 'failed' ? 'error' : 'hint'}
           role="status"
-          aria-label={`Update status ${agent.machineName}`}
+          aria-label={t('server.update.statusLabel', { machine: agent.machineName })}
         >
           {status}
         </p>
@@ -66,42 +71,44 @@ export function AgentUpdateActions({ agent }: { agent: AgentView }) {
             <button
               className="primary"
               disabled={disabled}
-              aria-label={`Update now ${agent.machineName}`}
+              aria-label={t('server.update.nowLabel', { machine: agent.machineName })}
               onClick={() => run(false)}
             >
-              Update now
+              {t('server.update.now')}
             </button>
             {busyFail && (
               <button
                 disabled={disabled}
-                aria-label={`Update when idle ${agent.machineName}`}
+                aria-label={t('server.update.whenIdleLabel', { machine: agent.machineName })}
                 onClick={() => run(true)}
               >
-                Update when idle
+                {t('server.update.whenIdle')}
               </button>
             )}
           </div>
         ) : (
-          <p className="hint">
-            Your agent is offline or too old for one-click update; update it manually
-          </p>
+          <p className="hint">{t('server.update.manual')}</p>
         ))}
-      {m.error && <p className="error">{m.error.message}</p>}
+      {m.error && <p className="error">{errorMessage(m.error)}</p>}
     </div>
   );
 }
 
 /** Per-agent version line for the My Server card. Nothing extra for dev versions. */
 export function AgentUpdateState({ agent }: { agent: AgentView }) {
+  const t = useT();
   const upToDate = !agent.updateAvailable && !!agent.latestAgentVersion && !!agent.version;
   return (
     <>
       {agent.updateAvailable && (
         <p className="hint">
-          v{agent.version ?? '?'} · update available: v{agent.latestAgentVersion}
+          {t('server.update.available', {
+            version: agent.version ?? '?',
+            latest: agent.latestAgentVersion ?? '',
+          })}
         </p>
       )}
-      {upToDate && !agent.update && <p className="hint">Up to date</p>}
+      {upToDate && !agent.update && <p className="hint">{t('server.update.upToDate')}</p>}
       {(agent.updateAvailable || agent.update) && <AgentUpdateActions agent={agent} />}
     </>
   );
