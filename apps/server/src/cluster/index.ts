@@ -82,6 +82,8 @@ export class Cluster {
       log,
       metrics,
       hasPeers: () => this.peers.size > 0,
+      secret: config.ORCH_ENCRYPTION_KEY,
+      cluster: this.name,
     });
     this.link = new ClusterLink({
       url: config.DATABASE_URL,
@@ -152,6 +154,11 @@ export class Cluster {
     } catch (err) {
       // The database is unreachable: start anyway, the heartbeat retries (and /readyz says 503).
       log.warn({ err }, 'cluster: instance registration failed');
+    }
+    if (!config.ORCH_ENCRYPTION_KEY) {
+      log.warn(
+        'cluster: ORCH_ENCRYPTION_KEY is not set: messages between instances are not authenticated',
+      );
     }
     await this.link.start();
     await this.refreshPeers().catch((err) => log.warn({ err }, 'cluster: peer list load'));

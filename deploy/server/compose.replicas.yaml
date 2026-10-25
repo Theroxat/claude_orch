@@ -15,5 +15,5 @@ services:
 
   caddy:
     volumes:
-      # Same routes, with a load balancer over every replica of `server`.
-      - ./routes.replicas.caddy:/etc/caddy/routes.caddy:ro
+      # Same routes (routes.caddy), with a load balancer over every replica of `server`.
+      - ./upstream.replicas.caddy:/etc/caddy/upstream.caddy:ro

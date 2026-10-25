@@ -73,6 +73,32 @@ export class Leadership {
     return this.leases.get(name)?.held === true;
   }
 
+  /**
+   * Fencing before a leader acts: true only after the database confirmed, just now, that this
+   * instance's connection still holds the lease. Between two periodic checks the lock may be gone
+   * (backend terminated, connection half-open and killed by Postgres' keepalives, an unlock):
+   * a check that fails or comes back without the lock steps down at once, so the leader never
+   * starts a round of work on a lease another instance may already hold.
+   */
+  async confirm(name: LeaseName): Promise<boolean> {
+    const lease = this.leases.get(name);
+    if (!lease?.held || this.stopped) return false;
+    try {
+      const [row] = await this.o.link.query<{ ok: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted
+              AND classid = $1::int::oid AND objid = $2::int::oid AND objsubid = 2) AS ok`,
+        [this.o.lockClass, LEASES[name]],
+      );
+      if (row?.ok === true) return lease.held;
+      this.setHeld(lease, false, 'lost', 'fencing check');
+    } catch (err) {
+      this.o.log.warn({ err }, 'cluster: leadership check failed');
+      this.loseAll('check failed');
+    }
+    return false;
+  }
+
   /** Releases every lease (another instance takes over within its retry delay). */
   async stop(): Promise<void> {
     this.stopped = true;

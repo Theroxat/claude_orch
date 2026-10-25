@@ -23,3 +23,4 @@ FROM caddy:2-alpine
 COPY --from=build /repo/apps/web/dist /srv
 COPY deploy/server/Caddyfile.acme /etc/caddy/Caddyfile
 COPY deploy/server/routes.caddy /etc/caddy/routes.caddy
+COPY deploy/server/upstream.caddy /etc/caddy/upstream.caddy

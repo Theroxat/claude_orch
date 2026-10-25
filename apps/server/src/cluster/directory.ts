@@ -134,6 +134,13 @@ export class AgentDirectory {
       next.set(p.agentId, p);
     }
     this.remote = next;
+    // A newer socket of an agent elsewhere whose `presence.up` this instance missed (messages are
+    // at most once): close the older local one, as applyUp would have, so the agent never stays
+    // connected twice with offers and messages split between two sockets.
+    for (const p of next.values()) {
+      const mine = this.local?.localSince(p.agentId);
+      if (mine !== undefined && mine < p.connectedAt) this.local?.supersede(p.agentId);
+    }
   }
 
   /** Forgets every agent of an instance that left. */

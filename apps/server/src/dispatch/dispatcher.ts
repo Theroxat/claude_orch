@@ -284,6 +284,10 @@ export class Dispatcher {
 
   private async runTick(now: Date): Promise<void> {
     if (this.stopped) return;
+    const cluster = this.deps.cluster;
+    // Fenced: a tick queued before the leadership was lost, or on a lock lost since the last
+    // periodic check, does nothing (another instance may be dispatching).
+    if (cluster && !(this.leading && (await cluster.leadership.confirm('dispatcher')))) return;
     const stop = this.deps.metrics?.dispatcherTick.startTimer();
     try {
       await this.expireOffers(now);

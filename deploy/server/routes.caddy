@@ -1,5 +1,9 @@
 # Shared by Caddyfile.acme and Caddyfile.tunnel: compression, security headers and routes.
 # Imported inside a site block. HSTS is not here: acme sends it, tunnel leaves it to Cloudflare.
+#
+# Every proxied route imports upstream.caddy: the single `server` container by default, every
+# replica with compose.replicas.yaml (which mounts upstream.replicas.caddy in its place). The
+# routes themselves exist once, so the two setups cannot drift apart.
 encode zstd gzip
 
 header {
@@ -10,7 +14,7 @@ header {
 	-Server
 }
 
-# Operations endpoints are never public: Prometheus scrapes server:3000/metrics on the internal
+# Operations endpoints are never public: Prometheus scrapes the server's /metrics on the internal
 # Docker network (deploy/observability). This stays first, whatever METRICS_ENABLED says.
 @internal path /metrics /metrics/* /readyz /api/metrics /api/readyz
 handle @internal {
@@ -24,37 +28,50 @@ header @revalidate Cache-Control "no-cache"
 
 # GitHub webhook, REST API, GitHub sign-in. Real-time agent link (WebSocket) is proxied as-is.
 handle /api/* {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 # MCP (Streamable HTTP / SSE): do not buffer the stream.
 handle /mcp {
-	reverse_proxy server:3000 {
+	reverse_proxy {
+		import upstream.caddy
 		flush_interval -1
 	}
 }
 
 # Member machines: /agent/ws (WebSocket), /agent/enroll, /agent/compose.yaml.
 handle /agent/* {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 # MCP OAuth discovery (RFC 9728 / RFC 8414). The OAuth endpoints live under /api/oauth/*.
 handle /.well-known/oauth-* {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 # Invite links (/invite/<token>) are answered by the server, not the single-page app.
 handle /invite/* {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 handle /install.sh {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 handle /healthz {
-	reverse_proxy server:3000
+	reverse_proxy {
+		import upstream.caddy
+	}
 }
 
 # The Web Push worker is re-fetched when a browser checks for updates: never serve a stale copy.

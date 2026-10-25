@@ -17,7 +17,9 @@ import {
   type ServerMessage,
   type TaskView,
 } from '@orch/shared';
+import pg from 'pg';
 import { encrypt } from '../src/auth/crypto';
+import { channelOf, lockClassOf } from '../src/cluster';
 import { SharedCounter, SharedRateLimiter } from '../src/http/shared-limit';
 import { LiveLogStore } from '../src/logs/store';
 import type { PostResult } from '../src/notifications/ssrf';
@@ -33,17 +35,22 @@ const poster = (via: string) =>
     return { ok: true, status: 200 };
   });
 
-function instance(id: string): FastifyInstance {
+function instance(
+  id: string,
+  cluster = CLUSTER,
+  env: Record<string, string> = {},
+): FastifyInstance {
   return makeApp(gh, {
     env: {
       ORCH_ENCRYPTION_KEY: KEY,
-      ORCH_CLUSTER_NAME: CLUSTER,
-      ORCH_INSTANCE_ID: `${CLUSTER}-${id}`,
+      ORCH_CLUSTER_NAME: cluster,
+      ORCH_INSTANCE_ID: `${cluster}-${id}`,
       ORCH_LEADER_RETRY_MS: '100',
       ORCH_INSTANCE_HEARTBEAT_MS: '300',
       DISPATCHER_ENABLED: 'true',
       DISPATCHER_INTERVAL_MS: '3600000',
       NOTIFY_QUEUE_POLL_MS: '50',
+      ...env,
     },
     notify: { post: poster(id) },
   });
@@ -136,7 +143,28 @@ async function onlineAgent(user: TestUser, via: FastifyInstance, on: FastifyInst
     }),
   );
   await client.next('welcome');
-  return { agentId: enr.agentId, client };
+  return { agentId: enr.agentId, credential: enr.credential, client, ws };
+}
+
+/** Opens a second socket for an already enrolled agent on `on` and says hello. */
+async function reconnect(credential: string, on: FastifyInstance) {
+  const ws = new WebSocket(`ws://${hostOf(on)}/agent/ws`, {
+    headers: { authorization: `Bearer ${credential}` },
+  });
+  sockets.push(ws);
+  const client = new Client(ws);
+  await new Promise((r) => ws.once('open', r));
+  client.send(
+    agentMessage('hello', {
+      agentVersion: '0.9.0',
+      capabilities: ['auto', 'manual'],
+      localPaused: false,
+      maxConcurrent: 1,
+      running: [],
+    }),
+  );
+  await client.next('welcome');
+  return { client, ws };
 }
 
 /** Opens the SSE stream of a task on one instance and collects the line texts. */
@@ -399,6 +427,163 @@ describe('two instances, one database', () => {
     await until(() => a.dispatcher.isLeader && a.cluster.leads('maintenance'));
     await until(() => !a.agentGateway.isConnected(agent.agentId));
     expect(await prisma.agentConnection.count({ where: { agentId: agent.agentId } })).toBe(0);
+  });
+});
+
+describe('two instances: hardening', () => {
+  // Their own cluster: the suite above shut its instances down. The periodic leader check is slow
+  // here, so only the fencing check can notice a lost lock in time.
+  const C2 = `h${uid()}`.slice(0, 40);
+  let c: FastifyInstance;
+  let d: FastifyInstance;
+  let user: TestUser;
+  let agent: Awaited<ReturnType<typeof onlineAgent>>;
+
+  beforeAll(async () => {
+    c = instance('c', C2, { ORCH_LEADER_RETRY_MS: '60000' });
+    await c.listen({ port: 0, host: '127.0.0.1' });
+    d = instance('d', C2, { ORCH_LEADER_RETRY_MS: '60000' });
+    await d.listen({ port: 0, host: '127.0.0.1' });
+    await until(() => c.cluster.hasPeers() && d.cluster.hasPeers());
+    user = await loginAs(c, gh);
+    agent = await onlineAgent(user, c, d);
+    await until(() => c.agentGateway.isConnected(agent.agentId));
+  });
+  afterAll(async () => {
+    await c?.close();
+    await d?.close();
+  });
+
+  it('drops forged, malformed and replayed messages on the cluster channel', async () => {
+    const url = process.env.DATABASE_URL_TEST!;
+    const spy = new pg.Client({ connectionString: url });
+    await spy.connect();
+    const seen: string[] = [];
+    spy.on('notification', (n) => seen.push(n.payload ?? ''));
+    await spy.query(`LISTEN ${channelOf(C2)}`);
+    try {
+      const channel = channelOf(C2);
+      const forged = JSON.stringify({
+        f: `${C2}-c`,
+        t: `${C2}-d`,
+        k: 'agent.disconnect',
+        d: { agentId: agent.agentId, code: 4000, reason: 'forged' },
+        ts: Date.now(),
+      });
+      // Any database role may NOTIFY: none of this may crash an instance or reach the agent.
+      for (const payload of ['null', '1', '"x"', '{}', forged, '1AAAA', `1${'A'.repeat(80)}`]) {
+        await prisma.$executeRaw`SELECT pg_notify(${channel}, ${payload})`;
+      }
+      // A genuine relayed message, captured by the spy...
+      const probe = serverMessage('task.cancel', { assignmentId: 'asg_secret_probe', reason: 'p' });
+      expect(c.agentGateway.sendTo(agent.agentId, probe)).toBe(true);
+      await agent.client.next('task.cancel', (m) => m.payload.assignmentId === 'asg_secret_probe');
+      await until(() => seen.some((p) => p.startsWith('1') && p.length > 100));
+      // ...is unreadable without the cluster key...
+      expect(seen.join('\n')).not.toContain('asg_secret_probe');
+      // ...and replaying it does nothing.
+      for (const payload of [...seen]) {
+        await prisma.$executeRaw`SELECT pg_notify(${channel}, ${payload})`;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      const probes = agent.client.msgs.filter(
+        (m) => m.type === 'task.cancel' && m.payload.assignmentId === 'asg_secret_probe',
+      );
+      expect(probes).toHaveLength(1);
+      expect(agent.ws.readyState).toBe(WebSocket.OPEN);
+      expect(d.agentGateway.isConnected(agent.agentId)).toBe(true);
+    } finally {
+      await spy.end();
+    }
+  });
+
+  it('closes an older local socket when the directory shows a newer one elsewhere', async () => {
+    // D misses C's `presence.up` (messages are at most once): only its reload can repair.
+    const handlers = (d.cluster.bus as unknown as { handlers: Map<string, unknown> }).handlers;
+    const original = handlers.get('presence.up');
+    handlers.set('presence.up', () => undefined);
+    try {
+      const closed = new Promise<number>((r) => agent.ws.once('close', (code) => r(code)));
+      const second = await reconnect(agent.credential, c);
+      await until(
+        async () =>
+          (
+            await prisma.agentConnection.findUnique({
+              where: { agentId: agent.agentId },
+            })
+          )?.instanceId === `${C2}-c`,
+      );
+      await d.cluster.directory.refresh();
+      expect(await closed).toBe(4001); // SUPERSEDED
+      await until(() => d.agentGateway.isConnected(agent.agentId)); // now known as remote, on C
+      agent = { ...agent, client: second.client, ws: second.ws };
+    } finally {
+      handlers.set('presence.up', original);
+    }
+  });
+
+  it('fences dispatcher ticks on a lock lost since the last periodic check', async () => {
+    const leader = c.dispatcher.isLeader ? c : d;
+    expect(leader.dispatcher.isLeader).toBe(true);
+    // The lock is gone server-side (as when Postgres killed a half-open backend) while the
+    // instance still believes it leads.
+    await leader.cluster.link.query('SELECT pg_advisory_unlock($1::int, 1)', [lockClassOf(C2)]);
+    expect(leader.dispatcher.isLeader).toBe(true);
+    const work = vi.spyOn(
+      leader.dispatcher as unknown as { expireOffers: () => Promise<void> },
+      'expireOffers',
+    );
+    await leader.dispatcher.tick();
+    expect(work).not.toHaveBeenCalled();
+    expect(leader.dispatcher.isLeader).toBe(false);
+    work.mockRestore();
+  });
+
+  it('never lets a stale delivery attempt delete or reschedule a job claimed again', async () => {
+    await prisma.notificationSettings.create({
+      data: {
+        userId: user.userId,
+        webhookUrlEnc: encrypt('https://hooks.example.com/stale', KEY),
+        webhookHint: 'hooks.example.com',
+      },
+    });
+    const payload = {
+      id: 'stale-job',
+      event: 'task_done',
+      title: 'Stale',
+      body: 'body',
+      url: null,
+      link: null,
+      projectId: null,
+      taskId: null,
+      createdAt: new Date().toISOString(),
+    };
+    // Another worker re-claimed it (attempt 2) after this one's lock expired (attempt 1).
+    const row = await prisma.notificationJob.create({
+      data: {
+        userId: user.userId,
+        channel: 'webhook',
+        payload,
+        status: 'SENDING',
+        attempts: 2,
+        lockedUntil: new Date(Date.now() + 120_000),
+        instanceId: 'the-other-worker',
+      },
+    });
+    const deliver = (c.notifier as unknown as { deliver(j: unknown): Promise<void> }).deliver.bind(
+      c.notifier,
+    );
+    await deliver({
+      id: row.id,
+      userId: user.userId,
+      channel: 'webhook',
+      endpoint: null,
+      payload,
+      attempts: 1,
+    });
+    const after = await prisma.notificationJob.findUnique({ where: { id: row.id } });
+    expect(after).toMatchObject({ status: 'SENDING', attempts: 2, instanceId: 'the-other-worker' });
+    await prisma.notificationJob.delete({ where: { id: row.id } });
   });
 });
 

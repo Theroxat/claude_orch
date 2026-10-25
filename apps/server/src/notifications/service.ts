@@ -180,12 +180,25 @@ export class Notifier {
     this.wake(); // jobs left by a previous run
   }
 
-  /** Stops listening and polling (in-flight attempts finish; queued jobs stay in the database). */
-  stop(): void {
+  /**
+   * Stops listening and polling; queued jobs stay in the database. Resolves once the deliveries
+   * in flight are done and booked (bounded by the 10 s send timeout): a job left SENDING would be
+   * sent again by another instance once its lock expires.
+   */
+  async stop(): Promise<void> {
     this.closed = true;
     this.unsubscribe?.();
     clearInterval(this.purgeTimer);
     clearTimeout(this.pollTimer);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.inflight]),
+      new Promise((r) => {
+        timer = setTimeout(r, 15_000);
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   /**
@@ -348,6 +361,10 @@ export class Notifier {
     const raw = job.payload as unknown as OutgoingNotification & { createdAt: string };
     const n: OutgoingNotification = { ...raw, createdAt: new Date(raw.createdAt) };
     const channel = job.channel as ExternalChannel;
+    // Fenced bookkeeping: once this claim's lock expired, another worker may have claimed the job
+    // again (attempts + 1). This attempt then neither deletes nor reschedules it: the current
+    // claim owns the row.
+    const mine = { id: job.id, status: 'SENDING' as const, attempts: job.attempts };
     try {
       let target = job.endpoint;
       if (channel !== 'push') {
@@ -356,7 +373,7 @@ export class Notifier {
       }
       if (!target) throw new DeliveryError('not_configured', false); // removed meanwhile
       await this.send(channel, target, n);
-      await prisma.notificationJob.delete({ where: { id: job.id } });
+      await prisma.notificationJob.deleteMany({ where: mine });
       metrics?.notificationJobs.inc({ channel, result: 'sent' });
     } catch (err) {
       const retryable = !(err instanceof DeliveryError) || err.retryable;
@@ -365,8 +382,8 @@ export class Notifier {
       if (retryable && job.attempts < config.NOTIFY_MAX_ATTEMPTS) {
         const next = config.NOTIFY_RETRY_BASE_MS * 4 ** (job.attempts - 1);
         log.info({ ...ctx, retryInMs: next }, 'notification delivery failed, retrying');
-        await prisma.notificationJob.update({
-          where: { id: job.id },
+        await prisma.notificationJob.updateMany({
+          where: mine,
           data: {
             status: 'PENDING',
             nextAttemptAt: new Date(Date.now() + next),
@@ -378,8 +395,8 @@ export class Notifier {
       } else {
         // Never log the target: webhook URLs are secrets.
         log.warn(ctx, 'notification delivery failed');
-        await prisma.notificationJob.update({
-          where: { id: job.id },
+        await prisma.notificationJob.updateMany({
+          where: mine,
           data: { status: 'FAILED', lockedUntil: null, lastError: reason },
         });
         metrics?.notificationJobs.inc({ channel, result: 'failed' });
