@@ -4,10 +4,19 @@ import rateLimit from '@fastify/rate-limit';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from '../config';
 import { HttpError } from './errors';
+import { hybridRateLimitStore, type SharedCounter } from './shared-limit';
 
 /**
- * HTTP rate limiting (in-memory store: orch runs as a single server instance, so no shared
- * store is needed; limits reset on restart).
+ * HTTP rate limiting.
+ *
+ * Where the counters live (several instances behind a load balancer):
+ * - `auth` and `agent-connect`: in Postgres, shared by every instance. They stop brute force and
+ *   enrollment or sign-in floods, so the limit must hold for the whole deployment; these routes
+ *   are rare and already hit the database, so one more upsert costs nothing that matters.
+ * - every other tier: in this process. They protect a process from load (a client flooding the
+ *   API, a reconnect storm), which is per instance by nature; a client spread over N instances
+ *   gets at most N times the limit. The hot path (every API request) stays free of extra queries.
+ * Without a database (`counter` absent) everything is in-process.
  *
  * Every route falls in exactly one tier. Counters are per tier and per key:
  * - `api`: everything else, keyed by the signed-in user, else by client IP.
@@ -90,11 +99,20 @@ export function rateLimitKey(req: FastifyRequest): string {
   return `${tier}:${subject}`;
 }
 
+/** Tiers whose counters are shared by every instance (see the header). */
+export const SHARED_TIERS: ReadonlySet<Tier> = new Set<Tier>(['auth', 'agent-connect']);
+
+const isSharedKey = (key: string) => SHARED_TIERS.has(key.slice(0, key.indexOf(':')) as Tier);
+
 /**
  * Call right after the session lookup hook is registered (so req.user is known) and before the
  * other plugins/scopes are registered (they inherit the hook).
  */
-export function registerRateLimit(app: FastifyInstance, config: Config): void {
+export function registerRateLimit(
+  app: FastifyInstance,
+  config: Config,
+  counter?: SharedCounter,
+): void {
   if (!config.RATE_LIMIT_ENABLED) {
     app.log.warn('RATE_LIMIT_ENABLED=false: HTTP rate limiting is off');
     return;
@@ -115,8 +133,9 @@ export function registerRateLimit(app: FastifyInstance, config: Config): void {
       return t === 'exempt' ? Number.MAX_SAFE_INTEGER : max[t];
     },
     timeWindow: config.RATE_LIMIT_WINDOW_SEC * 1000,
-    // Bounded store (LRU): entries expire with the window and the oldest are evicted past this.
-    cache: 20_000,
+    // Bounded in-process store (entries expire with the window, the oldest are evicted past
+    // 20 000 keys); shared tiers in Postgres when a database is configured.
+    ...(counter ? { store: hybridRateLimitStore(counter, isSharedKey) } : { cache: 20_000 }),
     keyGenerator: rateLimitKey,
     allowList: (req: FastifyRequest) => tierOf(req) === 'exempt',
     // IETF draft headers: RateLimit-Limit / -Remaining / -Reset, plus Retry-After on 429.

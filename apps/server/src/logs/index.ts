@@ -13,9 +13,11 @@ import type { LiveLogLine, LiveLogMeta } from '@orch/shared';
 import { requireUser, type AuthDeps } from '../auth';
 import { HttpError } from '../http/errors';
 import { TaskService } from '../tasks/service';
+import type { LiveLogRelay } from './relay';
 import type { LiveLogEvent, LiveLogStore } from './store';
 
 export { LiveLogStore } from './store';
+export { LiveLogRelay } from './relay';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -45,7 +47,13 @@ function resumePoint(header: unknown, query: unknown): number {
 
 export function registerLiveLogs(
   app: FastifyInstance,
-  deps: AuthDeps & { liveLogs: LiveLogStore; streamMaxMs?: number; maxQueuedBytes?: number },
+  deps: AuthDeps & {
+    liveLogs: LiveLogStore;
+    /** Several instances: mirrors the runs owned by other instances while they are viewed. */
+    relay?: LiveLogRelay;
+    streamMaxMs?: number;
+    maxQueuedBytes?: number;
+  },
 ): void {
   const svc = new TaskService(deps);
   const store = deps.liveLogs;
@@ -69,6 +77,16 @@ export function registerLiveLogs(
       throw new HttpError(429, 'too_many_streams', 'Too many open log streams');
     }
     open.set(user.id, count + 1);
+    // The run may live on another instance: get its current state into the local store first.
+    const release = deps.relay ? await deps.relay.watch(task.id) : undefined;
+    if (release && req.raw.socket.destroyed) {
+      // The browser left while we waited: nothing to stream.
+      release();
+      const n = (open.get(user.id) ?? 1) - 1;
+      if (n <= 0) open.delete(user.id);
+      else open.set(user.id, n);
+      return reply.hijack();
+    }
     let after = resumePoint(
       req.headers['last-event-id'],
       (req.query as Record<string, unknown> | undefined)?.after,
@@ -119,6 +137,7 @@ export function registerLiveLogs(
       clearInterval(ping);
       clearTimeout(lifetime);
       unsubscribe();
+      release?.();
       const n = (open.get(user.id) ?? 1) - 1;
       if (n <= 0) open.delete(user.id);
       else open.set(user.id, n);

@@ -1,0 +1,64 @@
+# Same routes as routes.caddy, for several server replicas (compose.replicas.yaml mounts it in
+# place of routes.caddy). Keep both files in sync: only the upstream blocks differ.
+#
+# The upstreams are the A records of the `server` service (one per replica, re-read every 5 s),
+# balanced per request. No sticky sessions: every replica answers every route, and an agent's
+# WebSocket may land on any replica (the replicas relay messages to each other, see
+# docs/installation.md "Running several server instances").
+encode zstd gzip
+
+header {
+	X-Content-Type-Options "nosniff"
+	Referrer-Policy "strict-origin-when-cross-origin"
+	X-Frame-Options "DENY"
+	Content-Security-Policy "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com"
+	-Server
+}
+
+# Operations endpoints are never public: Prometheus scrapes each replica on the internal Docker
+# network (deploy/observability). This stays first, whatever METRICS_ENABLED says.
+@internal path /metrics /metrics/* /readyz /api/metrics /api/readyz
+handle @internal {
+	respond 404
+}
+
+@revalidate path /sw.js /push-sw.js /manifest.webmanifest /offline.html
+header @revalidate Cache-Control "no-cache"
+
+# MCP (Streamable HTTP / SSE): do not buffer the stream.
+handle /mcp {
+	reverse_proxy {
+		dynamic a server 3000 {
+			refresh 5s
+		}
+		lb_policy least_conn
+		# A replica that is restarting is skipped: the request is retried on another one.
+		lb_try_duration 5s
+		fail_duration 10s
+		flush_interval -1
+	}
+}
+
+# REST API, GitHub webhook and sign-in, agent link (WebSocket), MCP OAuth discovery, invite
+# links, install script, liveness.
+@server path /api/* /agent/* /.well-known/oauth-* /invite/* /install.sh /healthz
+handle @server {
+	reverse_proxy {
+		dynamic a server 3000 {
+			refresh 5s
+		}
+		lb_policy least_conn
+		lb_try_duration 5s
+		fail_duration 10s
+	}
+}
+
+@pushsw path /push-sw.js
+header @pushsw Cache-Control "no-cache"
+
+# The single-page app, built at image build time.
+handle {
+	root * /srv
+	try_files {path} /index.html
+	file_server
+}

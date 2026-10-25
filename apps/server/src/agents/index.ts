@@ -55,6 +55,7 @@ export function createAgentGateway(
     log: app.log,
     github: deps.github,
     metrics: deps.metrics,
+    cluster: deps.cluster,
     // `app.allowlist` is registered later (registerAuth): resolved at call time.
     // `reauth` (GitHub token gone past the outage grace period) is a denial too.
     isAllowed: async (user) => (await app.allowlist.check(user)) === 'allowed',

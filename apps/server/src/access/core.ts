@@ -84,25 +84,3 @@ export async function useInvite(prisma: PrismaClient, inviteId: string): Promise
   });
   return res.count === 1;
 }
-
-/** Fixed-window in-memory rate limit. */
-export class RateLimiter {
-  private hits = new Map<string, { n: number; start: number }>();
-  constructor(
-    private readonly max: number,
-    private readonly windowMs: number,
-  ) {}
-  allow(key: string): boolean {
-    const now = Date.now();
-    if (this.hits.size > 10_000) {
-      for (const [k, v] of this.hits) if (now - v.start >= this.windowMs) this.hits.delete(k);
-    }
-    const h = this.hits.get(key);
-    if (!h || now - h.start >= this.windowMs) {
-      this.hits.set(key, { n: 1, start: now });
-      return true;
-    }
-    h.n++;
-    return h.n <= this.max;
-  }
-}

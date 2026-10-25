@@ -1,0 +1,19 @@
+# Several server instances behind Caddy (see docs/installation.md "Running several server
+# instances"). Use it on top of compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.replicas.yaml up -d
+#
+# The replicas share Postgres and nothing else: they elect one leader (dispatcher, retention
+# jobs) with advisory locks and relay agent messages and live logs to each other with
+# LISTEN/NOTIFY. Each one needs a unique ORCH_INSTANCE_ID; the default (the hostname, i.e. the
+# container id) is unique per replica. No sticky sessions: any replica serves any request,
+# WebSockets included.
+services:
+  server:
+    deploy:
+      replicas: ${ORCH_SERVER_REPLICAS:-2}
+
+  caddy:
+    volumes:
+      # Same routes, with a load balancer over every replica of `server`.
+      - ./routes.replicas.caddy:/etc/caddy/routes.caddy:ro

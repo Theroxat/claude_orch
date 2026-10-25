@@ -144,6 +144,7 @@ model User {
   notifications    Notification[]
   notificationSettings NotificationSettings?
   pushSubscriptions PushSubscription[]
+  notificationJobs NotificationJob[]
 }
 
 model Session {
@@ -302,6 +303,7 @@ model Agent {
   seen          AgentMessageSeen[]
   assignedTasks Task[]
   assignments   Assignment[]
+  connection    AgentConnection?
 
   @@index([userId])
 }
@@ -710,4 +712,92 @@ model PushSubscription {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// ---------- Multi-instance (see docs/installation.md "Running several server instances") ----------
+
+/// A running server process. Each instance refreshes `heartbeatAt` every ORCH_INSTANCE_HEARTBEAT_MS;
+/// one silent for 3 heartbeats is considered gone (its agent connections are ignored, then purged).
+model ServerInstance {
+  id          String   @id // ORCH_INSTANCE_ID (default: hostname)
+  /// ORCH_CLUSTER_NAME: instances only cooperate with the ones of the same cluster.
+  cluster     String   @default("orch")
+  version     String?
+  startedAt   DateTime @default(now()) @db.Timestamptz(3)
+  heartbeatAt DateTime @default(now()) @db.Timestamptz(3)
+
+  connections AgentConnection[]
+
+  @@index([cluster, heartbeatAt])
+}
+
+/// Which instance holds an agent's live WebSocket (one row per helloed agent). Lets every instance
+/// know who is online and where to route a message for that agent.
+model AgentConnection {
+  agentId       String   @id
+  userId        String
+  instanceId    String
+  maxConcurrent Int      @default(1)
+  selfUpdate    Boolean  @default(false)
+  agentVersion  String?
+  connectedAt   DateTime @db.Timestamptz(3)
+
+  agent    Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  instance ServerInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([instanceId])
+}
+
+/// Body of a cross-instance message too large for a NOTIFY payload (8000 bytes): the
+/// notification carries this row's id. Deleted after a few minutes.
+model ClusterMessage {
+  id        String   @id @default(cuid())
+  payload   String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+}
+
+/// Fixed-window counter shared by every instance (abuse-sensitive rate limits only).
+model RateLimitBucket {
+  key       String   @id
+  count     Int
+  expiresAt DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+enum NotificationJobStatus {
+  PENDING
+  SENDING
+  FAILED
+}
+
+/// One external notification delivery (Slack, Discord, webhook, e-mail, push), durable across
+/// restarts. Workers claim due rows with FOR UPDATE SKIP LOCKED; a delivered job is deleted.
+model NotificationJob {
+  id            String                @id @default(cuid())
+  userId        String
+  /// ExternalChannel: slack | discord | webhook | email | push.
+  channel       String
+  /// Push only: the subscription endpoint. Other targets are read from NotificationSettings at
+  /// send time (webhook URLs stay encrypted at rest, never copied here).
+  endpoint      String?
+  /// OutgoingNotification (title, body, links...): no secrets.
+  payload       Json
+  status        NotificationJobStatus @default(PENDING)
+  attempts      Int                   @default(0)
+  nextAttemptAt DateTime              @default(now()) @db.Timestamptz(3)
+  /// A SENDING job whose lock expired (its instance died mid-send) is claimed again.
+  lockedUntil   DateTime?             @db.Timestamptz(3)
+  /// Instance that queued it: it delivers first, the others take over after a grace period.
+  instanceId    String?
+  lastError     String?
+  createdAt     DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime              @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([instanceId, status])
 }

@@ -27,7 +27,7 @@ Default process and Node.js metrics (`process_*`, `nodejs_*`) plus:
 | --------------------------------------- | --------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `orch_build_info`                       | gauge     | `version`                         | Server version, always 1                                                                                                         |
 | `orch_http_request_duration_seconds`    | histogram | `method`, `route`, `status_class` | HTTP latency. `route` is the route template (`/api/tasks/:id`), unknown paths are `unmatched`; `status_class` is `2xx`, `4xx`... |
-| `orch_agents_connected`                 | gauge     | `version`                         | Connected agents by the version they announced (at most 20 distinct, then `other`)                                               |
+| `orch_agents_connected`                 | gauge     | `version`                         | Agents connected to this instance by the version they announced (at most 20 distinct, then `other`)                              |
 | `orch_tasks`                            | gauge     | `status`                          | Tasks by status, one cheap `GROUP BY`, cached for 15 s                                                                           |
 | `orch_dispatcher_tick_duration_seconds` | histogram |                                   | Duration of one dispatcher tick                                                                                                  |
 | `orch_offers_sent_total`                | counter   | `kind`                            | Offers (`AUTO_OFFER`) and consent requests sent                                                                                  |
@@ -36,6 +36,11 @@ Default process and Node.js metrics (`process_*`, `nodejs_*`) plus:
 | `orch_assignments_finished_total`       | counter   | `outcome`, `failure_class`        | `succeeded`, `failed`, `cancelled`, `lost`; failure class (`task`, `env`, `claude_auth`, `rate_limited`, `timeout`) or `none`    |
 | `orch_ws_messages_total`                | counter   | `type`                            | Messages received from agents, by protocol message type (`invalid` for unparsable frames)                                        |
 | `orch_webhook_deliveries_total`         | counter   | `event`, `result`                 | GitHub webhooks (`processed`, `duplicate`, `failed`) by event name                                                               |
+| `orch_notification_deliveries_total`    | counter   | `channel`, `result`               | External notification attempts (`sent`, `retry`, `failed`) by channel                                                            |
+| `orch_cluster_leader`                   | gauge     | `lease`                           | 1 when this instance holds the `dispatcher` or `maintenance` leadership ({ref}`multi-instance`)                                  |
+| `orch_cluster_leader_changes_total`     | counter   | `lease`, `event`                  | Leadership `acquired`, `lost` or `released` by this instance                                                                     |
+| `orch_cluster_peers`                    | gauge     |                                   | Other live server instances this one knows of                                                                                    |
+| `orch_cluster_messages_total`           | counter   | `direction`, `kind`               | Messages between instances (`in`, `out`) by kind                                                                                 |
 
 Labels are bounded on purpose: no task, user, project, agent id or raw URL ever becomes a label.
 

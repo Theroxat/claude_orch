@@ -16,6 +16,7 @@ import {
   type TaskOfferPayload,
 } from '@orch/shared';
 import { audit } from '../audit';
+import type { Cluster, Presence } from '../cluster';
 import { ConsentError, assertAutoConsent, assertParticipates } from '../dispatch/consent';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import type { Config } from '../config';
@@ -42,7 +43,12 @@ interface Conn {
   agentVersion?: string;
   /** Frames are processed one at a time, in order. */
   queue: Promise<void>;
+  /** When the socket was accepted (epoch ms): the newest connection of an agent wins. */
+  connectedAt: number;
 }
+
+/** How long an offer relayed to the instance holding the agent's socket may take. */
+const OFFER_RELAY_TIMEOUT_MS = 5_000;
 
 /** A duplicate seen this recently without a stored ack is still being processed (no answer). */
 const DUPLICATE_IN_FLIGHT_MS = 5 * 60_000;
@@ -69,11 +75,21 @@ export interface GatewayDeps {
   /** Live task output buffers (`task.log`). Absent: live output is not offered to agents. */
   liveLogs?: LiveLogStore;
   metrics?: Metrics;
+  /**
+   * Other instances (multi-instance). Absent: this process is alone. Present: agents connected to
+   * another instance count as online here, and what is sent to them is relayed to that instance.
+   */
+  cluster?: Cluster;
 }
 
 /**
  * In-memory registry of live agent sockets (one per agent, per app instance) and the
  * server side of the agent protocol.
+ *
+ * Several instances: each holds the sockets that reached it. The cluster's agent directory tells
+ * where the others are, and the public methods below (isConnected, sendTo, sendOffer, pushConfig,
+ * disconnect...) work for any agent, relaying to the right instance over the cluster bus. Frames
+ * from an agent are always processed by the instance holding its socket.
  *
  * Pause rule: the web route and the agent's `pause.set` both write Agent.paused (last writer
  * wins, `pauseSource` records who). On `hello` the server does not adopt `localPaused`: it sends
@@ -96,6 +112,81 @@ export class AgentGateway {
       github: deps.github,
       metrics: deps.metrics,
     });
+    if (deps.cluster) this.joinCluster(deps.cluster);
+  }
+
+  /** Relay handlers: another instance asks this one to act on a socket it holds. */
+  private joinCluster(cluster: Cluster): void {
+    cluster.directory.attach({
+      localSince: (agentId) => {
+        const c = this.conns.get(agentId);
+        return c?.helloed ? c.connectedAt : undefined;
+      },
+      supersede: (agentId) => this.localDisconnect(agentId, CloseCode.SUPERSEDED, 'superseded'),
+      all: () => [...this.conns.values()].filter((c) => c.helloed).map((c) => this.presenceOf(c)),
+    });
+    const bus = cluster.bus;
+    bus.on<{ agentId: string; msg: ServerMessage }>('agent.send', ({ agentId, msg }) =>
+      this.localSendTo(agentId, msg),
+    );
+    bus.on<{ agentId: string; assignmentId: string }>('agent.cleanup', (d) =>
+      this.localSendCleanup(d.agentId, d.assignmentId),
+    );
+    bus.on<{ agentId: string }>('agent.pushConfig', ({ agentId }) => this.localPushConfig(agentId));
+    bus.on<{ agentId: string; code: number; reason: string }>('agent.disconnect', (d) =>
+      this.localDisconnect(d.agentId, d.code, d.reason),
+    );
+    bus.on<{ agentId: string }>('agent.suspend', ({ agentId }) => this.localSuspend(agentId));
+    bus.on<{ userId: string }>('agent.recheckUser', ({ userId }) => this.localRecheckUser(userId));
+    bus.on<{ agentId: string; payload: TaskOfferPayload }>(
+      'agent.offer',
+      ({ agentId, payload }) => {
+        const c = this.conns.get(agentId);
+        return !!c && c.helloed && this.send(c, serverMessage('task.offer', payload));
+      },
+    );
+  }
+
+  /** The other instance holding this agent's socket, when this one does not. */
+  private remote(agentId: string): Presence | undefined {
+    if (this.conns.get(agentId)?.helloed) return undefined;
+    return this.deps.cluster?.directory.get(agentId);
+  }
+
+  private remoteOfUser(userId: string): Presence[] {
+    const dir = this.deps.cluster?.directory;
+    if (!dir) return [];
+    const out: Presence[] = [];
+    for (const p of dir.remoteAgents()) {
+      if (p.userId === userId && !this.conns.get(p.agentId)?.helloed) out.push(p);
+    }
+    return out;
+  }
+
+  private presenceOf(c: Conn): Presence {
+    return {
+      agentId: c.agentId,
+      userId: c.userId,
+      instanceId: this.deps.cluster?.instanceId ?? '',
+      maxConcurrent: c.maxConcurrent,
+      selfUpdate: c.selfUpdate,
+      ...(c.agentVersion !== undefined && { agentVersion: c.agentVersion }),
+      connectedAt: c.connectedAt,
+    };
+  }
+
+  /** To the instance holding the agent, or to all of them when unknown. */
+  private relay(kind: string, agentId: string, data: unknown): void {
+    const cluster = this.deps.cluster;
+    if (!cluster) return;
+    void cluster.bus.publish(kind, data, cluster.directory.get(agentId)?.instanceId);
+  }
+
+  /** Forgets a local socket (and its directory row once it had said hello). */
+  private drop(c: Conn): void {
+    if (this.conns.get(c.agentId) !== c) return;
+    this.conns.delete(c.agentId);
+    if (c.helloed) void this.deps.cluster?.directory.withdraw(c.agentId, c.connectedAt);
   }
 
   setDispatcher(d: Dispatcher): void {
@@ -107,6 +198,8 @@ export class AgentGateway {
     this.sweepTimer = setInterval(() => this.sweep(), config.AGENT_SWEEP_INTERVAL_MS);
     this.sweepTimer.unref();
     this.purgeTimer = setInterval(() => {
+      // Several instances: only the maintenance leader purges.
+      if (this.deps.cluster && !this.deps.cluster.leads('maintenance')) return;
       purgeRetention(this.deps.prisma).catch((err) => this.deps.log.warn({ err }, 'purge failed'));
     }, config.RETENTION_PURGE_INTERVAL_MS);
     this.purgeTimer.unref();
@@ -119,11 +212,15 @@ export class AgentGateway {
     this.conns.clear();
   }
 
+  /** Connected (helloed) to this instance or to another one of the cluster. */
   isConnected(agentId: string): boolean {
-    return this.conns.get(agentId)?.helloed === true;
+    return this.conns.get(agentId)?.helloed === true || this.remote(agentId) !== undefined;
   }
 
-  /** Live (helloed) agents per announced version, for the `orch_agents_connected` gauge. */
+  /**
+   * Live (helloed) agents of THIS instance per announced version, for the `orch_agents_connected`
+   * gauge (each instance reports its own sockets: sum the series across instances).
+   */
   connectedByVersion(): Map<string, number> {
     const out = new Map<string, number>();
     for (const c of this.conns.values()) {
@@ -137,7 +234,8 @@ export class AgentGateway {
   /** Connected and able to update itself on request (`agent.update`). */
   canSelfUpdate(agentId: string): boolean {
     const c = this.conns.get(agentId);
-    return c?.helloed === true && c.selfUpdate;
+    if (c?.helloed) return c.selfUpdate;
+    return this.remote(agentId)?.selfUpdate === true;
   }
 
   /** Sends `agent.update` to one agent. False when it is offline. */
@@ -149,16 +247,28 @@ export class AgentGateway {
   connectedUserIds(): string[] {
     const ids = new Set<string>();
     for (const c of this.conns.values()) if (c.helloed) ids.add(c.userId);
+    for (const p of this.deps.cluster?.directory.remoteAgents() ?? []) ids.add(p.userId);
     return [...ids];
   }
 
   /** Concurrency the agent announced in `hello` (1 when unknown). */
   maxConcurrentOf(agentId: string): number {
-    return this.conns.get(agentId)?.maxConcurrent ?? 1;
+    return this.conns.get(agentId)?.maxConcurrent ?? this.remote(agentId)?.maxConcurrent ?? 1;
   }
 
-  /** Sends a message to one connected agent. False when it is offline. */
+  /**
+   * Sends a message to one connected agent. False when it is offline. An agent on another
+   * instance gets it relayed (true: handed to the cluster bus, delivery is best effort).
+   */
   sendTo(agentId: string, msg: ServerMessage): boolean {
+    if (this.localSendTo(agentId, msg)) return true;
+    const r = this.remote(agentId);
+    if (!r) return false;
+    void this.deps.cluster!.bus.publish('agent.send', { agentId, msg }, r.instanceId);
+    return true;
+  }
+
+  private localSendTo(agentId: string, msg: ServerMessage): boolean {
     const c = this.conns.get(agentId);
     if (!c || !c.helloed) return false;
     return this.send(c, msg);
@@ -170,13 +280,26 @@ export class AgentGateway {
     for (const c of this.conns.values()) {
       if (c.userId === userId && c.helloed && this.send(c, msg)) n++;
     }
+    for (const p of this.remoteOfUser(userId)) {
+      void this.deps.cluster!.bus.publish('agent.send', { agentId: p.agentId, msg }, p.instanceId);
+      n++;
+    }
     return n;
   }
 
   /** Sends `cleanup` and clears `cleanupPending` once the agent acks it. */
   sendCleanup(agentId: string, assignmentId: string): boolean {
+    if (this.localSendCleanup(agentId, assignmentId)) return true;
+    const r = this.remote(agentId);
+    if (!r) return false;
+    // The ack comes back to the instance holding the socket: that one must know the message id.
+    void this.deps.cluster!.bus.publish('agent.cleanup', { agentId, assignmentId }, r.instanceId);
+    return true;
+  }
+
+  private localSendCleanup(agentId: string, assignmentId: string): boolean {
     const msg = serverMessage('cleanup', { assignmentId });
-    if (!this.sendTo(agentId, msg)) return false;
+    if (!this.localSendTo(agentId, msg)) return false;
     this.cleanupAcks.set(msg.id, assignmentId);
     return true;
   }
@@ -191,44 +314,67 @@ export class AgentGateway {
    * and retries with a long backoff, so approving the owner again brings it back.
    */
   suspend(agentId: string): void {
+    if (this.localSuspend(agentId)) return;
+    this.relay('agent.suspend', agentId, { agentId });
+  }
+
+  private localSuspend(agentId: string): boolean {
     const c = this.conns.get(agentId);
-    if (!c) return;
+    if (!c) return false;
     this.sendError(c, 'access_suspended', 'Access to this server was removed by an admin');
-    this.disconnect(agentId, CloseCode.ACCESS_SUSPENDED, 'access_suspended');
+    this.localDisconnect(agentId, CloseCode.ACCESS_SUSPENDED, 'access_suspended');
+    return true;
   }
 
   /**
    * Re-checks the owner's access now (after an admin denied or removed it) and suspends their
-   * connected agents when it is refused, without waiting for their next frame.
+   * connected agents when it is refused, without waiting for their next frame. Every instance
+   * re-checks the sockets it holds.
    */
   async recheckUser(userId: string): Promise<void> {
+    await this.deps.cluster?.bus.publish('agent.recheckUser', { userId });
+    await this.localRecheckUser(userId);
+  }
+
+  private async localRecheckUser(userId: string): Promise<void> {
     const ids = [...this.conns.values()].filter((c) => c.userId === userId).map((c) => c.agentId);
     if (ids.length === 0) return;
     const user = await this.deps.prisma.user.findUnique({ where: { id: userId } });
     if (user && (await this.ownerAllowed(user))) return;
-    for (const id of ids) this.suspend(id);
+    for (const id of ids) this.localSuspend(id);
   }
 
-  /** Closes the live socket of an agent, if any. */
+  /**
+   * Closes the live socket of an agent, wherever it is. When no instance is known to hold it, the
+   * request still goes to every instance: a revoked agent that just connected elsewhere is closed.
+   */
   disconnect(agentId: string, code: number, reason: string): void {
+    if (this.localDisconnect(agentId, code, reason)) return;
+    this.relay('agent.disconnect', agentId, { agentId, code, reason });
+  }
+
+  private localDisconnect(agentId: string, code: number, reason: string): boolean {
     const c = this.conns.get(agentId);
-    if (!c) return;
-    this.conns.delete(agentId);
+    if (!c) return false;
+    this.drop(c);
     c.socket.close(code, reason);
+    return true;
   }
 
   /** Registers an authenticated socket. A newer connection supersedes the old one. */
   attach(socket: WebSocket, agent: Agent): void {
-    this.disconnect(agent.id, CloseCode.SUPERSEDED, 'superseded');
+    this.localDisconnect(agent.id, CloseCode.SUPERSEDED, 'superseded');
+    const now = Date.now();
     const conn: Conn = {
       agentId: agent.id,
       userId: agent.userId,
       socket,
       helloed: false,
-      lastBeat: Date.now(),
+      lastBeat: now,
       maxConcurrent: 1,
       selfUpdate: false,
       queue: Promise.resolve(),
+      connectedAt: now,
     };
     this.conns.set(agent.id, conn);
     const maxPerSec = this.deps.config.RATE_LIMIT_ENABLED
@@ -245,7 +391,7 @@ export class AgentGateway {
         }
         if (++secCount > maxPerSec) {
           this.deps.log.warn({ agentId: agent.id }, 'agent message flood; closing');
-          this.disconnect(agent.id, CloseCode.RATE_LIMITED, 'rate limited');
+          this.localDisconnect(agent.id, CloseCode.RATE_LIMITED, 'rate limited');
           return;
         }
       }
@@ -254,9 +400,7 @@ export class AgentGateway {
         .then(() => this.onFrame(conn, raw))
         .catch((err) => this.deps.log.error({ err, agentId: conn.agentId }, 'agent frame failed'));
     });
-    socket.on('close', () => {
-      if (this.conns.get(agent.id) === conn) this.conns.delete(agent.id);
-    });
+    socket.on('close', () => this.drop(conn));
     socket.on('error', (err) => this.deps.log.warn({ err, agentId: agent.id }, 'agent socket'));
   }
 
@@ -290,6 +434,15 @@ export class AgentGateway {
 
   /** Pushes `config.update` to the live socket. Returns false when the agent is offline. */
   async pushConfig(agentId: string): Promise<boolean> {
+    if (this.conns.has(agentId)) return this.localPushConfig(agentId);
+    const r = this.remote(agentId);
+    if (!r) return false;
+    // Computed by the instance holding the socket, from the database, like a local push.
+    await this.deps.cluster!.bus.publish('agent.pushConfig', { agentId }, r.instanceId);
+    return true;
+  }
+
+  private async localPushConfig(agentId: string): Promise<boolean> {
     const c = this.conns.get(agentId);
     if (!c) return false;
     const payload = await this.configFor(agentId);
@@ -306,10 +459,18 @@ export class AgentGateway {
     for (const c of [...this.conns.values()]) {
       if (c.userId !== userId || !c.helloed) continue;
       try {
-        if (await this.pushConfig(c.agentId)) n++;
+        if (await this.localPushConfig(c.agentId)) n++;
       } catch (err) {
         this.deps.log.warn({ err, agentId: c.agentId }, 'config push failed');
       }
+    }
+    for (const p of this.remoteOfUser(userId)) {
+      await this.deps.cluster!.bus.publish(
+        'agent.pushConfig',
+        { agentId: p.agentId },
+        p.instanceId,
+      );
+      n++;
     }
     return n;
   }
@@ -338,7 +499,7 @@ export class AgentGateway {
       throw new OfferRefusedError('access_suspended');
     }
     const live = this.conns.get(agentId);
-    if (!live || !live.helloed) throw new OfferRefusedError('offline');
+    if ((!live || !live.helloed) && !this.remote(agentId)) throw new OfferRefusedError('offline');
     if (payload.kind !== 'CLAIM') {
       try {
         if (payload.kind === 'AUTO_OFFER') {
@@ -353,8 +514,25 @@ export class AgentGateway {
       }
     }
     const c = this.conns.get(agentId);
-    if (!c || !c.helloed) throw new OfferRefusedError('offline');
-    if (!this.send(c, serverMessage('task.offer', payload))) throw new OfferRefusedError('offline');
+    if (c?.helloed) {
+      if (!this.send(c, serverMessage('task.offer', payload))) {
+        throw new OfferRefusedError('offline');
+      }
+      return;
+    }
+    // On another instance: it sends, and says whether its socket took the offer. No answer counts
+    // as offline (the caller undoes the claim or closes the offer, as for a socket that closed).
+    const r = this.remote(agentId);
+    if (!r) throw new OfferRefusedError('offline');
+    const delivered = await this.deps
+      .cluster!.bus.request<boolean>(
+        r.instanceId,
+        'agent.offer',
+        { agentId, payload },
+        OFFER_RELAY_TIMEOUT_MS,
+      )
+      .catch(() => false);
+    if (!delivered) throw new OfferRefusedError('offline');
   }
 
   /**
@@ -459,7 +637,7 @@ export class AgentGateway {
     const timeout = this.deps.config.AGENT_HEARTBEAT_TIMEOUT_MS;
     for (const c of [...this.conns.values()]) {
       if (now - c.lastBeat > timeout) {
-        this.disconnect(c.agentId, CloseCode.HEARTBEAT_TIMEOUT, 'heartbeat timeout');
+        this.localDisconnect(c.agentId, CloseCode.HEARTBEAT_TIMEOUT, 'heartbeat timeout');
       }
     }
   }
@@ -485,9 +663,9 @@ export class AgentGateway {
       this.deps.metrics?.wsMessages.inc({ type: 'invalid' });
       this.sendError(c, r.code, r.error, r.id);
       if (r.code === 'version_mismatch') {
-        this.disconnect(c.agentId, CloseCode.VERSION_MISMATCH, 'protocol version mismatch');
+        this.localDisconnect(c.agentId, CloseCode.VERSION_MISMATCH, 'protocol version mismatch');
       } else if (r.code !== 'invalid_message') {
-        this.disconnect(c.agentId, CloseCode.PROTOCOL_ERROR, 'protocol error');
+        this.localDisconnect(c.agentId, CloseCode.PROTOCOL_ERROR, 'protocol error');
       }
       return;
     }
@@ -498,7 +676,7 @@ export class AgentGateway {
       // then deny); any other failure throws and the frame is not processed (fail closed).
       const owner = await this.deps.prisma.user.findUnique({ where: { id: c.userId } });
       if (!owner || !(await this.deps.isAllowed(owner))) {
-        this.suspend(c.agentId);
+        this.localSuspend(c.agentId);
         return;
       }
     }
@@ -673,10 +851,13 @@ export class AgentGateway {
       });
     }
     const cfg = await this.configFor(c.agentId);
+    if (this.conns.get(c.agentId) !== c) return; // closed or superseded meanwhile
     c.helloed = true;
     c.maxConcurrent = m.payload.maxConcurrent;
     c.selfUpdate = m.payload.selfUpdate === true;
     c.agentVersion = m.payload.agentVersion;
+    // Tells the other instances where this agent is (one row write when alone).
+    void this.deps.cluster?.directory.announce(this.presenceOf(c));
     const latest = normalizeVersion(this.deps.config.ORCH_VERSION);
     this.send(
       c,

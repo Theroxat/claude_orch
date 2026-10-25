@@ -5,12 +5,14 @@ import {
   type NotificationEvent,
   type NotificationPreferences,
 } from '@orch/shared';
-import type { NotificationSettings } from '@prisma/client';
+import type { NotificationSettings, Prisma } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
 import { createTransport } from 'nodemailer';
 import { onAudit, type AuditEntry } from '../audit';
+import type { Cluster } from '../cluster';
 import { decrypt } from '../auth/crypto';
 import type { Config } from '../config';
+import type { Metrics } from '../observability';
 import type { PrismaClient } from '../db';
 import type { RecipientCheck } from './access';
 import { confirmationMessage } from './emailVerification';
@@ -45,6 +47,30 @@ export interface NotifierDeps {
   pusher?: PushSender | null;
   /** Drops recipients who lost access to orch or to the project (default: everyone receives). */
   canReceive?: RecipientCheck;
+  /** Several instances: the retention purge runs on the maintenance leader only. */
+  cluster?: Cluster;
+  metrics?: Metrics;
+}
+
+/** Jobs claimed per round; a full batch is followed by another round at once. */
+const CLAIM_BATCH = 20;
+/** A SENDING job is claimed again once this lock expires (its instance died mid-send). */
+const SEND_LOCK_SEC = 120;
+/**
+ * Jobs are delivered by the instance that queued them; another instance takes a job over only
+ * once it has been due for this long (the owner is gone or stuck).
+ */
+const TAKEOVER_GRACE_SEC = 60;
+/** Failed deliveries are kept this long for inspection, then deleted. */
+const FAILED_JOB_RETENTION_MS = 7 * 86_400_000;
+
+interface ClaimedJob {
+  id: string;
+  userId: string;
+  channel: string;
+  endpoint: string | null;
+  payload: Prisma.JsonValue;
+  attempts: number;
 }
 
 /** A delivery that failed; `retryable` false stops the retries (e.g. HTTP 404: the hook is gone). */
@@ -113,10 +139,14 @@ const RETRYABLE_STATUS = (status: number) => status === 408 || status === 429 ||
 
 /**
  * Turns audit events into notifications: an in-app row per recipient, and external deliveries
- * (Slack, Discord, generic webhook, e-mail) according to each recipient's preferences.
+ * (Slack, Discord, generic webhook, e-mail, push) according to each recipient's preferences.
  *
- * Nothing here runs on the request path: the audit listener only queues work, deliveries are
- * retried with exponential backoff in the background, and failures are logged, never thrown.
+ * Nothing here runs on the request path: the audit listener only queues work, and failures are
+ * logged, never thrown. External deliveries are durable `NotificationJob` rows: the instance that
+ * queued them sends them at once; retries (exponential backoff), jobs left by a restart and jobs
+ * of an instance that died are picked up by the queue worker of any instance, each job by exactly
+ * one worker at a time (`FOR UPDATE SKIP LOCKED`). Delivery is at least once: a process killed
+ * between the send and the bookkeeping sends that one again.
  */
 export class Notifier {
   private readonly post: WebhookPoster;
@@ -124,42 +154,55 @@ export class Notifier {
   /** Null when the server has no VAPID keys: the browser channel is unavailable. */
   readonly pusher: PushSender | null;
   private readonly inflight = new Set<Promise<unknown>>();
-  private readonly timers = new Set<NodeJS.Timeout>();
   private purgeTimer: NodeJS.Timeout | undefined;
+  private pollTimer: NodeJS.Timeout | undefined;
+  private draining: Promise<void> | null = null;
+  private drainAgain = false;
   private unsubscribe: (() => void) | undefined;
   private closed = false;
+  private readonly instanceId: string;
 
   constructor(private readonly deps: NotifierDeps) {
     this.post = deps.post ?? safePost;
     this.mailer = deps.mailer === undefined ? createMailer(deps.config) : deps.mailer;
     this.pusher = deps.pusher === undefined ? createPushSender(deps.config) : deps.pusher;
+    this.instanceId = deps.config.ORCH_INSTANCE_ID;
   }
 
   start(): void {
     this.closed = false;
     this.unsubscribe = onAudit(this.deps.prisma, (e) => this.onAudit(e));
     this.purgeTimer = setInterval(() => {
+      if (this.deps.cluster && !this.deps.cluster.leads('maintenance')) return;
       this.purge().catch((err) => this.deps.log.warn({ err }, 'notification purge failed'));
     }, this.deps.config.RETENTION_PURGE_INTERVAL_MS);
     this.purgeTimer.unref();
+    this.wake(); // jobs left by a previous run
   }
 
-  /** Stops listening and drops pending retries (in-flight attempts finish). */
+  /** Stops listening and polling (in-flight attempts finish; queued jobs stay in the database). */
   stop(): void {
     this.closed = true;
     this.unsubscribe?.();
     clearInterval(this.purgeTimer);
-    for (const t of this.timers) clearTimeout(t);
-    this.timers.clear();
+    clearTimeout(this.pollTimer);
   }
 
-  /** Resolves once queued work (and scheduled retries) are done. For tests and shutdown. */
+  /**
+   * Resolves once the work queued by this instance is done: audit events planned, and every job it
+   * queued delivered or given up (retries included). For tests and shutdown.
+   */
   async idle(): Promise<void> {
-    while (this.inflight.size > 0 || this.timers.size > 0) {
+    for (;;) {
       await Promise.allSettled([...this.inflight]);
-      if (this.inflight.size === 0 && this.timers.size > 0) {
-        await new Promise((r) => setTimeout(r, 5));
-      }
+      await this.draining;
+      if (this.inflight.size > 0 || this.draining) continue;
+      if (this.closed) return;
+      const open = await this.deps.prisma.notificationJob.count({
+        where: { instanceId: this.instanceId, status: { in: ['PENDING', 'SENDING'] } },
+      });
+      if (open === 0 && this.inflight.size === 0) return;
+      await new Promise((r) => setTimeout(r, 5));
     }
   }
 
@@ -205,6 +248,10 @@ export class Notifier {
       link: absoluteLink(config.ORCH_BASE_URL, draft.url),
       createdAt,
     };
+    const jobs: Prisma.NotificationJobCreateManyInput[] = [];
+    const payload = out as unknown as Prisma.InputJsonValue;
+    const job = (channel: ExternalChannel, endpoint: string | null) =>
+      jobs.push({ userId, channel, endpoint, payload, instanceId: this.instanceId });
     for (const channel of channels) {
       if (channel === 'in_app') continue;
       if (channel === 'push') {
@@ -213,48 +260,131 @@ export class Notifier {
           where: { userId },
           select: { endpoint: true },
         });
-        for (const sub of subs) this.schedule(userId, 'push', sub.endpoint, out, 1, 0);
+        for (const sub of subs) job('push', sub.endpoint);
         continue;
       }
-      const target = channelTarget(settings, channel, config, !!this.mailer);
-      if (!target) continue;
-      this.schedule(userId, channel, target, out, 1, 0);
+      // Checked now (no job for an unset channel), read again at send time (never stored).
+      if (!channelTarget(settings, channel, config, !!this.mailer)) continue;
+      job(channel, null);
+    }
+    if (jobs.length === 0 || this.closed) return;
+    await prisma.notificationJob.createMany({ data: jobs });
+    this.wake();
+  }
+
+  /** Runs a queue round now (or right after the current one). */
+  private wake(): void {
+    if (this.closed) return;
+    if (this.draining) {
+      this.drainAgain = true;
+      return;
+    }
+    clearTimeout(this.pollTimer);
+    this.draining = this.drain()
+      .catch((err) => this.deps.log.warn({ err }, 'notification queue round failed'))
+      .finally(() => {
+        this.draining = null;
+        if (this.drainAgain) {
+          this.drainAgain = false;
+          this.wake();
+        } else {
+          void this.schedulePoll();
+        }
+      });
+  }
+
+  /** Next round: this instance's next retry, or the poll period (other instances' leftovers). */
+  private async schedulePoll(): Promise<void> {
+    if (this.closed) return;
+    let delay = this.deps.config.NOTIFY_QUEUE_POLL_MS;
+    try {
+      const next = await this.deps.prisma.notificationJob.findFirst({
+        where: { instanceId: this.instanceId, status: 'PENDING' },
+        orderBy: { nextAttemptAt: 'asc' },
+        select: { nextAttemptAt: true },
+      });
+      if (next) delay = Math.min(delay, Math.max(0, next.nextAttemptAt.getTime() - Date.now()));
+    } catch (err) {
+      this.deps.log.warn({ err }, 'notification queue poll failed');
+    }
+    if (this.closed || this.draining) return;
+    clearTimeout(this.pollTimer);
+    this.pollTimer = setTimeout(() => this.wake(), delay);
+    this.pollTimer.unref();
+  }
+
+  /** Claims due jobs (batch after batch) and delivers them. */
+  private async drain(): Promise<void> {
+    while (!this.closed) {
+      const jobs = await this.claim();
+      if (jobs.length === 0) return;
+      const round = Promise.allSettled(jobs.map((j) => this.deliver(j)));
+      this.track(round);
+      await round;
+      if (jobs.length < CLAIM_BATCH) return;
     }
   }
 
-  private schedule(
-    userId: string,
-    channel: ExternalChannel,
-    target: string,
-    n: OutgoingNotification,
-    attempt: number,
-    delayMs: number,
-  ): void {
-    if (this.closed) return;
-    const run = () =>
-      this.send(channel, target, n).catch((err: unknown) => {
-        const retryable = !(err instanceof DeliveryError) || err.retryable;
-        const reason = err instanceof Error ? err.message : String(err);
-        const ctx = { userId, channel, event: n.event, attempt, reason };
-        if (retryable && attempt < this.deps.config.NOTIFY_MAX_ATTEMPTS) {
-          const next = this.deps.config.NOTIFY_RETRY_BASE_MS * 4 ** (attempt - 1);
-          this.deps.log.info({ ...ctx, retryInMs: next }, 'notification delivery failed, retrying');
-          this.schedule(userId, channel, target, n, attempt + 1, next);
-        } else {
-          // Never log the target: webhook URLs are secrets.
-          this.deps.log.warn(ctx, 'notification delivery failed');
-        }
-      });
-    if (delayMs <= 0) {
-      this.track(run());
-      return;
+  private claim(): Promise<ClaimedJob[]> {
+    return this.deps.prisma.$queryRaw<ClaimedJob[]>`
+      UPDATE "NotificationJob" SET status = 'SENDING', attempts = attempts + 1,
+             "lockedUntil" = now() + make_interval(secs => ${SEND_LOCK_SEC}),
+             "instanceId" = ${this.instanceId}, "updatedAt" = now()
+       WHERE id IN (
+         SELECT id FROM "NotificationJob"
+          WHERE ((status = 'PENDING' AND "nextAttemptAt" <= now())
+                 OR (status = 'SENDING' AND "lockedUntil" < now()))
+            AND ("instanceId" = ${this.instanceId}
+                 OR "nextAttemptAt" <= now() - make_interval(secs => ${TAKEOVER_GRACE_SEC}))
+          ORDER BY "nextAttemptAt"
+          LIMIT ${CLAIM_BATCH}
+          FOR UPDATE SKIP LOCKED)
+      RETURNING id, "userId", channel, endpoint, payload, attempts`;
+  }
+
+  /** One attempt of a claimed job, then its bookkeeping (deleted, retried later, or failed). */
+  private async deliver(job: ClaimedJob): Promise<void> {
+    const { prisma, config, log, metrics } = this.deps;
+    const raw = job.payload as unknown as OutgoingNotification & { createdAt: string };
+    const n: OutgoingNotification = { ...raw, createdAt: new Date(raw.createdAt) };
+    const channel = job.channel as ExternalChannel;
+    try {
+      let target = job.endpoint;
+      if (channel !== 'push') {
+        const s = await prisma.notificationSettings.findUnique({ where: { userId: job.userId } });
+        target = channelTarget(s, channel, config, !!this.mailer);
+      }
+      if (!target) throw new DeliveryError('not_configured', false); // removed meanwhile
+      await this.send(channel, target, n);
+      await prisma.notificationJob.delete({ where: { id: job.id } });
+      metrics?.notificationJobs.inc({ channel, result: 'sent' });
+    } catch (err) {
+      const retryable = !(err instanceof DeliveryError) || err.retryable;
+      const reason = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+      const ctx = { userId: job.userId, channel, event: n.event, attempt: job.attempts, reason };
+      if (retryable && job.attempts < config.NOTIFY_MAX_ATTEMPTS) {
+        const next = config.NOTIFY_RETRY_BASE_MS * 4 ** (job.attempts - 1);
+        log.info({ ...ctx, retryInMs: next }, 'notification delivery failed, retrying');
+        await prisma.notificationJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'PENDING',
+            nextAttemptAt: new Date(Date.now() + next),
+            lockedUntil: null,
+            lastError: reason,
+          },
+        });
+        metrics?.notificationJobs.inc({ channel, result: 'retry' });
+      } else {
+        // Never log the target: webhook URLs are secrets.
+        log.warn(ctx, 'notification delivery failed');
+        await prisma.notificationJob.update({
+          where: { id: job.id },
+          data: { status: 'FAILED', lockedUntil: null, lastError: reason },
+        });
+        metrics?.notificationJobs.inc({ channel, result: 'failed' });
+      }
     }
-    const t = setTimeout(() => {
-      this.timers.delete(t);
-      this.track(run());
-    }, delayMs);
-    t.unref();
-    this.timers.add(t);
   }
 
   /** One delivery attempt. Throws DeliveryError on failure. */
@@ -329,11 +459,17 @@ export class Notifier {
       .catch(() => undefined);
   }
 
-  /** Deletes in-app notifications past the retention period. */
+  /** Deletes in-app notifications past the retention period (and old failed deliveries). */
   async purge(now = new Date()): Promise<number> {
     const before = new Date(now.getTime() - this.deps.config.NOTIFY_RETENTION_DAYS * 86_400_000);
     const r = await this.deps.prisma.notification.deleteMany({
       where: { createdAt: { lt: before } },
+    });
+    await this.deps.prisma.notificationJob.deleteMany({
+      where: {
+        status: 'FAILED',
+        updatedAt: { lt: new Date(now.getTime() - FAILED_JOB_RETENTION_MS) },
+      },
     });
     return r.count;
   }

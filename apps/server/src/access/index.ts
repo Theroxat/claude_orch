@@ -6,13 +6,13 @@ import { requireUser, type AuthDeps } from '../auth';
 import { cookie } from '../auth/cookies';
 import { randomToken, sha256Hex, signToken, verifyToken } from '../auth/crypto';
 import { HttpError, parseBody } from '../http/errors';
+import { SharedCounter, SharedRateLimiter } from '../http/shared-limit';
 import {
   ACCESS_REQUEST_PURPOSE,
   GITHUB_LOGIN_RE,
   INVITE_COOKIE,
   INVITE_COOKIE_PURPOSE,
   INVITE_COOKIE_TTL_SEC,
-  RateLimiter,
   grantView,
   inviteIsActive,
   inviteView,
@@ -41,7 +41,12 @@ export function registerAccess(app: FastifyInstance, deps: AuthDeps): void {
   const { config, prisma } = deps;
   const base = new URL(config.ORCH_BASE_URL);
   const secure = base.protocol === 'https:';
-  const limits = { ip: new RateLimiter(10, 15 * 60_000), login: new RateLimiter(5, 15 * 60_000) };
+  // Shared by every instance (an access request spammer is not slowed down by a load balancer).
+  const counter = new SharedCounter(prisma, config.ORCH_CLUSTER_NAME, app.log);
+  const limits = {
+    ip: new SharedRateLimiter(counter, 'access-ip', 10, 15 * 60_000),
+    login: new SharedRateLimiter(counter, 'access-login', 5, 15 * 60_000),
+  };
 
   const html = (reply: FastifyReply, status: number, body: string) =>
     reply.status(status).type('text/html; charset=utf-8').send(body);
@@ -67,7 +72,7 @@ export function registerAccess(app: FastifyInstance, deps: AuthDeps): void {
     scope.post('/api/auth/access-request', async (req, reply) => {
       const key = config.ORCH_ENCRYPTION_KEY;
       if (!key) throw new HttpError(503, 'github_not_configured', 'GitHub App is not configured');
-      if (!limits.ip.allow(req.ip)) return html(reply, 429, tooManyRequestsPage());
+      if (!(await limits.ip.allow(req.ip))) return html(reply, 429, tooManyRequestsPage());
       const b = (req.body ?? {}) as Record<string, unknown>;
       const p = verifyToken(key, ACCESS_REQUEST_PURPOSE, b.token);
       const login = typeof p?.login === 'string' ? p.login : null;
@@ -75,7 +80,7 @@ export function registerAccess(app: FastifyInstance, deps: AuthDeps): void {
         return html(reply, 400, requestExpiredPage());
       }
       const githubLogin = login.toLowerCase();
-      if (!limits.login.allow(githubLogin)) return html(reply, 429, tooManyRequestsPage());
+      if (!(await limits.login.allow(githubLogin))) return html(reply, 429, tooManyRequestsPage());
       const githubUserId =
         typeof p.id === 'string' && /^\d{1,20}$/.test(p.id) ? BigInt(p.id) : null;
       const avatarUrl = typeof p.avatarUrl === 'string' ? p.avatarUrl.slice(0, 1000) : null;
