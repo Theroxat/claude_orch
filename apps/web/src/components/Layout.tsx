@@ -13,6 +13,8 @@ import { motionAllowed } from '../ui/motion';
 import { PageFallback } from '../ui/PageFallback';
 import { useChangeCount } from '../ui/presence';
 import { useTheme } from '../ui/theme';
+import { useT, type MessageKey } from '../i18n/index.ts';
+import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 import { NotificationBell } from './NotificationBell';
 import { AgentUpdateBanner } from './AgentUpdateBanner';
 import { useOnboarding } from './GettingStarted';
@@ -21,17 +23,18 @@ import { VersionFooter } from './VersionFooter';
 const DOCS_URL = 'https://claude-orch.readthedocs.io';
 const REPO_URL = 'https://github.com/Theroxat/claude_orch';
 
-const links = [
-  { to: '/projects', label: 'Projects' },
-  { to: '/discover', label: 'Discover' },
-  { to: '/pool', label: 'Pool' },
-  { to: '/requests', label: 'Requests' },
-  { to: '/backlog', label: 'Backlog' },
-  { to: '/history', label: 'History' },
-  { to: '/usage', label: 'Usage' },
-  { to: '/claude-code', label: 'Claude Code' },
-  { to: '/my-server', label: 'My Server' },
+const links: { to: string; label: MessageKey }[] = [
+  { to: '/projects', label: 'layout.nav.projects' },
+  { to: '/discover', label: 'layout.nav.discover' },
+  { to: '/pool', label: 'layout.nav.pool' },
+  { to: '/requests', label: 'layout.nav.requests' },
+  { to: '/backlog', label: 'layout.nav.backlog' },
+  { to: '/history', label: 'layout.nav.history' },
+  { to: '/usage', label: 'layout.nav.usage' },
+  { to: '/claude-code', label: 'layout.nav.claudeCode' },
+  { to: '/my-server', label: 'layout.nav.myServer' },
 ];
+const ACCESS_LINK = { to: '/admin/access', label: 'layout.nav.access' } as const;
 
 /** Count bubble on a station; replays a short pulse when the number changes. */
 function Count({ n, label }: { n: number; label: string }) {
@@ -49,6 +52,7 @@ function Count({ n, label }: { n: number; label: string }) {
 }
 
 export function Layout() {
+  const t = useT();
   const me = useMe().data;
   const pending = useOffers().data?.length ?? 0;
   const isAdmin = !!me?.isAdmin;
@@ -103,13 +107,13 @@ export function Layout() {
       navigate('/login', { replace: true });
     },
   });
-  const nav = isAdmin ? [...links, { to: '/admin/access', label: 'Access' }] : links;
+  const nav = isAdmin ? [...links, ACCESS_LINK] : links;
   const doneSteps = onboarding?.filter((x) => x.done).length ?? 0;
   return (
     <div className={`shell${booting ? ' booting' : ''}`}>
       <header className="topbar">
         <div className="topbar-row">
-          <Link to="/projects" className="brand-link" aria-label="orch home">
+          <Link to="/projects" className="brand-link" aria-label={t('layout.header.home')}>
             <Brand />
           </Link>
           <div className="topbar-tools">
@@ -119,14 +123,17 @@ export function Layout() {
                 className="progress-pill"
                 onMouseEnter={() => preload('/welcome')}
               >
-                Setup wizard
+                {t('layout.header.setupWizard')}
               </NavLink>
             )}
             {onboarding && (
               <NavLink
                 to="/projects"
                 className="progress-pill"
-                aria-label={`Getting started: ${doneSteps} of ${onboarding.length} steps done`}
+                aria-label={t('layout.header.gettingStarted', {
+                  count: doneSteps,
+                  total: onboarding.length,
+                })}
                 style={{ '--done': doneSteps / Math.max(1, onboarding.length) } as CSSProperties}
               >
                 <span className="pill-meter" aria-hidden="true" />
@@ -138,8 +145,8 @@ export function Layout() {
               href={DOCS_URL}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label="Documentation"
-              title="Documentation"
+              aria-label={t('layout.header.docs')}
+              title={t('layout.header.docs')}
             >
               <Icon name="book" />
             </a>
@@ -148,8 +155,8 @@ export function Layout() {
               href={REPO_URL}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label="GitHub repository"
-              title="GitHub repository"
+              aria-label={t('layout.header.repo')}
+              title={t('layout.header.repo')}
             >
               <Icon name="github" />
             </a>
@@ -158,11 +165,12 @@ export function Layout() {
               type="button"
               className="ghost icon-button"
               onClick={toggleTheme}
-              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              aria-label={t(theme === 'dark' ? 'layout.theme.toLight' : 'layout.theme.toDark')}
+              title={t(theme === 'dark' ? 'layout.theme.light' : 'layout.theme.dark')}
             >
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
             </button>
+            <LanguageSwitcher />
             {me && (
               <div className="user">
                 {me.avatarUrl ? (
@@ -172,13 +180,13 @@ export function Layout() {
                 )}
                 <span className="user-name">{me.name ?? me.githubLogin}</span>
                 <button type="button" className="ghost" onClick={() => logout.mutate()}>
-                  Log out
+                  {t('layout.header.logOut')}
                 </button>
               </div>
             )}
           </div>
         </div>
-        <nav className="line" aria-label="Main" ref={line}>
+        <nav className="line" aria-label={t('layout.nav.label')} ref={line}>
           {nav.map((l, i) => (
             <NavLink
               key={l.to}
@@ -190,12 +198,15 @@ export function Layout() {
             >
               <span className="stop" aria-hidden="true" />
               <span className="station-name">
-                {l.label}
+                {t(l.label)}
                 {l.to === '/requests' && pending > 0 && (
-                  <Count n={pending} label={`${pending} pending requests`} />
+                  <Count n={pending} label={t('layout.nav.pendingRequests', { count: pending })} />
                 )}
                 {l.to === '/admin/access' && accessPending > 0 && (
-                  <Count n={accessPending} label={`${accessPending} pending access requests`} />
+                  <Count
+                    n={accessPending}
+                    label={t('layout.nav.pendingAccess', { count: accessPending })}
+                  />
                 )}
               </span>
             </NavLink>

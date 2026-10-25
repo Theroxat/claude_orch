@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json",
-    "test": "vitest run"
+    "test": "node scripts/check-i18n.ts && vitest run",
+    "i18n:check": "node scripts/check-i18n.ts"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "^5.3.0",

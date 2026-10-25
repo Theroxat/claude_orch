@@ -6,6 +6,7 @@ import { UpdatePrompt } from './pwa/UpdatePrompt';
 import { pages } from './routes';
 import { PageFallback } from './ui/PageFallback';
 import { ToastProvider } from './ui/Toast';
+import { useT } from './i18n/index.ts';
 
 const Login = pages['/login'];
 const OAuthConsent = pages['/oauth/consent'];
@@ -23,12 +24,13 @@ const MyServer = pages['/my-server'];
 const AdminAccess = pages['/admin/access'];
 
 function NotFound() {
+  const t = useT();
   return (
-    <section className="gate" aria-label="Page not found">
+    <section className="gate" aria-label={t('layout.notFound.label')}>
       <div className="card">
-        <h1>Page not found</h1>
-        <p className="lede">This page does not exist.</p>
-        <Link to="/">Back to orch</Link>
+        <h1>{t('layout.notFound.title')}</h1>
+        <p className="lede">{t('layout.notFound.body')}</p>
+        <Link to="/">{t('layout.notFound.back')}</Link>
       </div>
     </section>
   );

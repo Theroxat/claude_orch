@@ -764,6 +764,53 @@ button.ghost:hover:not(:disabled) {
   width: 38px;
   padding: 0;
 }
+/* Language lever: a sunken slot with two positions; the set one sits raised, like a thrown lever. */
+.lang-switch {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface-sunk);
+}
+.lang-switch .lang-option {
+  min-height: 30px;
+  padding: 2px 9px 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.lang-switch .lang-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: transparent;
+  color: var(--ink);
+}
+.lang-switch .lang-option[aria-pressed='true'] {
+  background: var(--surface);
+  border-color: var(--rule-strong);
+  color: var(--ink);
+  font-weight: 750;
+  box-shadow: 0 1px 0 rgb(20 32 41 / 0.08);
+}
+.lang-switch .lang-option[aria-busy='true'] {
+  color: var(--ink-soft);
+  cursor: progress;
+}
+.lang-switch .lang-option:focus-visible {
+  border-radius: 999px;
+}
+.gate-tools {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 2;
+}
 button.big,
 .btn.big {
   min-height: 50px;
