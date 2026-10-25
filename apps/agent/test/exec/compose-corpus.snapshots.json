@@ -2114,5 +2114,57 @@
   },
   "extends a file outside the repository": {
     "error": true
+  },
+  "writable bind mount redirecting another sidecar to the host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "planter": {
+          "command": ["sh", "-c", "ln -sfn /etc /repo/data"],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@",
+              "target": "/repo",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/data",
+              "target": "/host",
+              "read_only": true,
+              "bind": {}
+            }
+          ],
+          "depends_on": {
+            "planter": {
+              "condition": "service_completed_successfully",
+              "required": true
+            }
+          }
+        }
+      }
+    }
   }
 }

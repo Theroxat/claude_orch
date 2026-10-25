@@ -660,12 +660,21 @@ function checkCaps(where: string, s: Json, out: string[]): void {
   }
 }
 
+interface BindMount {
+  svc: string;
+  /** Absolute source path as `docker compose config` resolved it (symlinks NOT followed). */
+  source: string;
+  writable: boolean;
+}
+
 interface Ctx {
   root: string;
   project: string;
   topVolumes: Json;
   services: Set<string>;
   taskNetwork: string | undefined;
+  /** Every service bind mount, to catch one service redirecting another's source (see below). */
+  binds: BindMount[];
 }
 
 function checkVolume(svc: string, v: unknown, ctx: Ctx, out: string[]): void {
@@ -689,6 +698,15 @@ function checkVolume(svc: string, v: unknown, ctx: Ctx, out: string[]): void {
     case 'bind': {
       if (source === '' || !inRoot(ctx.root, source)) {
         out.push(`${svc}: bind mount of "${source}" is outside the repository`);
+      } else {
+        // Recorded for the cross-service redirection check (checkBindOverlap): the source is
+        // valid now, but another sidecar with a writable mount of a parent could turn it into a
+        // symlink before this one mounts.
+        ctx.binds.push({
+          svc,
+          source: isAbsolute(source) ? resolve(source) : resolve(ctx.root, source),
+          writable: v.read_only !== true,
+        });
       }
       // Shared propagation would carry mounts between the sidecar and the host.
       const b = sub('bind', set('create_host_path', 'propagation', 'selinux'));
@@ -712,6 +730,37 @@ function checkVolume(svc: string, v: unknown, ctx: Ctx, out: string[]): void {
     }
     default:
       out.push(`${svc}: volume type "${String(v.type)}" is not allowed`);
+  }
+}
+
+/** True when `child` is strictly below `parent` (both absolute, symlinks aside). */
+function isStrictAncestor(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/**
+ * `docker compose config` resolves a relative bind source to an absolute path but does NOT follow
+ * symlinks; the daemon follows them on the host when the container starts. So if one sidecar gets
+ * a writable bind of a directory and a *second* sidecar binds a path under it, the first can
+ * replace that path with a symlink to anywhere on the host (e.g. `/`, `/etc`) before the second
+ * mounts it — a host escape no static source scan can see (the symlink is planted at run time).
+ * Refuse any such overlap: a writable bind source that is a strict ancestor of another service's
+ * bind source. (Same-service overlaps are safe: a service cannot plant before its own mounts.)
+ */
+function checkBindOverlap(binds: BindMount[], out: string[]): void {
+  for (const a of binds) {
+    if (!a.writable) continue;
+    for (const b of binds) {
+      if (a.svc === b.svc) continue;
+      if (isStrictAncestor(a.source, b.source)) {
+        out.push(
+          `${a.svc}: writable bind mount of "${a.source}" is a parent of ` +
+            `${b.svc}'s bind mount "${b.source}" (it could redirect it to the host); ` +
+            `use a named volume to share data between services`,
+        );
+      }
+    }
   }
 }
 
@@ -1021,11 +1070,13 @@ export function checkComposeModel(
     topVolumes,
     services: new Set(Object.keys(services)),
     taskNetwork,
+    binds: [],
   };
   for (const [name, s] of Object.entries(services)) {
     if (!isObj(s)) out.push(`service "${name}": unexpected definition`);
     else checkService(name, s, ctx, topNetworks, out);
   }
+  checkBindOverlap(ctx.binds, out);
   checkTopNetworks(topNetworks, project, out);
   checkTopVolumes(topVolumes, project, out);
   for (const kind of ['secrets', 'configs'] as const) {
@@ -1263,6 +1314,10 @@ export function sanitizeComposeModel(
       delete s.restart;
       if (isObj(s.deploy)) delete s.deploy.restart_policy;
       delete s.develop;
+      // `config` already folded env_file into `environment`, but it keeps `label_file`, which
+      // `up` would read again from the clone. Drop it: the labels are already resolved below, and
+      // a re-read lets a file swapped after validation inject reserved (orch.*) labels.
+      delete s.label_file;
       s.labels = { ...labelsToObject(s.labels), ...labels };
       hardenService(name, s, stripped);
     }

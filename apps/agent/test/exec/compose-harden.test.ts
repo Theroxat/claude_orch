@@ -82,6 +82,12 @@ describe('sanitizeComposeModel hardening', () => {
     expect(harden({ logging: { driver: 'none' } }).s.logging).toEqual({ driver: 'none' });
   });
 
+  it('drops label_file so the up step cannot re-read a swapped file for reserved labels', () => {
+    const s = harden({ label_file: ['./labels.env'], labels: { foo: 'bar' } }).s;
+    expect(s).not.toHaveProperty('label_file');
+    expect((s.labels as Record<string, string>).foo).toBe('bar');
+  });
+
   it('removes the default network (the task network replaces it)', () => {
     const r = sanitizeComposeModel(
       { services: {}, networks: { default: { name: 'x', driver_opts: { a: 'b' } }, b: {} } },

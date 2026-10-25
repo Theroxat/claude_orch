@@ -603,4 +603,27 @@ export const MALICIOUS: CorpusCase[] = [
     },
     refused: /extends file "\/etc\/orch\/compose.yaml" is outside the repository/,
   },
+  {
+    // One sidecar gets a writable bind of a parent directory; before a second sidecar mounts a
+    // path under it, the first replaces that path with a symlink to the host (e.g. /etc). The
+    // source scan cannot see it (the symlink is planted at run time), so the overlap is refused.
+    name: 'writable bind mount redirecting another sidecar to the host',
+    files: {
+      'compose.yaml':
+        'services:\n' +
+        '  planter:\n' +
+        '    image: alpine:3\n' +
+        '    volumes:\n' +
+        '      - ./:/repo\n' +
+        '    command: ["sh", "-c", "ln -sfn /etc /repo/data"]\n' +
+        '  victim:\n' +
+        '    image: alpine:3\n' +
+        '    depends_on:\n' +
+        '      planter:\n' +
+        '        condition: service_completed_successfully\n' +
+        '    volumes:\n' +
+        '      - ./data:/host:ro\n',
+    },
+    refused: /writable bind mount of ".*" is a parent of .*'s bind mount/,
+  },
 ];
