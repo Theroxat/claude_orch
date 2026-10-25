@@ -24,6 +24,7 @@ import { LiveLogStore, registerLiveLogs } from './logs';
 import { Metrics, registerObservability } from './observability';
 import { Notifier, registerNotifications } from './notifications';
 import { recipientCheck } from './notifications/access';
+import { configureRepoAccess } from './projects/service';
 import type { Mailer } from './notifications/service';
 import type { PushSender } from './notifications/push';
 import type { WebhookPoster } from './notifications/ssrf';
@@ -83,6 +84,14 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
   app.get('/api/healthz', health);
 
   if (prisma) {
+    configureRepoAccess({
+      ttlMs: config.ORCH_REPO_ACCESS_TTL_SEC * 1000,
+      graceMs: config.ORCH_REPO_ACCESS_GRACE_SEC * 1000,
+      observer: {
+        count: (result) => metrics.repoAccessChecks.inc({ result }),
+        warn: (obj, msg) => app.log.warn(obj, msg),
+      },
+    });
     const deps = { config, prisma, github, metrics };
     const liveLogs = new LiveLogStore();
     const gateway = createAgentGateway(app, { ...deps, liveLogs });

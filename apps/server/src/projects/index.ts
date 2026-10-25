@@ -12,7 +12,13 @@ import { getUserAccessToken, requireUser, type AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError, parseBody } from '../http/errors';
 import { canParticipate, canSee, toOrchRole } from './roles';
-import { getRoleInfo, isCurrentOwner, toParticipationView, toProjectView } from './service';
+import {
+  getRoleInfo,
+  isCurrentOwner,
+  ownerLostAccess,
+  toParticipationView,
+  toProjectView,
+} from './service';
 
 export function registerProjects(
   app: FastifyInstance,
@@ -119,9 +125,14 @@ export function registerProjects(
     const user = requireUser(req);
     const projects = await prisma.project.findMany({
       where: { addedById: user.id, archivedAt: null },
+      include: { installation: true },
       orderBy: { createdAt: 'asc' },
     });
-    return projects.map(toProjectView);
+    const kept = [];
+    for (const p of projects) {
+      if (!(await ownerLostAccess(prisma, deps.github, p, user))) kept.push(p);
+    }
+    return kept.map(toProjectView);
   });
 
   async function ownedProject(id: string, user: User) {

@@ -1,7 +1,7 @@
 import type { User } from '@prisma/client';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
-import { getRoleInfo } from '../projects/service';
+import { getRoleInfo, ownerLostAccess } from '../projects/service';
 
 /** Whether a user may still receive a notification (about `projectId`, when set). */
 export type RecipientCheck = (userId: string, projectId: string | null) => Promise<boolean>;
@@ -35,6 +35,7 @@ export function recipientCheck(deps: RecipientCheckDeps): RecipientCheck {
     });
     if (!project) return false;
     if (!project.isPrivate) return true;
+    if (await ownerLostAccess(prisma, github, project, user)) return false;
     const info = await getRoleInfo(prisma, github, project, user);
     if (info.role !== 'NONE' || info.canSubmit === true || info.canParticipate === true) {
       return true;

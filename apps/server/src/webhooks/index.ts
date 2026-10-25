@@ -14,6 +14,10 @@
  *   pull_request.closed merged                             -> DONE, dependents unblocked, cleanup
  *   pull_request.closed not merged                         -> back to TODO, cleanup
  *   installation, installation_repositories                -> installations / projects updated
+ *   member (collaborator added|removed|edited)             -> that user's cached repo role is stale
+ *   repository (privatized|publicized|deleted|transferred) -> visibility updated, all roles stale
+ *   organization (member_removed|member_added)             -> the user's roles on the org's repos stale
+ *   installation deleted|suspend|unsuspend, repositories removed -> roles of the installation stale
  */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '@prisma/client';
@@ -24,6 +28,7 @@ import type { AuthDeps } from '../auth';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import type { AgentGateway } from '../agents/gateway';
 import { HttpError } from '../http/errors';
+import { invalidateRepoAccess } from '../projects/service';
 import { TaskService } from '../tasks/service';
 import { bodyHash, parseIssueBody } from '../tasks/meta';
 
@@ -45,7 +50,10 @@ export function signBody(secret: string, raw: string | Buffer): string {
 interface Payload {
   action?: string;
   sender?: { id: number; login: string };
-  repository?: { id: number; full_name: string };
+  repository?: { id: number; full_name: string; private?: boolean };
+  member?: { id: number; login?: string };
+  membership?: { user?: { id: number } };
+  organization?: { login?: string };
   installation?: { id: number; account?: { login?: string; type?: string } };
   issue?: {
     number: number;
@@ -165,6 +173,12 @@ export function registerWebhooks(
         return onInstallation(p);
       case 'installation_repositories':
         return onInstallationRepos(p);
+      case 'member':
+        return onMember(p);
+      case 'repository':
+        return onRepository(p);
+      case 'organization':
+        return onOrganization(p);
       case 'issues':
         return onIssues(p);
       case 'pull_request':
@@ -180,6 +194,49 @@ export function registerWebhooks(
       where: { githubRepoId: BigInt(p.repository.id) },
       include: { installation: true },
     });
+  }
+
+  // ---------- repository access (cached GitHub roles) ----------
+
+  const userByGithubId = (id: number | undefined) =>
+    id === undefined
+      ? null
+      : prisma.user.findUnique({ where: { githubId: BigInt(id) }, select: { id: true } });
+
+  /** A collaborator was added, removed or had their permission changed. */
+  async function onMember(p: Payload): Promise<string> {
+    const project = await projectOf(p);
+    if (!project) return 'ignored';
+    const user = await userByGithubId(p.member?.id);
+    if (!user) return 'ignored';
+    await invalidateRepoAccess(prisma, { projectId: project.id, userId: user.id });
+    return `member.${p.action ?? 'unknown'}`;
+  }
+
+  /** Visibility change, deletion or transfer: every cached role of the repository is stale. */
+  async function onRepository(p: Payload): Promise<string> {
+    const project = await projectOf(p);
+    if (!project) return 'ignored';
+    if (p.action === 'privatized' || p.action === 'publicized') {
+      await prisma.project.update({
+        where: { id: project.id },
+        data: { isPrivate: p.action === 'privatized' },
+      });
+    } else if (!['deleted', 'transferred', 'archived', 'renamed'].includes(p.action ?? '')) {
+      return 'ignored';
+    }
+    await invalidateRepoAccess(prisma, { projectId: project.id });
+    return `repository.${p.action}`;
+  }
+
+  /** Someone left (or joined) the organization: their cached roles on its repositories are stale. */
+  async function onOrganization(p: Payload): Promise<string> {
+    if (p.action !== 'member_removed' && p.action !== 'member_added') return 'ignored';
+    const login = p.organization?.login;
+    const user = await userByGithubId(p.membership?.user?.id);
+    if (!login || !user) return 'ignored';
+    await invalidateRepoAccess(prisma, { userId: user.id, accountLogin: login });
+    return `organization.${p.action}`;
   }
 
   // ---------- installations ----------
@@ -203,6 +260,9 @@ export function registerWebhooks(
     }
     const existing = await prisma.installation.findUnique({ where: { githubInstallationId: id } });
     if (!existing) return 'ignored';
+    if (p.action === 'deleted' || p.action === 'suspend' || p.action === 'unsuspend') {
+      await invalidateRepoAccess(prisma, { installationId: existing.id });
+    }
     if (p.action === 'deleted' || p.action === 'suspend') {
       await prisma.installation.update({ where: { id: existing.id }, data: { suspendedAt: now } });
       if (p.action === 'deleted') {
@@ -235,6 +295,11 @@ export function registerWebhooks(
     });
     const removed = (p.repositories_removed ?? []).map((r) => BigInt(r.id));
     if (removed.length) {
+      const gone = await prisma.project.findMany({
+        where: { installationId: existing.id, githubRepoId: { in: removed } },
+        select: { id: true },
+      });
+      for (const g of gone) await invalidateRepoAccess(prisma, { projectId: g.id });
       await archiveProjects(
         { installationId: existing.id, githubRepoId: { in: removed } },
         'repository_removed',
@@ -284,7 +349,8 @@ export function registerWebhooks(
       const sender = p.sender;
       if (!sender) return 'ignored';
       const senderUser = await prisma.user.findUnique({ where: { githubId: BigInt(sender.id) } });
-      let allowed = senderUser?.id === project.addedById;
+      // The stored owner is trusted on a public repository only; a private one is asked to GitHub.
+      let allowed = senderUser?.id === project.addedById && (!project.isPrivate || !deps.github);
       if (!allowed && deps.github) {
         const role = await deps.github
           .getUserRole(

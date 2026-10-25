@@ -14,7 +14,7 @@ import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
 import type { GithubClient } from '../github';
 import { canSubmit } from '../projects/roles';
-import { getRoleInfo, participationStatus } from '../projects/service';
+import { getRoleInfo, participationStatus, stillOwns } from '../projects/service';
 
 const offerInclude = {
   task: { include: { project: true, createdBy: true } },
@@ -130,23 +130,38 @@ export async function buildPool(
       ...(projectId ? { id: projectId } : {}),
       OR: [{ addedById: user.id }, { participations: { some: { userId: user.id } } }],
     },
-    include: { participations: { where: { userId: user.id } } },
+    include: { participations: { where: { userId: user.id } }, installation: true },
     orderBy: { fullName: 'asc' },
   });
-  // Owners and ACTIVE participants only: a pending, rejected or inactive row sees nothing.
-  const projects = candidates.filter(
-    (p) =>
-      p.addedById === user.id ||
+  // Owners and ACTIVE participants only: a pending, rejected or inactive row sees nothing. A
+  // private repository's stored owner counts only while GitHub still gives them ADMIN, and an
+  // owner who lost the repository entirely is not let back in through an old participation row.
+  const projects = [];
+  const ownedIds = new Set<string>();
+  for (const p of candidates) {
+    if (await stillOwns(deps.prisma, deps.github, p, user)) {
+      projects.push(p);
+      ownedIds.add(p.id);
+      continue;
+    }
+    if (p.addedById === user.id && p.isPrivate && deps.github) {
+      const role = (await getRoleInfo(deps.prisma, deps.github, p, user)).role;
+      if (role === 'NONE') continue;
+    }
+    if (
       p.participations.some(
         (r) => participationStatus(r, p.requireParticipantApproval) === 'active',
-      ),
-  );
+      )
+    ) {
+      projects.push(p);
+    }
+  }
   if (projectId && projects.length === 0) {
     const asSubmitter = await submitterProject(deps, user, projectId);
     if (!asSubmitter) throw new HttpError(404, 'not_found', 'Project not found');
     projects.push(asSubmitter);
   }
-  const owned = new Set(projects.filter((p) => p.addedById === user.id).map((p) => p.id));
+  const owned = ownedIds;
   const parts = await prisma.participation.findMany({
     where: { projectId: { in: projects.map((p) => p.id) }, active: true },
     include: { user: { include: { agents: true } }, project: true },

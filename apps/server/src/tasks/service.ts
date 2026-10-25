@@ -22,7 +22,7 @@ import type { PrismaClient } from '../db';
 import type { GithubClient, GithubIssue } from '../github';
 import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
-import { getRoleInfo, participationStatus } from '../projects/service';
+import { getRoleInfo, ownerLostAccess, participationStatus } from '../projects/service';
 import { listHistory, type HistoryFilters } from './history';
 import type { Metrics } from '../observability';
 import { bodyHash, branchNameFor, buildIssueBody, creatorOf, parseIssueBody } from './meta';
@@ -331,6 +331,11 @@ export class TaskService {
     const project = await this.projectFor(id);
     const access = await this.accessFor(project, user);
     if (!access.isOwner && access.role === 'NONE') {
+      // The stored owner of a private repository GitHub no longer lets in sees nothing, whatever
+      // participation row is left.
+      if (await ownerLostAccess(this.prisma, this.deps.github, project, user)) {
+        throw new HttpError(404, 'not_found', 'Project not found');
+      }
       // A pending, rejected or inactive participation row grants no view of the board.
       const part = await this.prisma.participation.findUnique({
         where: { userId_projectId: { userId: user.id, projectId: id } },

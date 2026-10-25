@@ -41,6 +41,7 @@ export class Metrics {
   readonly assignmentsFinished: Counter<'outcome' | 'failure_class'>;
   readonly wsMessages: Counter<'type'>;
   readonly webhookDeliveries: Counter<'event' | 'result'>;
+  readonly repoAccessChecks: Counter<'result'>;
   private sources: MetricsSources | undefined;
   private tasksFetchedAt = 0;
   private tasksCache: Record<string, number> = {};
@@ -103,6 +104,13 @@ export class Metrics {
       name: 'orch_webhook_deliveries_total',
       help: 'GitHub webhook deliveries by event and result.',
       labelNames: ['event', 'result'],
+      registers,
+    });
+
+    this.repoAccessChecks = new Counter({
+      name: 'orch_repo_access_checks_total',
+      help: 'Repository access checks that went to GitHub, by result (refreshed, denied, grace, outage_denied, invalidated).',
+      labelNames: ['result'],
       registers,
     });
 
