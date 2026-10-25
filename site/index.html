@@ -1,33 +1,57 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>orch: a shared to-do list run by your team's Claude subscriptions</title>
-    <meta name="description" content="orch is a self-hosted, shared to-do list for small, trusted teams. Tasks are GitHub issues; each one runs on a teammate's machine, with their own Claude subscription, in a throwaway container, and comes back as a pull request.">
-    <link rel="canonical" href="https://theroxat.github.io/claude_orch/">
-    <meta name="color-scheme" content="light dark">
-    <meta name="theme-color" content="#e3e8e1" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#0f171b" media="(prefers-color-scheme: dark)">
-    <link rel="icon" href="favicon.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <meta
+      name="description"
+      content="orch is a self-hosted, shared to-do list for small, trusted teams. Tasks are GitHub issues; each one runs on a teammate's machine, with their own Claude subscription, in a throwaway container, and comes back as a pull request."
+    />
+    <link rel="canonical" href="https://theroxat.github.io/claude_orch/" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#e3e8e1" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f171b" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 
-    <meta property="og:type" content="website">
-    <meta property="og:site_name" content="orch">
-    <meta property="og:title" content="orch: hand your teammates' idle Claude capacity a to-do list">
-    <meta property="og:description" content="Tasks are GitHub issues. Each one runs on a teammate's machine, with their own Claude subscription, in a sandbox, and comes back as a pull request. Self-hosted, MIT.">
-    <meta property="og:url" content="https://theroxat.github.io/claude_orch/">
-    <meta property="og:image" content="https://theroxat.github.io/claude_orch/og-image.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="The orch wordmark and a rail diagram: an issue is routed to one teammate's machine and comes back as a pull request.">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="orch: hand your teammates' idle Claude capacity a to-do list">
-    <meta name="twitter:description" content="Tasks are GitHub issues. Each one runs on a teammate's machine, with their own Claude subscription, in a sandbox, and comes back as a pull request.">
-    <meta name="twitter:image" content="https://theroxat.github.io/claude_orch/og-image.png">
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="orch" />
+    <meta
+      property="og:title"
+      content="orch: hand your teammates' idle Claude capacity a to-do list"
+    />
+    <meta
+      property="og:description"
+      content="Tasks are GitHub issues. Each one runs on a teammate's machine, with their own Claude subscription, in a sandbox, and comes back as a pull request. Self-hosted, MIT."
+    />
+    <meta property="og:url" content="https://theroxat.github.io/claude_orch/" />
+    <meta property="og:image" content="https://theroxat.github.io/claude_orch/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="The orch wordmark and a rail diagram: an issue is routed to one teammate's machine and comes back as a pull request."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="orch: hand your teammates' idle Claude capacity a to-do list"
+    />
+    <meta
+      name="twitter:description"
+      content="Tasks are GitHub issues. Each one runs on a teammate's machine, with their own Claude subscription, in a sandbox, and comes back as a pull request."
+    />
+    <meta name="twitter:image" content="https://theroxat.github.io/claude_orch/og-image.png" />
 
-    <link rel="preload" href="assets/fonts/overpass-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="assets/site.css">
+    <link
+      rel="preload"
+      href="assets/fonts/overpass-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="assets/site.css" />
     <script>
       try {
         var t = localStorage.getItem('orch-site-theme');
@@ -43,8 +67,8 @@
       <div class="wrap top-row">
         <a class="brand" href="./" aria-label="orch, home">
           <svg class="brand-mark" viewBox="0 0 34 22" aria-hidden="true" focusable="false">
-            <path class="track" d="M2 4c9 0 11 7 20 7M2 18c9 0 11-7 20-7M2 11h22"/>
-            <circle class="signal" cx="28.5" cy="11" r="3.5"/>
+            <path class="track" d="M2 4c9 0 11 7 20 7M2 18c9 0 11-7 20-7M2 11h22" />
+            <circle class="signal" cx="28.5" cy="11" r="3.5" />
           </svg>
           <span class="brand-name">orch</span>
         </a>
@@ -56,8 +80,15 @@
           <a href="https://claude-orch.readthedocs.io">Docs</a>
           <a href="https://github.com/Theroxat/claude_orch">GitHub</a>
           <button class="theme" type="button" aria-label="Switch to dark theme" data-theme-toggle>
-            <svg class="i-moon" viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 12.6A6.5 6.5 0 0 1 7.4 4.5a6.5 6.5 0 1 0 8.1 8.1Z"/></svg>
-            <svg class="i-sun" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.6"/><path d="M10 1.8v2.1M10 16.1v2.1M1.8 10h2.1M16.1 10h2.1M4.2 4.2l1.5 1.5M14.3 14.3l1.5 1.5M4.2 15.8l1.5-1.5M14.3 5.7l1.5-1.5"/></svg>
+            <svg class="i-moon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M15.5 12.6A6.5 6.5 0 0 1 7.4 4.5a6.5 6.5 0 1 0 8.1 8.1Z" />
+            </svg>
+            <svg class="i-sun" viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="3.6" />
+              <path
+                d="M10 1.8v2.1M10 16.1v2.1M1.8 10h2.1M16.1 10h2.1M4.2 4.2l1.5 1.5M14.3 14.3l1.5 1.5M4.2 15.8l1.5-1.5M14.3 5.7l1.5-1.5"
+              />
+            </svg>
           </button>
         </nav>
       </div>
@@ -67,106 +98,145 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="wrap">
           <h1 id="hero-title">Hand your teammates' idle Claude capacity a to-do list.</h1>
-          <p class="lede">orch is a shared to-do list for small, trusted teams. Tasks are GitHub issues. Each one runs on a teammate's own machine, with their own Claude subscription, in a throwaway container, and comes back as a pull request. Nobody shares an account.</p>
+          <p class="lede">
+            orch is a shared to-do list for small, trusted teams. Tasks are GitHub issues. Each one
+            runs on a teammate's own machine, with their own Claude subscription, in a throwaway
+            container, and comes back as a pull request. Nobody shares an account.
+          </p>
           <div class="cta">
             <a class="btn btn-proceed" href="#install">Install orch</a>
-            <a class="btn btn-quiet" href="https://claude-orch.readthedocs.io/en/latest/quickstart.html">Read the quickstart</a>
+            <a
+              class="btn btn-quiet"
+              href="https://claude-orch.readthedocs.io/en/latest/quickstart.html"
+              >Read the quickstart</a
+            >
           </div>
         </div>
 
         <figure class="journey wrap">
-          <svg class="route route-wide" viewBox="0 0 1120 320" role="img" aria-labelledby="j-title j-desc">
+          <svg
+            class="route route-wide"
+            viewBox="0 0 1120 320"
+            role="img"
+            aria-labelledby="j-title j-desc"
+          >
             <title id="j-title">How one task travels</title>
-            <desc id="j-desc">Issue 42, labeled pool, reaches a junction with three teammates' machines. bob-desktop shows a red signal: no budget left. chen-nas shows an ochre signal: paused. alice-laptop shows a proceed signal: auto mode, budget available. The route is set through alice-laptop, where the task runs in a sandbox, and ends at draft pull request 43.</desc>
+            <desc id="j-desc">
+              Issue 42, labeled pool, reaches a junction with three teammates' machines. bob-desktop
+              shows a red signal: no budget left. chen-nas shows an ochre signal: paused.
+              alice-laptop shows a proceed signal: auto mode, budget available. The route is set
+              through alice-laptop, where the task runs in a sandbox, and ends at draft pull request
+              43.
+            </desc>
             <g class="rails">
-              <path d="M70 160H250"/>
-              <path d="M250 160c60 0 70-90 130-90h320c60 0 70 90 130 90"/>
-              <path d="M250 160H830"/>
-              <path d="M250 160c60 0 70 90 130 90h320c60 0 70-90 130-90"/>
-              <path d="M830 160h220"/>
+              <path d="M70 160H250" />
+              <path d="M250 160c60 0 70-90 130-90h320c60 0 70 90 130 90" />
+              <path d="M250 160H830" />
+              <path d="M250 160c60 0 70 90 130 90h320c60 0 70-90 130-90" />
+              <path d="M830 160h220" />
             </g>
-            <rect class="sandbox" x="560" y="126" width="140" height="68" rx="10"/>
+            <rect class="sandbox" x="560" y="126" width="140" height="68" rx="10" />
             <text class="t-box" x="630" y="148">sandbox</text>
             <text class="t-sub" x="630" y="186" text-anchor="middle">only the clone</text>
-            <path class="set" pathLength="1" d="M70 160H1050"/>
+            <path class="set" pathLength="1" d="M70 160H1050" />
 
             <g class="station s-issue">
-              <circle cx="70" cy="160" r="9"/>
+              <circle cx="70" cy="160" r="9" />
               <text class="t-name" x="70" y="132" text-anchor="middle">Issue #42</text>
-              <text class="t-sub" x="70" y="192" text-anchor="middle">labeled <tspan class="t-code">pool</tspan></text>
+              <text class="t-sub" x="70" y="192" text-anchor="middle">
+                labeled
+                <tspan class="t-code">pool</tspan>
+              </text>
             </g>
 
             <g class="post post-stop">
-              <rect x="398" y="52" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="410" cy="70" r="6"/>
+              <rect x="398" y="52" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="410" cy="70" r="6" />
               <text class="t-name" x="436" y="44">bob-desktop</text>
               <text class="t-sub" x="436" y="104">no budget left</text>
             </g>
             <g class="post post-proceed">
-              <rect x="398" y="142" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="410" cy="160" r="6"/>
+              <rect x="398" y="142" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="410" cy="160" r="6" />
               <text class="t-name" x="436" y="134">alice-laptop</text>
               <text class="t-sub" x="436" y="194">auto, budget ok</text>
             </g>
             <g class="post post-caution">
-              <rect x="398" y="232" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="410" cy="250" r="6"/>
+              <rect x="398" y="232" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="410" cy="250" r="6" />
               <text class="t-name" x="436" y="224">chen-nas</text>
               <text class="t-sub" x="436" y="284">paused</text>
             </g>
 
             <g class="station s-pr">
-              <circle cx="1050" cy="160" r="9"/>
+              <circle cx="1050" cy="160" r="9" />
               <text class="t-name" x="1050" y="132" text-anchor="middle">Draft PR #43</text>
-              <text class="t-sub t-code" x="1050" y="192" text-anchor="middle">orch/issue-42-*</text>
+              <text class="t-sub t-code" x="1050" y="192" text-anchor="middle">
+                orch/issue-42-*
+              </text>
             </g>
           </svg>
 
-          <svg class="route route-tall" viewBox="0 0 340 600" role="img" aria-labelledby="jt-title jt-desc">
+          <svg
+            class="route route-tall"
+            viewBox="0 0 340 600"
+            role="img"
+            aria-labelledby="jt-title jt-desc"
+          >
             <title id="jt-title">How one task travels</title>
-            <desc id="jt-desc">Issue 42, labeled pool, reaches three teammates' machines. bob-desktop: red signal, no budget left. chen-nas: ochre signal, paused. alice-laptop: proceed signal. The task runs in a sandbox on alice-laptop and ends at draft pull request 43.</desc>
+            <desc id="jt-desc">
+              Issue 42, labeled pool, reaches three teammates' machines. bob-desktop: red signal, no
+              budget left. chen-nas: ochre signal, paused. alice-laptop: proceed signal. The task
+              runs in a sandbox on alice-laptop and ends at draft pull request 43.
+            </desc>
             <g class="rails">
-              <path d="M170 40v90"/>
-              <path d="M170 130c0 40-110 40-110 80v220c0 40 110 40 110 80"/>
-              <path d="M170 130v380"/>
-              <path d="M170 130c0 40 110 40 110 80v220c0 40-110 40-110 80"/>
-              <path d="M170 510v50"/>
+              <path d="M170 40v90" />
+              <path d="M170 130c0 40-110 40-110 80v220c0 40 110 40 110 80" />
+              <path d="M170 130v380" />
+              <path d="M170 130c0 40 110 40 110 80v220c0 40-110 40-110 80" />
+              <path d="M170 510v50" />
             </g>
-            <rect class="sandbox" x="122" y="330" width="96" height="84" rx="10"/>
-            <path class="set" pathLength="1" d="M170 40v520"/>
+            <rect class="sandbox" x="122" y="330" width="96" height="84" rx="10" />
+            <path class="set" pathLength="1" d="M170 40v520" />
             <text class="t-box t-halo" x="170" y="358">sandbox</text>
             <text class="t-sub t-halo" x="170" y="398" text-anchor="middle">only the clone</text>
 
             <g class="station s-issue">
-              <circle cx="170" cy="40" r="9"/>
+              <circle cx="170" cy="40" r="9" />
               <text class="t-name" x="192" y="38">Issue #42</text>
-              <text class="t-sub" x="192" y="56">labeled <tspan class="t-code">pool</tspan></text>
+              <text class="t-sub" x="192" y="56">
+                labeled
+                <tspan class="t-code">pool</tspan>
+              </text>
             </g>
             <g class="post post-stop">
-              <rect x="48" y="218" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="60" cy="236" r="6"/>
+              <rect x="48" y="218" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="60" cy="236" r="6" />
               <text class="t-name" x="60" y="282" text-anchor="middle">bob</text>
               <text class="t-sub" x="60" y="300" text-anchor="middle">no budget</text>
             </g>
             <g class="post post-proceed">
-              <rect x="158" y="218" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="170" cy="236" r="6"/>
+              <rect x="158" y="218" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="170" cy="236" r="6" />
               <text class="t-name" x="170" y="282" text-anchor="middle">alice</text>
               <text class="t-sub" x="170" y="300" text-anchor="middle">budget ok</text>
             </g>
             <g class="post post-caution">
-              <rect x="268" y="218" width="24" height="36" rx="7"/>
-              <circle class="lamp" cx="280" cy="236" r="6"/>
+              <rect x="268" y="218" width="24" height="36" rx="7" />
+              <circle class="lamp" cx="280" cy="236" r="6" />
               <text class="t-name" x="280" y="282" text-anchor="middle">chen</text>
               <text class="t-sub" x="280" y="300" text-anchor="middle">paused</text>
             </g>
             <g class="station s-pr">
-              <circle cx="170" cy="560" r="9"/>
+              <circle cx="170" cy="560" r="9" />
               <text class="t-name" x="192" y="558">Draft PR #43</text>
               <text class="t-sub t-code" x="192" y="576">orch/issue-42-*</text>
             </g>
           </svg>
-          <figcaption>The dispatcher sets the route: only a teammate who is online, unpaused and has budget left gets the task.</figcaption>
+          <figcaption>
+            The dispatcher sets the route: only a teammate who is online, unpaused and has budget
+            left gets the task.
+          </figcaption>
         </figure>
       </section>
 
@@ -177,28 +247,52 @@
             <li>
               <span class="stop" aria-hidden="true">1</span>
               <h3>Label an issue</h3>
-              <p>Any issue carrying the project's pool label becomes a task. You can also create one on the Backlog page, or let Claude Code split a feature into tasks through MCP.</p>
+              <p>
+                Any issue carrying the project's pool label becomes a task. You can also create one
+                on the Backlog page, or let Claude Code split a feature into tasks through MCP.
+              </p>
             </li>
             <li>
               <span class="stop" aria-hidden="true">2</span>
               <h3>orch offers it to a teammate</h3>
-              <p>In <strong>auto</strong> mode it goes to the member with the most budget left. In <strong>approval</strong> mode nothing starts until they accept. <code>orch pause</code> always wins.</p>
+              <p>
+                In <strong>auto</strong> mode it goes to the member with the most budget left. In
+                <strong>approval</strong> mode nothing starts until they accept.
+                <code>orch pause</code> always wins.
+              </p>
             </li>
             <li>
               <span class="stop" aria-hidden="true">3</span>
               <h3>It runs on their machine</h3>
-              <p>Claude Code works in a non-root container that only sees a fresh clone, with that member's own subscription. You follow the run in live logs.</p>
+              <p>
+                Claude Code works in a non-root container that only sees a fresh clone, with that
+                member's own subscription. You follow the run in live logs.
+              </p>
             </li>
             <li>
               <span class="stop" aria-hidden="true">4</span>
               <h3>A pull request comes back</h3>
-              <p>orch pushes an <code>orch/issue-&lt;n&gt;-*</code> branch and opens a draft PR. The project owner reviews and merges; dependent tasks start after.</p>
+              <p>
+                orch pushes an <code>orch/issue-&lt;n&gt;-*</code> branch and opens a draft PR. The
+                project owner reviews and merges; dependent tasks start after.
+              </p>
             </li>
           </ol>
 
           <figure class="shot shot-hero">
-            <img src="assets/img/backlog-1280.webp" srcset="assets/img/backlog-720.webp 720w, assets/img/backlog-1280.webp 1280w" sizes="(min-width: 1228px) 1180px, calc(100vw - 32px)" width="1280" height="1210" loading="lazy" decoding="async" alt="The orch Backlog page: task columns Proposed, To do, Blocked, In progress, In review and Done, each card a GitHub issue with its size, model, assignee and pull request link.">
-            <figcaption>The Backlog: every task is a GitHub issue, sorted by where it is on the line.</figcaption>
+            <img
+              src="assets/img/backlog-1280.webp"
+              srcset="assets/img/backlog-720.webp 720w, assets/img/backlog-1280.webp 1280w"
+              sizes="(min-width: 1228px) 1180px, calc(100vw - 32px)"
+              width="1280"
+              height="1210"
+              loading="lazy"
+              decoding="async"
+              alt="The orch Backlog page: task columns Proposed, To do, Blocked, In progress, In review and Done, each card a GitHub issue with its size, model, assignee and pull request link."
+            />
+            <figcaption>
+              The Backlog: every task is a GitHub issue, sorted by where it is on the line.
+            </figcaption>
           </figure>
         </div>
       </section>
@@ -206,53 +300,113 @@
       <section id="features" class="band" aria-labelledby="features-title">
         <div class="wrap">
           <h2 id="features-title">What you get</h2>
-          <p class="section-lede">Everything a small team needs to share the work, and to see what their Claude capacity is doing.</p>
+          <p class="section-lede">
+            Everything a small team needs to share the work, and to see what their Claude capacity
+            is doing.
+          </p>
 
           <div class="group">
-            <h3 class="group-title"><span class="lamp-dot lamp-proceed" aria-hidden="true"></span>While a task runs</h3>
+            <h3 class="group-title">
+              <span class="lamp-dot lamp-proceed" aria-hidden="true"></span>While a task runs
+            </h3>
             <dl class="features">
               <div>
                 <dt>Live logs</dt>
-                <dd>A Logs panel on each task card follows Claude Code as it works: messages, tool calls such as <code>Bash pnpm test</code>, the start of each result. Secrets are masked on the machine before a line leaves it.</dd>
+                <dd>
+                  A Logs panel on each task card follows Claude Code as it works: messages, tool
+                  calls such as <code>Bash pnpm test</code>, the start of each result. Secrets are
+                  masked on the machine before a line leaves it.
+                </dd>
               </div>
               <div>
                 <dt>Budgets and the pool</dt>
-                <dd>Each member gives a project a share of their Claude capacity. orch estimates the 5-hour window from local usage, holds back a safety margin and only offers work that fits.</dd>
+                <dd>
+                  Each member gives a project a share of their Claude capacity. orch estimates the
+                  5-hour window from local usage, holds back a safety margin and only offers work
+                  that fits.
+                </dd>
               </div>
               <div>
                 <dt>Auto or approval, per project</dt>
-                <dd>Choose which models you allow and whether tasks start on their own or wait for you. Nobody, not even an admin, can change that for you.</dd>
+                <dd>
+                  Choose which models you allow and whether tasks start on their own or wait for
+                  you. Nobody, not even an admin, can change that for you.
+                </dd>
               </div>
             </dl>
             <figure class="shot shot-side">
-              <img src="assets/img/pool-1280.webp" srcset="assets/img/pool-720.webp 720w, assets/img/pool-1280.webp 1280w" sizes="(min-width: 1028px) 980px, calc(100vw - 32px)" width="1280" height="660" loading="lazy" decoding="async" alt="The Pool page: alice is online with an auto participation, 100 percent margin left and a task running; bob is offline with a stale usage report and approval mode.">
-              <figcaption>The Pool: who is lending capacity right now, and how much margin they have left.</figcaption>
+              <img
+                src="assets/img/pool-1280.webp"
+                srcset="assets/img/pool-720.webp 720w, assets/img/pool-1280.webp 1280w"
+                sizes="(min-width: 1028px) 980px, calc(100vw - 32px)"
+                width="1280"
+                height="660"
+                loading="lazy"
+                decoding="async"
+                alt="The Pool page: alice is online with an auto participation, 100 percent margin left and a task running; bob is offline with a stale usage report and approval mode."
+              />
+              <figcaption>
+                The Pool: who is lending capacity right now, and how much margin they have left.
+              </figcaption>
             </figure>
           </div>
 
           <div class="group">
-            <h3 class="group-title"><span class="lamp-dot lamp-route" aria-hidden="true"></span>Keeping everyone in the loop</h3>
+            <h3 class="group-title">
+              <span class="lamp-dot lamp-route" aria-hidden="true"></span>Keeping everyone in the
+              loop
+            </h3>
             <dl class="features">
               <div>
                 <dt>Notifications</dt>
-                <dd>Task done, task failed, PR ready for review, a task offered to you, access requests. In the app, and per event in Slack, Discord, any JSON webhook, e-mail or browser push.</dd>
+                <dd>
+                  Task done, task failed, PR ready for review, a task offered to you, access
+                  requests. In the app, and per event in Slack, Discord, any JSON webhook, e-mail or
+                  browser push.
+                </dd>
               </div>
               <div>
                 <dt>Usage dashboard</dt>
-                <dd>Tokens per day, task runs, success rate, and what each project has used of its share in the current window, over 7, 30 or 90 days.</dd>
+                <dd>
+                  Tokens per day, task runs, success rate, and what each project has used of its
+                  share in the current window, over 7, 30 or 90 days.
+                </dd>
               </div>
               <div>
                 <dt>History and templates</dt>
-                <dd>Search every task that has run, with its PR, runs and failure class. Start new tasks from built-in, personal or shared templates with <code>{{placeholders}}</code>.</dd>
+                <dd>
+                  Search every task that has run, with its PR, runs and failure class. Start new
+                  tasks from built-in, personal or shared templates with
+                  <code>{{placeholders}}</code>.
+                </dd>
               </div>
               <div>
                 <dt>Claude Code over MCP</dt>
-                <dd>Claude Code can view the pool, split work into tasks with dependencies, dry-run and submit them. No extra LLM key: your own Claude does the planning. OAuth 2.1 sign-in.</dd>
+                <dd>
+                  Claude Code can view the pool, split work into tasks with dependencies, dry-run
+                  and submit them. No extra LLM key: your own Claude does the planning. OAuth 2.1
+                  sign-in.
+                </dd>
               </div>
             </dl>
             <figure class="shot shot-side">
-              <img src="assets/img/notifications-1280.webp" srcset="assets/img/notifications-720.webp 720w, assets/img/notifications-1280.webp 1280w" sizes="(min-width: 1028px) 980px, calc(100vw - 32px)" width="1280" height="612" loading="lazy" decoding="async" alt="The notification panel open from the bell: a pull request ready for review, a failed task, a task offered to you, a merged task and an expired Claude login.">
-              <figcaption>The bell: what needs you, in the app. The same events can go to Slack, Discord, a webhook, e-mail or browser push.</figcaption>
+              <img
+                src="assets/img/notifications-1280.webp"
+                srcset="
+                  assets/img/notifications-720.webp   720w,
+                  assets/img/notifications-1280.webp 1280w
+                "
+                sizes="(min-width: 1028px) 980px, calc(100vw - 32px)"
+                width="1280"
+                height="612"
+                loading="lazy"
+                decoding="async"
+                alt="The notification panel open from the bell: a pull request ready for review, a failed task, a task offered to you, a merged task and an expired Claude login."
+              />
+              <figcaption>
+                The bell: what needs you, in the app. The same events can go to Slack, Discord, a
+                webhook, e-mail or browser push.
+              </figcaption>
             </figure>
           </div>
         </div>
@@ -261,38 +415,93 @@
       <section id="security" class="band band-sunk" aria-labelledby="security-title">
         <div class="wrap">
           <h2 id="security-title">Built for teams who trust each other</h2>
-          <p class="section-lede">orch is a shared to-do list with automation, not a multi-tenant platform. Here is exactly what it protects, and what it does not.</p>
+          <p class="section-lede">
+            orch is a shared to-do list with automation, not a multi-tenant platform. Here is
+            exactly what it protects, and what it does not.
+          </p>
 
           <div class="ledger">
             <div class="ledger-col">
               <h3><span class="lamp-dot lamp-proceed" aria-hidden="true"></span>What orch does</h3>
               <ul>
-                <li><strong>Credentials stay local.</strong> The Claude token lives on the member's machine. The server only sees task statuses and usage estimates.</li>
-                <li><strong>Outbound only.</strong> Agents connect to the server over a WebSocket. Member machines open no inbound port.</li>
-                <li><strong>A sandbox per task.</strong> Non-root container, only its own clone mounted, no Docker socket, no host home. Git metadata stays outside.</li>
-                <li><strong>Compose guard.</strong> A repository's own compose file is checked for <code>privileged</code>, host mounts, the Docker socket, host networking and <code>cap_add</code>.</li>
-                <li><strong>Secret redaction.</strong> Live logs mask the member's Claude token, the run's GitHub tokens and known token patterns, on the machine and again on the server.</li>
-                <li><strong>Draft PRs.</strong> Auto-mode PRs open as drafts. orch only pushes <code>orch/issue-&lt;n&gt;-*</code> branches.</li>
+                <li>
+                  <strong>Credentials stay local.</strong> The Claude token lives on the member's
+                  machine. The server only sees task statuses and usage estimates.
+                </li>
+                <li>
+                  <strong>Outbound only.</strong> Agents connect to the server over a WebSocket.
+                  Member machines open no inbound port.
+                </li>
+                <li>
+                  <strong>A sandbox per task.</strong> Non-root container, only its own clone
+                  mounted, no Docker socket, no host home. Git metadata stays outside.
+                </li>
+                <li>
+                  <strong>Compose guard.</strong> A repository's own compose file is checked for
+                  <code>privileged</code>, host mounts, the Docker socket, host networking and
+                  <code>cap_add</code>.
+                </li>
+                <li>
+                  <strong>Secret redaction.</strong> Live logs mask the member's Claude token, the
+                  run's GitHub tokens and known token patterns, on the machine and again on the
+                  server.
+                </li>
+                <li>
+                  <strong>Draft PRs.</strong> Auto-mode PRs open as drafts. orch only pushes
+                  <code>orch/issue-&lt;n&gt;-*</code> branches.
+                </li>
               </ul>
             </div>
             <div class="ledger-col">
-              <h3><span class="lamp-dot lamp-stop" aria-hidden="true"></span>What it does not do</h3>
+              <h3>
+                <span class="lamp-dot lamp-stop" aria-hidden="true"></span>What it does not do
+              </h3>
               <ul>
-                <li><strong>No egress filtering.</strong> In auto mode the task container has network access and the member's token. A malicious issue could exfiltrate it.</li>
-                <li><strong>Not for strangers.</strong> Anyone who can label an issue for the pool is, in effect, writing a prompt that runs on a teammate's machine.</li>
-                <li><strong>The agent is root-equivalent</strong> on the member's host: it drives Docker to start task containers. Rootless Docker reduces this.</li>
-                <li><strong>Budgets are estimates.</strong> Anthropic does not publish exact subscription limits. Treat them as hints.</li>
+                <li>
+                  <strong>No egress filtering.</strong> In auto mode the task container has network
+                  access and the member's token. A malicious issue could exfiltrate it.
+                </li>
+                <li>
+                  <strong>Not for strangers.</strong> Anyone who can label an issue for the pool is,
+                  in effect, writing a prompt that runs on a teammate's machine.
+                </li>
+                <li>
+                  <strong>The agent is root-equivalent</strong> on the member's host: it drives
+                  Docker to start task containers. Rootless Docker reduces this.
+                </li>
+                <li>
+                  <strong>Budgets are estimates.</strong> Anthropic does not publish exact
+                  subscription limits. Treat them as hints.
+                </li>
               </ul>
-              <p class="ledger-note">The compose guard is still being completed on the agent side; until then, treat a repository's compose file as trusted code. <a href="https://claude-orch.readthedocs.io/en/latest/security.html">Read the security model</a></p>
+              <p class="ledger-note">
+                The compose guard is still being completed on the agent side; until then, treat a
+                repository's compose file as trusted code.
+                <a href="https://claude-orch.readthedocs.io/en/latest/security.html"
+                  >Read the security model</a
+                >
+              </p>
             </div>
           </div>
 
           <h3 class="sub-title">Yours to run</h3>
           <ul class="facts">
-            <li><strong>One Docker Compose stack:</strong> Caddy with automatic HTTPS, the server, Postgres. Cloudflare Tunnel works too.</li>
-            <li><strong>Backups built in:</strong> scheduled <code>pg_dump</code> with rotation, optional age encryption and S3 upload, and a restore script.</li>
-            <li><strong>Observability when you want it:</strong> Prometheus metrics, OpenTelemetry traces and a ready-made Grafana dashboard, all off by default.</li>
-            <li><strong>Sign-in you control:</strong> GitHub sign-in limited to admins, an allowlist of logins or organizations, invite links and an audited Access page.</li>
+            <li>
+              <strong>One Docker Compose stack:</strong> Caddy with automatic HTTPS, the server,
+              Postgres. Cloudflare Tunnel works too.
+            </li>
+            <li>
+              <strong>Backups built in:</strong> scheduled <code>pg_dump</code> with rotation,
+              optional age encryption and S3 upload, and a restore script.
+            </li>
+            <li>
+              <strong>Observability when you want it:</strong> Prometheus metrics, OpenTelemetry
+              traces and a ready-made Grafana dashboard, all off by default.
+            </li>
+            <li>
+              <strong>Sign-in you control:</strong> GitHub sign-in limited to admins, an allowlist
+              of logins or organizations, invite links and an audited Access page.
+            </li>
           </ul>
         </div>
       </section>
@@ -300,7 +509,11 @@
       <section id="install" class="band" aria-labelledby="install-title">
         <div class="wrap">
           <h2 id="install-title">Install</h2>
-          <p class="section-lede">You need a Linux host with Docker 26+ and Compose, ports 80 and 443, and a DNS name. Then create the GitHub App described in the <a href="https://claude-orch.readthedocs.io/en/latest/github-app.html">docs</a>.</p>
+          <p class="section-lede">
+            You need a Linux host with Docker 26+ and Compose, ports 80 and 443, and a DNS name.
+            Then create the GitHub App described in the
+            <a href="https://claude-orch.readthedocs.io/en/latest/github-app.html">docs</a>.
+          </p>
 
           <div class="terminals">
             <div class="term">
@@ -308,7 +521,9 @@
                 <h3>On the server, once</h3>
                 <button class="copy" type="button" data-copy="srv">Copy</button>
               </div>
-              <pre id="srv"><code>git clone https://github.com/Theroxat/claude_orch.git &amp;&amp; cd claude_orch/deploy/server
+              <pre
+                id="srv"
+              ><code>git clone https://github.com/Theroxat/claude_orch.git &amp;&amp; cd claude_orch/deploy/server
 cp .env.example .env     # fill it in, then create the GitHub App
 docker compose up -d</code></pre>
             </div>
@@ -317,17 +532,26 @@ docker compose up -d</code></pre>
                 <h3>On each member's machine</h3>
                 <button class="copy" type="button" data-copy="agent">Copy</button>
               </div>
-              <pre id="agent"><code>curl -fsSL https://&lt;domain&gt;/install.sh | ORCH_TOKEN=&lt;one-time-token&gt; sh
+              <pre
+                id="agent"
+              ><code>curl -fsSL https://&lt;domain&gt;/install.sh | ORCH_TOKEN=&lt;one-time-token&gt; sh
 orch login</code></pre>
-              <p class="term-note">The <strong>My Server</strong> page gives each member this command with a one-time token, valid 15 minutes.</p>
+              <p class="term-note">
+                The <strong>My Server</strong> page gives each member this command with a one-time
+                token, valid 15 minutes.
+              </p>
             </div>
             <div class="term">
               <div class="term-head">
                 <h3>In Claude Code, optional</h3>
                 <button class="copy" type="button" data-copy="mcp">Copy</button>
               </div>
-              <pre id="mcp"><code>claude mcp add --transport http --scope user orch https://&lt;domain&gt;/mcp</code></pre>
-              <p class="term-note">Then run <code>/mcp</code>, pick orch and choose Authenticate.</p>
+              <pre
+                id="mcp"
+              ><code>claude mcp add --transport http --scope user orch https://&lt;domain&gt;/mcp</code></pre>
+              <p class="term-note">
+                Then run <code>/mcp</code>, pick orch and choose Authenticate.
+              </p>
             </div>
           </div>
           <p class="copied" role="status" aria-live="polite"></p>
@@ -340,26 +564,50 @@ orch login</code></pre>
           <div class="faq">
             <details>
               <summary>Is it safe to use with strangers?</summary>
-              <p>No. Anyone who can get an issue labeled for the pool can make Claude run on a teammate's machine, with network access and their token. Use orch with people you trust, on repositories where outsiders cannot file labeled issues.</p>
+              <p>
+                No. Anyone who can get an issue labeled for the pool can make Claude run on a
+                teammate's machine, with network access and their token. Use orch with people you
+                trust, on repositories where outsiders cannot file labeled issues.
+              </p>
             </details>
             <details>
               <summary>Why are no tasks offered to me?</summary>
-              <p>Offers need an active auto participation, an online and unpaused agent, a fresh usage report, enough estimated budget and an allowed model. <code>orch list</code> shows what you can take now, <code>orch status</code> shows the pause state and <code>orch doctor</code> checks the Claude binary and token.</p>
+              <p>
+                Offers need an active auto participation, an online and unpaused agent, a fresh
+                usage report, enough estimated budget and an allowed model.
+                <code>orch list</code> shows what you can take now, <code>orch status</code> shows
+                the pause state and <code>orch doctor</code> checks the Claude binary and token.
+              </p>
             </details>
             <details>
               <summary>The agent says "Claude login expired". What now?</summary>
-              <p>Run <code>orch login</code>. The running agent picks up the new token without a restart.</p>
+              <p>
+                Run <code>orch login</code>. The running agent picks up the new token without a
+                restart.
+              </p>
             </details>
             <details>
               <summary>Caddy cannot get a certificate. Why?</summary>
-              <p>DNS must resolve to the host and ports 80 and 443 must be reachable. Custom HTTP or HTTPS ports break the Let's Encrypt challenge; use another proxy or the Cloudflare Tunnel mode.</p>
+              <p>
+                DNS must resolve to the host and ports 80 and 443 must be reachable. Custom HTTP or
+                HTTPS ports break the Let's Encrypt challenge; use another proxy or the Cloudflare
+                Tunnel mode.
+              </p>
             </details>
             <details>
               <summary>An upgrade broke something. How do I roll back?</summary>
-              <p>Pin <code>ORCH_VERSION</code> on the server or <code>ORCH_AGENT_TAG</code> on the agent to the previous release and run <code>docker compose up -d</code>. Restore from a backup if needed.</p>
+              <p>
+                Pin <code>ORCH_VERSION</code> on the server or <code>ORCH_AGENT_TAG</code> on the
+                agent to the previous release and run <code>docker compose up -d</code>. Restore
+                from a backup if needed.
+              </p>
             </details>
           </div>
-          <p class="faq-more"><a href="https://claude-orch.readthedocs.io/en/latest/faq.html">More answers in the FAQ</a></p>
+          <p class="faq-more">
+            <a href="https://claude-orch.readthedocs.io/en/latest/faq.html"
+              >More answers in the FAQ</a
+            >
+          </p>
         </div>
       </section>
     </main>
@@ -368,16 +616,22 @@ orch login</code></pre>
       <div class="wrap foot-row">
         <a class="brand" href="./" aria-label="orch, home">
           <svg class="brand-mark" viewBox="0 0 34 22" aria-hidden="true" focusable="false">
-            <path class="track" d="M2 4c9 0 11 7 20 7M2 18c9 0 11-7 20-7M2 11h22"/>
-            <circle class="signal" cx="28.5" cy="11" r="3.5"/>
+            <path class="track" d="M2 4c9 0 11 7 20 7M2 18c9 0 11-7 20-7M2 11h22" />
+            <circle class="signal" cx="28.5" cy="11" r="3.5" />
           </svg>
           <span class="brand-name">orch</span>
         </a>
         <ul class="foot-links">
           <li><a href="https://claude-orch.readthedocs.io">Documentation</a></li>
           <li><a href="https://github.com/Theroxat/claude_orch">GitHub</a></li>
-          <li><a href="https://github.com/Theroxat/claude_orch/blob/main/LICENSE">MIT License</a></li>
-          <li><a href="https://github.com/Theroxat/claude_orch/security/advisories/new">Report a vulnerability</a></li>
+          <li>
+            <a href="https://github.com/Theroxat/claude_orch/blob/main/LICENSE">MIT License</a>
+          </li>
+          <li>
+            <a href="https://github.com/Theroxat/claude_orch/security/advisories/new"
+              >Report a vulnerability</a
+            >
+          </li>
         </ul>
       </div>
     </footer>

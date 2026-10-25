@@ -11,7 +11,10 @@
   var toggle = document.querySelector('[data-theme-toggle]');
   function label() {
     if (!toggle) return;
-    toggle.setAttribute('aria-label', current() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+    toggle.setAttribute(
+      'aria-label',
+      current() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+    );
   }
   if (toggle) {
     label();
@@ -20,7 +23,9 @@
       root.dataset.theme = next;
       try {
         localStorage.setItem(KEY, next);
-      } catch (e) {}
+      } catch {
+        // Storage unavailable (private mode): the choice lasts for this page only.
+      }
       label();
     });
     media.addEventListener('change', label);
@@ -43,7 +48,7 @@
         },
         function () {
           if (status) status.textContent = 'Copy failed. Select the command and copy it by hand.';
-        }
+        },
       );
     });
   });
