@@ -114,7 +114,17 @@ export const NotificationSettingsViewSchema = z.object({
   preferences: NotificationPreferencesSchema,
   slack: WebhookTargetViewSchema,
   discord: WebhookTargetViewSchema,
-  webhook: WebhookTargetViewSchema,
+  webhook: WebhookTargetViewSchema.extend({
+    /** Signing secret (Standard Webhooks): `••••abcd`. Null when none was generated yet. */
+    secretHint: z.string().nullable(),
+    /** While set and in the future, the previous secret signs too (rotation grace period). */
+    previousSecretExpiresAt: z.string().nullable(),
+  }),
+  /**
+   * The full `whsec_...` secret, only in the answer that created or rotated it. Shown once: it is
+   * never returned again.
+   */
+  webhookSecret: z.string().optional(),
   email: z.object({
     /** False when the server has no SMTP settings: the e-mail channel is then unavailable. */
     available: z.boolean(),
