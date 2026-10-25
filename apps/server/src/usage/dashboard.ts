@@ -26,7 +26,7 @@ import type { PrismaClient } from '../db';
 import { computeMargin, windowStartOf, type UsageSnapshot } from '../dispatch/budget';
 import { parseBody } from '../http/errors';
 import type { GithubClient } from '../github';
-import { ownerLostAccess, stillOwns } from '../projects/service';
+import { RoleMemo, ownerLostAccess, repoAccessAllows, stillOwns } from '../projects/service';
 import { USAGE_RETENTION_MS } from './index';
 
 const DAY_MS = 24 * 3600_000;
@@ -93,13 +93,26 @@ export async function computeUsageDashboard(
         include: { installation: true },
       });
   const who = { id: viewer.id, login: viewer.login ?? '' };
+  // One query for the cached roles of the request, GitHub only for the stale ones.
+  const memo = new RoleMemo();
+  await memo.prime(
+    prisma,
+    ownedRows.filter((p) => p.isPrivate).map((p) => p.id),
+    [viewer.id],
+  );
   const owned: string[] = [];
   // Private repositories the stored owner can no longer reach: not even their own runs show.
   const lost: string[] = [];
-  for (const p of ownedRows) {
-    if (await stillOwns(prisma, github, p, who)) owned.push(p.id);
-    if (await ownerLostAccess(prisma, github, p, who)) lost.push(p.id);
-  }
+  const checks = await Promise.all(
+    ownedRows.map(async (p) => [
+      await stillOwns(prisma, github, p, who, memo),
+      await ownerLostAccess(prisma, github, p, who, memo),
+    ]),
+  );
+  ownedRows.forEach((p, i) => {
+    if (checks[i]![0]) owned.push(p.id);
+    if (checks[i]![1]) lost.push(p.id);
+  });
   const where = visibleRuns(viewer, owned, lost, from, to);
 
   const reportScope = viewer.isAdmin ? Prisma.sql`TRUE` : Prisma.sql`"userId" = ${viewer.id}`;
@@ -136,7 +149,7 @@ export async function computeUsageDashboard(
         WHERE "windowStart" >= ${from} AND "windowStart" < ${to} AND ${reportScope}
         ORDER BY "agentId", "windowStart", "reportedAt" DESC
       ) w GROUP BY 1`,
-    ownBudgets(prisma, github, who, reserve, now),
+    ownBudgets(prisma, github, who, reserve, now, memo),
   ]);
 
   const dayMap = new Map(byDay.map((r) => [String(r.day), totalsOf(r)]));
@@ -218,6 +231,7 @@ async function ownBudgets(
   user: { id: string; login: string },
   reserve: number,
   now: Date,
+  memo: RoleMemo,
 ): Promise<UsageBudgetRow[]> {
   const userId = user.id;
   const all = await prisma.participation.findMany({
@@ -225,10 +239,16 @@ async function ownBudgets(
     include: { project: { include: { installation: true } } },
     orderBy: { project: { fullName: 'asc' } },
   });
-  const parts = [];
-  for (const p of all) {
-    if (!(await ownerLostAccess(prisma, github, p.project, user))) parts.push(p);
-  }
+  await memo.prime(
+    prisma,
+    all.filter((p) => p.project.isPrivate).map((p) => p.projectId),
+    [userId],
+  );
+  // A private repository GitHub no longer lets the member into (owner or not): no budget row.
+  const allowed = await Promise.all(
+    all.map((p) => repoAccessAllows(prisma, github, p.project, user, memo)),
+  );
+  const parts = all.filter((_, i) => allowed[i]);
   if (parts.length === 0) return [];
   const report = await prisma.usageReport.findFirst({
     where: { userId },

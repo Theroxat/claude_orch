@@ -84,7 +84,7 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
   app.get('/api/healthz', health);
 
   if (prisma) {
-    configureRepoAccess({
+    configureRepoAccess(github, {
       ttlMs: config.ORCH_REPO_ACCESS_TTL_SEC * 1000,
       graceMs: config.ORCH_REPO_ACCESS_GRACE_SEC * 1000,
       observer: {
@@ -95,7 +95,7 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
     const deps = { config, prisma, github, metrics };
     const liveLogs = new LiveLogStore();
     const gateway = createAgentGateway(app, { ...deps, liveLogs });
-    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics });
+    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics, github });
     gateway.setDispatcher(dispatcher);
     metrics.attach({ prisma, log: app.log, agentVersions: () => gateway.connectedByVersion() });
     app.decorate('dispatcher', dispatcher);

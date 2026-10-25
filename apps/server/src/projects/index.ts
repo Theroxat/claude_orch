@@ -16,6 +16,7 @@ import {
   getRoleInfo,
   isCurrentOwner,
   ownerLostAccess,
+  RoleMemo,
   toParticipationView,
   toProjectView,
 } from './service';
@@ -128,11 +129,16 @@ export function registerProjects(
       include: { installation: true },
       orderBy: { createdAt: 'asc' },
     });
-    const kept = [];
-    for (const p of projects) {
-      if (!(await ownerLostAccess(prisma, deps.github, p, user))) kept.push(p);
-    }
-    return kept.map(toProjectView);
+    const memo = new RoleMemo();
+    await memo.prime(
+      prisma,
+      projects.filter((p) => p.isPrivate).map((p) => p.id),
+      [user.id],
+    );
+    const lost = await Promise.all(
+      projects.map((p) => ownerLostAccess(prisma, deps.github, p, user, memo)),
+    );
+    return projects.filter((_, i) => !lost[i]).map(toProjectView);
   });
 
   async function ownedProject(id: string, user: User) {
@@ -206,9 +212,16 @@ export function registerProjects(
     });
     const mine = await prisma.participation.findMany({ where: { userId: user.id } });
     const myByProject = new Map(mine.map((p) => [p.projectId, p]));
+    // One query for every cached role instead of one per project.
+    const memo = new RoleMemo();
+    await memo.prime(
+      prisma,
+      projects.map((p) => p.id),
+      [user.id],
+    );
     const items = await Promise.all(
       projects.map(async (p): Promise<DiscoverItem | null> => {
-        const info = await getRoleInfo(prisma, deps.github, p, user);
+        const info = await getRoleInfo(prisma, deps.github, p, user, memo);
         if (!canSee(p.visibility, info.role, info)) return null;
         const part = myByProject.get(p.id);
         const allowed = canParticipate(p.participationPolicy, info.role, info);

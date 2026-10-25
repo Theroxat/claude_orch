@@ -44,7 +44,7 @@ beforeAll(async () => {
   if (!addr || typeof addr === 'string') throw new Error('no address');
   base = `http://127.0.0.1:${addr.port}`;
   // After buildApp (which wires the real metrics): capture the access-check results.
-  configureRepoAccess({
+  configureRepoAccess(gh, {
     ttlMs: ROLE_CACHE_TTL_MS,
     graceMs: 15 * 60_000,
     observer: { count: (r) => results.push(r), warn: (_o, m) => warnings.push(m) },
@@ -289,21 +289,24 @@ describe('cache TTL', () => {
 
   it('the TTL is configurable', async () => {
     const { owner, row } = await world();
-    configureRepoAccess({ ttlMs: 1000 });
+    configureRepoAccess(gh, { ttlMs: 1000 });
     try {
       const start = gh.roleCalls;
       await age(owner.userId, 2000);
       await getRoleInfo(prisma, gh, row, asUser(owner));
       expect(gh.roleCalls).toBe(start + 1);
     } finally {
-      configureRepoAccess({ ttlMs: ROLE_CACHE_TTL_MS });
+      configureRepoAccess(gh, { ttlMs: ROLE_CACHE_TTL_MS });
     }
   });
 });
 
 describe('webhook invalidation', () => {
-  const syncedAt = async (userId: string) =>
-    (await prisma.projectPermission.findFirstOrThrow({ where: { userId } })).syncedAt.getTime();
+  // 0 once invalidated (the row is then dated decades back).
+  const syncedAt = async (userId: string) => {
+    const t = (await prisma.projectPermission.findFirstOrThrow({ where: { userId } })).syncedAt;
+    return t.getTime() < Date.now() - 50 * 365 * 24 * 3600_000 ? 0 : t.getTime();
+  };
 
   it('member removed: that collaborator is re-checked at once', async () => {
     const { owner, repo, project } = await world();
@@ -358,6 +361,57 @@ describe('webhook invalidation', () => {
     });
     expect(inst.json().result).toBe('installation.suspend');
     expect(await syncedAt(owner.userId)).toBe(0);
+  });
+
+  it('team membership and team repository changes invalidate too', async () => {
+    const { owner, repo, row } = await world(true, uniqueInt());
+    const m = await hook('membership', {
+      action: 'removed',
+      scope: 'team',
+      member: { id: owner.id, login: owner.login },
+      organization: { login: row.installation.accountLogin },
+    });
+    expect(m.json().result).toBe('membership.removed');
+    expect(await syncedAt(owner.userId)).toBe(0);
+
+    await getRoleInfo(prisma, gh, row, asUser(owner));
+    expect(await syncedAt(owner.userId)).toBeGreaterThan(0);
+    const t = await hook('team', {
+      action: 'removed_from_repository',
+      repository: { id: repo.githubRepoId, full_name: repo.fullName },
+      organization: { login: row.installation.accountLogin },
+    });
+    expect(t.json().result).toBe('team.removed_from_repository');
+    expect(await syncedAt(owner.userId)).toBe(0);
+  });
+
+  it('a participant removed from the private repository loses the board too', async () => {
+    const { repo, project } = await world();
+    const member = await loginAs(app, gh);
+    gh.roles.set(roleKey(repo, member), 'READ');
+    await prisma.participation.create({
+      data: {
+        userId: member.userId,
+        projectId: project.id,
+        active: true,
+        approvedAt: new Date(),
+        percent: 10,
+        mode: 'APPROVAL',
+      },
+    });
+    expect((await api(app, member)('GET', `/api/projects/${project.id}/tasks`)).statusCode).toBe(
+      200,
+    );
+    gh.roles.delete(roleKey(repo, member));
+    await hook('member', {
+      action: 'removed',
+      member: { id: member.id, login: member.login },
+      repository: { id: repo.githubRepoId, full_name: repo.fullName },
+    });
+    expect((await api(app, member)('GET', `/api/projects/${project.id}/tasks`)).statusCode).toBe(
+      404,
+    );
+    expect((await sees(member, project.id)).poolProjects).toBe(0);
   });
 
   it('keeps the owner overrides when invalidating', async () => {

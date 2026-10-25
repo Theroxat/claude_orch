@@ -17,6 +17,8 @@
  *   member (collaborator added|removed|edited)             -> that user's cached repo role is stale
  *   repository (privatized|publicized|deleted|transferred) -> visibility updated, all roles stale
  *   organization (member_removed|member_added)             -> the user's roles on the org's repos stale
+ *   membership (team member added|removed)                 -> the user's roles on the org's repos stale
+ *   team (added_to|removed_from repository, edited, deleted) -> roles of the repo (or org) stale
  *   installation deleted|suspend|unsuspend, repositories removed -> roles of the installation stale
  */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -179,6 +181,10 @@ export function registerWebhooks(
         return onRepository(p);
       case 'organization':
         return onOrganization(p);
+      case 'membership':
+        return onMembership(p);
+      case 'team':
+        return onTeam(p);
       case 'issues':
         return onIssues(p);
       case 'pull_request':
@@ -209,7 +215,7 @@ export function registerWebhooks(
     if (!project) return 'ignored';
     const user = await userByGithubId(p.member?.id);
     if (!user) return 'ignored';
-    await invalidateRepoAccess(prisma, { projectId: project.id, userId: user.id });
+    await invalidateRepoAccess(prisma, { projectId: project.id, userId: user.id }, deps.github);
     return `member.${p.action ?? 'unknown'}`;
   }
 
@@ -225,7 +231,7 @@ export function registerWebhooks(
     } else if (!['deleted', 'transferred', 'archived', 'renamed'].includes(p.action ?? '')) {
       return 'ignored';
     }
-    await invalidateRepoAccess(prisma, { projectId: project.id });
+    await invalidateRepoAccess(prisma, { projectId: project.id }, deps.github);
     return `repository.${p.action}`;
   }
 
@@ -235,8 +241,32 @@ export function registerWebhooks(
     const login = p.organization?.login;
     const user = await userByGithubId(p.membership?.user?.id);
     if (!login || !user) return 'ignored';
-    await invalidateRepoAccess(prisma, { userId: user.id, accountLogin: login });
+    await invalidateRepoAccess(prisma, { userId: user.id, accountLogin: login }, deps.github);
     return `organization.${p.action}`;
+  }
+
+  /** Someone joined or left a team: team grants may have changed their repository roles. */
+  async function onMembership(p: Payload): Promise<string> {
+    if (p.action !== 'added' && p.action !== 'removed') return 'ignored';
+    const login = p.organization?.login;
+    const user = await userByGithubId(p.member?.id);
+    if (!login || !user) return 'ignored';
+    await invalidateRepoAccess(prisma, { userId: user.id, accountLogin: login }, deps.github);
+    return `membership.${p.action}`;
+  }
+
+  /** A team gained or lost a repository, or its permissions changed, or it was deleted. */
+  async function onTeam(p: Payload): Promise<string> {
+    if (p.repository) {
+      const project = await projectOf(p);
+      if (!project) return 'ignored';
+      await invalidateRepoAccess(prisma, { projectId: project.id }, deps.github);
+      return `team.${p.action ?? 'unknown'}`;
+    }
+    const login = p.organization?.login;
+    if ((p.action !== 'deleted' && p.action !== 'edited') || !login) return 'ignored';
+    await invalidateRepoAccess(prisma, { accountLogin: login }, deps.github);
+    return `team.${p.action}`;
   }
 
   // ---------- installations ----------
@@ -261,7 +291,7 @@ export function registerWebhooks(
     const existing = await prisma.installation.findUnique({ where: { githubInstallationId: id } });
     if (!existing) return 'ignored';
     if (p.action === 'deleted' || p.action === 'suspend' || p.action === 'unsuspend') {
-      await invalidateRepoAccess(prisma, { installationId: existing.id });
+      await invalidateRepoAccess(prisma, { installationId: existing.id }, deps.github);
     }
     if (p.action === 'deleted' || p.action === 'suspend') {
       await prisma.installation.update({ where: { id: existing.id }, data: { suspendedAt: now } });
@@ -299,7 +329,7 @@ export function registerWebhooks(
         where: { installationId: existing.id, githubRepoId: { in: removed } },
         select: { id: true },
       });
-      for (const g of gone) await invalidateRepoAccess(prisma, { projectId: g.id });
+      for (const g of gone) await invalidateRepoAccess(prisma, { projectId: g.id }, deps.github);
       await archiveProjects(
         { installationId: existing.id, githubRepoId: { in: removed } },
         'repository_removed',

@@ -1,7 +1,7 @@
 import type { User } from '@prisma/client';
 import type { PrismaClient } from '../db';
 import type { GithubClient } from '../github';
-import { getRoleInfo, ownerLostAccess } from '../projects/service';
+import { getRoleInfo, ownerLostAccess, repoAccessAllows } from '../projects/service';
 
 /** Whether a user may still receive a notification (about `projectId`, when set). */
 export type RecipientCheck = (userId: string, projectId: string | null) => Promise<boolean>;
@@ -40,6 +40,9 @@ export function recipientCheck(deps: RecipientCheckDeps): RecipientCheck {
     if (info.role !== 'NONE' || info.canSubmit === true || info.canParticipate === true) {
       return true;
     }
+    // No GitHub role: only a participation the project still allows without one (ALL_MEMBERS
+    // policy or an owner override), never a stale row of someone removed from the repository.
+    if (!(await repoAccessAllows(prisma, github, project, user))) return false;
     const part = await prisma.participation.findUnique({
       where: { userId_projectId: { userId, projectId } },
       select: { active: true },

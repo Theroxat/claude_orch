@@ -31,7 +31,7 @@ Set **Members: Read-only** only if you use `ORCH_ALLOWED_GITHUB_ORGS`. orch then
 
 Subscribe to Issues and Pull request, plus the Installation and Installation repositories events that GitHub delivers to every App (`issues`, `pull_request`, `installation`, `installation_repositories`).
 
-Also subscribe to **Member** (collaborator added, removed or changed), **Repository** (made private or public, deleted, transferred) and, if you use organization checks, **Organization** (member removed). They are optional: orch uses them to drop its cached repository roles at once instead of waiting for `ORCH_REPO_ACCESS_TTL_SEC` (see {doc}`security`).
+Also subscribe to **Member** (collaborator added, removed or changed), **Repository** (made private or public, deleted, transferred) and, if you use organization checks, **Organization** (member removed), **Membership** and **Team** (team members and team repositories; they need the Members organization permission). They are optional: orch uses them to drop its cached repository roles at once instead of waiting for `ORCH_REPO_ACCESS_TTL_SEC` (see {doc}`security`).
 
 ## After creating the App
 

@@ -416,6 +416,9 @@ describe('recipients who lost access', { timeout: 20_000 }, () => {
     const creator = await loginAs(app, gh);
     gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'WRITE');
     const m = await member(p.id);
+    // The runner can read the private repository (a participant without a GitHub role gets no
+    // offer on a private repository with the default policy).
+    gh.roles.set(`4242:${repo.fullName}:${m.user.login}`, 'READ');
     const t = await createTask(creator, p.id, 'Secret thing');
     // The creator is removed from the repository; the cached role expires.
     gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'NONE');
@@ -437,7 +440,7 @@ describe('recipients who lost access', { timeout: 20_000 }, () => {
     await settle();
     expect(await rows(creator.userId)).toHaveLength(0);
     expect(posted.filter((x) => x.url.includes('/creator'))).toHaveLength(0);
-    // The runner has no GitHub role but an active participation: its agent ran the code.
+    // The runner still has its GitHub role and an active participation: its agent ran the code.
     expect(await events(m.user.userId)).toEqual(['task_failed']);
   });
 
