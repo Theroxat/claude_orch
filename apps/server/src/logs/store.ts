@@ -4,6 +4,7 @@
  * restart forgets them, and a finished run's buffer is kept for `retainMs`, then dropped.
  */
 import {
+  StreamRedactor,
   TASK_LOG_TEXT_MAX,
   redactSecrets,
   stripAnsi,
@@ -28,6 +29,8 @@ interface Run {
   truncated: number;
   finished: boolean;
   lastAt: number;
+  /** Per entry kind: a token split between two lines or two batches is masked too. */
+  streams: Map<string, StreamRedactor>;
 }
 
 export interface LiveLogStoreOptions {
@@ -99,6 +102,7 @@ export class LiveLogStore {
       truncated: 0,
       finished: false,
       lastAt: this.now(),
+      streams: new Map(),
     };
     this.runs.set(assignmentId, run);
     this.byTask.set(taskId, assignmentId);
@@ -113,11 +117,13 @@ export class LiveLogStore {
     run.truncated += lost;
     const added: LiveLogLine[] = [];
     for (const e of entries) {
+      let stream = run.streams.get(e.kind);
+      if (!stream) run.streams.set(e.kind, (stream = new StreamRedactor()));
       const line: LiveLogLine = {
         id: this.nextId++,
         ts: e.ts,
         kind: e.kind,
-        text: redactSecrets(stripAnsi(e.text)).slice(0, TASK_LOG_TEXT_MAX),
+        text: stream.push(stripAnsi(e.text)).slice(0, TASK_LOG_TEXT_MAX),
         ...(e.tool !== undefined ? { tool: redactSecrets(stripAnsi(e.tool)).slice(0, 80) } : {}),
         ...(e.error ? { error: true } : {}),
       };

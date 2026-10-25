@@ -2,6 +2,7 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   NOTIFICATION_EVENTS,
   NotificationChannel,
+  redactSecrets,
   type NotificationEvent,
   type NotificationPreferences,
 } from '@orch/shared';
@@ -185,8 +186,11 @@ export class Notifier {
   }
 
   /** One notification for one user, on the channels their preferences select. */
-  async notify(userId: string, draft: NotificationDraft): Promise<void> {
+  async notify(userId: string, input: NotificationDraft): Promise<void> {
     const { prisma, config } = this.deps;
+    // Titles and bodies quote task titles and run errors: secret formats are masked once here,
+    // for every channel (in-app, webhooks, e-mail, push).
+    const draft = { ...input, title: redactSecrets(input.title), body: redactSecrets(input.body) };
     const settings = await prisma.notificationSettings.findUnique({ where: { userId } });
     const channels = effectivePreferences(settings?.preferences)[draft.event];
     if (channels.length === 0) return;

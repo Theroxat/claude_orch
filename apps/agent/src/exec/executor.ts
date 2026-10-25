@@ -20,7 +20,7 @@
  */
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { classifyFailure } from '@orch/shared';
+import { classifyFailure, composeSecrets, envSecrets } from '@orch/shared';
 import type {
   AckPayload,
   AgentMessage,
@@ -32,7 +32,7 @@ import type {
   TaskOfferPayload,
 } from '@orch/shared';
 import type { z } from 'zod';
-import { errorMessage, redact, type Logger } from '../log';
+import { agentSecrets, errorMessage, redact, redactStream, type Logger } from '../log';
 import type { OutboxType } from '../outbox';
 import { modelFactor, parseLine, recordTaskUsage, taskLedgerPath, weigh } from '../usage';
 import type { UsageEntry } from '../usage';
@@ -227,6 +227,7 @@ export class ManualExecutor {
     let set = this.runTokens.get(id);
     if (!set) this.runTokens.set(id, (set = new Set()));
     set.add(token);
+    agentSecrets.add(id, [token]);
     return token;
   }
 
@@ -238,12 +239,13 @@ export class ManualExecutor {
       this.deps.readClaudeToken(),
       ...(this.runTokens.get(id) ?? []),
       ...(this.deps.knownSecrets?.() ?? []),
+      ...agentSecrets.values(),
     ]);
     let warned = false;
     const streamer = new LiveLogStreamer({
       assignmentId: id,
       send,
-      redact: (t) => redact(t),
+      redact,
       now: () => this.now(),
       onError: (err) => {
         if (warned) return;
@@ -826,6 +828,7 @@ export class ManualExecutor {
     try {
       const claudeToken = this.deps.readClaudeToken();
       if (!claudeToken) throw new Error('No Claude token. Run "orch login".');
+      agentSecrets.add(id, [claudeToken]);
       const r0 = rec();
       this.status(id, 'preparing', 'cloning');
       this.deps.fs.mkdir(r0.taskDir);
@@ -848,6 +851,11 @@ export class ManualExecutor {
 
       this.status(id, 'building');
       const env = selectDevEnv(r0.cloneDir, this.cfg.defaultImage);
+      // Values injected into the task container (or baked into its image) are masked everywhere.
+      agentSecrets.add(id, [
+        ...envSecrets(env.containerEnv),
+        ...(env.kind === 'build' ? envSecrets(env.args) : []),
+      ]);
       for (const w of env.warnings) this.log.warn(w, { issue: r0.issueNumber });
       this.store.update(id, { warnings: env.warnings, workspaceFolder: env.workspaceFolder });
       const labels = taskLabels(id, r0.issueNumber, this.cfg.agentId);
@@ -966,6 +974,8 @@ export class ManualExecutor {
     } catch (err) {
       throw sidecarError(file, 'config', err);
     }
+    // The sidecars' resolved environment (env_file values included) and build args.
+    agentSecrets.add(id, composeSecrets(model));
     const problems = checkComposeModel(model, r.cloneDir, project, r.network);
     if (problems.length > 0) throw new ComposeGuardError(problems);
     const safe = sanitizeComposeModel(model, labels);
@@ -1069,6 +1079,7 @@ export class ManualExecutor {
     // container before its own logs can be read.
     const streamed = new Map<string, UsageEntry>();
     const live = this.openLiveLog(id);
+    const stderrRedact = redactStream();
     const proc = this.proc.spawnLines(
       argv,
       prompt,
@@ -1081,7 +1092,7 @@ export class ManualExecutor {
         if (u) streamed.set(u.id, streamedEntry(u, this.now()));
       },
       (line) => {
-        const clean = redact(line);
+        const clean = stderrRedact.push(line);
         out.write(`[stderr] ${clean}\n`);
         live?.stderr(line);
         stderrTail = `${stderrTail}\n${clean}`.slice(-1500);
@@ -1162,7 +1173,7 @@ export class ManualExecutor {
     try {
       await git.commitAll(
         repo,
-        `orch: changes for #${rec.issueNumber}${body ? `\n\n${body}` : ''}`,
+        redact(`orch: changes for #${rec.issueNumber}${body ? `\n\n${body}` : ''}`),
         this.cfg.identity,
         rec.author ?? undefined,
       );
@@ -1193,7 +1204,9 @@ export class ManualExecutor {
     let summary = (taskSubjects.length > 0 ? taskSubjects : subjects)
       .map((s) => `- ${s}`)
       .join('\n');
-    if (claudeSummary.trim()) summary += `\n\nClaude's summary:\n${redact(claudeSummary.trim())}`;
+    if (claudeSummary.trim()) summary += `\n\nClaude's summary:\n${claudeSummary.trim()}`;
+    // Commit subjects and Claude's text are untrusted: the summary becomes the PR body.
+    summary = redact(summary);
     this.deps.enqueue('task.pushed', {
       assignmentId: id,
       seq: this.nextSeq(id),
@@ -1532,6 +1545,7 @@ export class ManualExecutor {
       if (rec.gitDir) await this.deps.fs.remove(rec.gitDir);
       if (rec.logFile) rmSync(rec.logFile, { force: true });
       this.store.delete(id);
+      this.runTokens.delete(id);
     } else {
       for (const c of await this.labeled('container')) {
         if (c.value === id) await this.deps.docker.remove(c.name).catch(() => undefined);
@@ -1540,6 +1554,7 @@ export class ManualExecutor {
       await this.deps.fs.remove(join(this.cfg.dataDir, 'git', `${id}.git`));
       rmSync(join(this.cfg.dataDir, 'logs', `${id}.log`), { force: true });
     }
+    agentSecrets.drop(id);
     this.log.info('task cleaned up', { assignmentId: id });
   }
 
