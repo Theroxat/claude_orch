@@ -4,7 +4,7 @@ orch is for **small teams who trust each other**. It is a shared to-do list with
 
 - **Trusted teams only.** Anyone who can get an issue labeled for the pool can, in effect, write a prompt that runs on a teammate's machine. Do not use orch with strangers or with public repos where outsiders can file labeled issues.
 - **What the sandbox does.** Each task runs in its own container, non-root, with only that task's clone mounted. No docker socket, no host home directory. Each task gets an isolated clone, not your working copy. Git metadata (the bare mirror and the clone's `.git` bookkeeping) is kept outside the task container, so a task cannot rewrite hooks or config that the agent's own git would later run.
-- **The repo's compose file is validated.** When a task uses the repository's own `compose.yaml` for its dev environment, the agent checks it before starting anything and refuses `privileged`, host bind mounts, the Docker socket, host networking and `cap_add`. This validation is being completed on the agent side; until it ships, treat a repo's compose file as trusted code. It is not a defence against a hostile teammate.
+- **The repo's compose file is validated and hardened.** When a task uses the repository's own `compose.yaml` for its sidecars (database, cache, ...), the agent checks it before starting anything (see {ref}`compose-guard`) and runs only the checked, hardened copy. A compose file that tries to reach the host or another task is refused with an error naming the key.
 - **What the sandbox does not do.** In auto mode the agent runs `claude -p --permission-mode bypassPermissions` inside the task container. That container has **network access** and receives **the member's Claude token**. A malicious or compromised issue can therefore make Claude exfiltrate that token, call external services, or push harmful code to the task branch. There is no egress filtering in v1. The token is the member's own and can be revoked from their Claude account.
 - **The agent is root-equivalent on the member's host.** The agent container mounts `/var/run/docker.sock` to start task containers. Anyone controlling the agent controls that Docker daemon. Rootless Docker is a supported way to reduce this.
 - **Claude credentials never leave the member's machine.** The token lives in the agent's local volume and in that member's task containers. The server stores no Claude credentials. The agent mounts `~/.claude` read-only, only to estimate usage.
@@ -19,10 +19,40 @@ orch is for **small teams who trust each other**. It is a shared to-do list with
 
 Report vulnerabilities privately through GitHub security advisories on the repository.
 
+(compose-guard)=
+
+## The compose guard
+
+The agent holds the host's Docker socket, so a sidecar definition that mounts a host path, joins a host namespace or gains a privilege would be root on the member's machine. The guard works in two steps and denies everything it does not know.
+
+**Before Docker reads anything**, every compose file is parsed (a YAML error fails closed) and its `include`, `extends`, `env_file`, `label_file` and project-directory references are followed: remote references (`oci://`, `git@`, URLs), interpolated paths and anything that resolves outside the clone (symlinks included) are refused, as is an implicit `.env` that resolves outside it.
+
+**After full interpolation and merge**, the output of `docker compose config --format json` is checked against allowlists: every key of a service, build, deploy section, volume entry, network, volume, secret and config must be known, and unknown keys (including keys a future Compose version adds) are refused. `docker compose` runs with a minimal environment (`PATH`, `HOME`, the `DOCKER_*` connection settings), so a compose file cannot copy an agent variable into a sidecar through `${VAR}` or `environment: [VAR]`.
+
+Refused:
+
+- `privileged`, `devices`, `device_cgroup_rules`, `runtime`, `isolation`, `cgroup_parent`, `oom_kill_disable`, `gpus`, `use_api_socket`, `provider`, `blkio_config`, `storage_opt`, `credential_spec`, real-time CPU settings and `external_links`;
+- `cap_add` of anything other than Docker's usual harmless set (`CHOWN`, `SETUID`, `NET_BIND_SERVICE`, ... and `IPC_LOCK`). `SYS_NICE`, asked for by MySQL examples, is removed with a warning;
+- `security_opt` other than `no-new-privileges` (no `seccomp`/`apparmor` unconfined or custom profiles, no SELinux labels);
+- host or foreign namespaces: `pid`, `ipc`, `uts`, `userns_mode`, `cgroup` set to `host` or `container:*`, `network_mode` other than `none`, the task network or a service of the same project, and `volumes_from` a container;
+- networks other than the project's own (external networks, other drivers than `bridge`, `driver_opts`, custom IPAM). The default network is replaced by the task's network;
+- bind mounts outside the clone (the Docker socket, `/`, the home directory), shared mount propagation, external volumes, volumes not named after the task's project, any `driver_opts` on volumes (the local driver's bind trick);
+- `tmpfs` options other than size, mode, ownership and `noexec`/`nosuid`/`nodev`-style flags; `ulimits` other than the restrictive ones, with `nofile`, `nproc`, `msgqueue`, `sigpending` capped and `core` at 0 (no `rtprio`, `rttime`, `nice`); non-namespaced `sysctls` (only `net.*`, `kernel.shm*`/`msg*`/`sem` and `fs.mqueue.*`); `extra_hosts` pointing at `host-gateway`; `dns` that is not an IP address; a negative `oom_score_adj`; logging drivers other than `json-file`, `local` and `none`;
+- builds whose context, `dockerfile` or `additional_contexts` are outside the clone or remote; build `secrets`, `ssh`, `entitlements`, `privileged`, `cache_to`, `tags`, a host or foreign build `network`, and `cache_from` other than registry or inline;
+- `secrets` and `configs` whose `file` is outside the clone, or that read the agent's environment (`environment`) or a swarm object (`external`);
+- labels in the `orch.` or `com.docker.compose.` namespaces (they would make a sidecar look like another task's resource);
+- more than 16 services, or a `scale` / `deploy.replicas` above 3.
+
+Then the checked model is **hardened** and only that copy is run: published ports, fixed `container_name`s (kept as network aliases), restart policies and `develop` are removed; every sidecar gets `cap_drop: [ALL]` plus the harmless baseline it did not drop, `no-new-privileges`, a memory limit (default 2 GiB, at most 4 GiB, no swap on top), CPUs (default 2, at most 4), a pids limit (default 1024, at most 4096), `cpu_shares` and `shm_size` capped, a stop grace period of at most 30 seconds, rotated logs (10 MB, 3 files) and orch's labels. Built images are tagged per task and removed with the sidecars. Extension fields (`x-*`), healthchecks, `profiles`, `init`, `depends_on` and the usual environment and command settings are kept.
+
+The guard is tested against a corpus of real `docker compose config` outputs: realistic files for Postgres, Redis, MySQL, MinIO, LocalStack, MailHog and an application built from the repository's Dockerfile are accepted, and one malicious file per escape vector above is refused.
+
+What it does not cover: sidecars, like the task container, have network access (no egress filtering) and can reach services listening on the host's bridge address; images are pulled from wherever the compose file says; a sidecar can use its CPU, memory and disk quota fully (the image layers and named volumes count against the host's disk).
+
 ## Limitations
 
 - Single server instance (in-process scheduler); no high availability. One host, scheduled dumps.
-- No egress control, devcontainer/compose sanitizing or token-injecting proxy for task containers (see "Future hardening" in {doc}`PLAN`).
+- No egress control, devcontainer sanitizing or token-injecting proxy for task containers (see "Future hardening" in {doc}`PLAN`). The repository's compose file is validated and hardened ({ref}`compose-guard`), but sidecars share the task's network access.
 - Usage and budget are estimates; plans are declared by the member.
 - Repos must build from a `Dockerfile` or a simple `.devcontainer.json`; complex devcontainer features are not honored.
 - Manual-mode `screen` sessions end if the agent container restarts; the task container survives and `orch attach <n>` reopens a session.

@@ -208,7 +208,11 @@ export class CliDocker implements DockerOps {
   async composeConfig(project: string, files: string[], cwd: string): Promise<unknown> {
     const args = ['compose', '-p', project, '--project-directory', cwd];
     for (const f of files) args.push('-f', f);
-    const out = await this.d([...args, 'config', '--format', 'json'], undefined, 5 * 60_000);
+    // Minimal environment: the repo file must not interpolate or pass through agent variables.
+    const out = await runOk(this.runner, this.bin, [...args, 'config', '--format', 'json'], {
+      timeoutMs: 5 * 60_000,
+      composeEnv: true,
+    });
     try {
       return JSON.parse(out) as unknown;
     } catch {
@@ -219,12 +223,15 @@ export class CliDocker implements DockerOps {
   async composeUp(project: string, files: string[], cwd: string): Promise<void> {
     const args = ['compose', '-p', project, '--project-directory', cwd];
     for (const f of files) args.push('-f', f);
-    await this.d([...args, 'up', '-d', '--remove-orphans']);
+    await runOk(this.runner, this.bin, [...args, 'up', '-d', '--remove-orphans'], {
+      timeoutMs: 60 * 60_000,
+      composeEnv: true,
+    });
   }
 
   async composeDown(project: string, target?: { files: string[]; cwd: string }): Promise<void> {
     const down = ['down', '-v', '--remove-orphans', '--rmi', 'local'];
-    const opts = { timeoutMs: 10 * 60_000 };
+    const opts = { timeoutMs: 10 * 60_000, composeEnv: true };
     if (target && target.files.length > 0) {
       const args = ['compose', '-p', project, '--project-directory', target.cwd];
       for (const f of target.files) args.push('-f', f);
