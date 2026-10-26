@@ -411,6 +411,11 @@ model Task {
   @@index([status, createdAt])
   /// History: stable keyset pagination, newest first.
   @@index([createdAt(sort: Desc), id(sort: Desc)])
+  /// History search: `title ILIKE '%q%'` (pg_trgm is created by the migration).
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Task_title_trgm_idx")
+  /// History search by `#42`: OR-ed with the title match, so each branch needs an index.
+  @@index([githubIssueNumber])
+  @@index([prNumber])
 }
 
 /// Acyclic: checked before insert.
