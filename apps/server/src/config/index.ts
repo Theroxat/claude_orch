@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { z } from 'zod';
 import { DEFAULT_AGENT_IMAGE_REPO, IMAGE_REPO_RE } from '@orch/shared';
 
@@ -42,8 +43,8 @@ const ConfigSchema = z.object({
       .transform((v): boolean | string => (v === 'true' ? true : v === 'false' ? false : v)),
   ),
   /**
-   * Rate limiting (in-memory, single instance). Limits are per window (RATE_LIMIT_WINDOW_SEC):
-   * API per signed-in user (else per IP), auth/OAuth per IP, webhook per IP, MCP per token,
+   * Rate limiting (auth and agent-connect counted in Postgres, the other tiers per instance).
+   * Limits are per window (RATE_LIMIT_WINDOW_SEC): API per signed-in user (else per IP), auth/OAuth per IP, webhook per IP, MCP per token,
    * expensive reads per user. 0 on a *_MAX value is not allowed; set RATE_LIMIT_ENABLED=false
    * to turn the HTTP limiter off.
    */
@@ -168,6 +169,35 @@ const ConfigSchema = z.object({
   AGENT_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
   AGENT_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
   RETENTION_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  // Several instances (docs/installation.md "Running several server instances").
+  /** Unique name of this process among the instances sharing the database (default: hostname). */
+  ORCH_INSTANCE_ID: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^[A-Za-z0-9._:-]{1,128}$/, 'letters, digits and . _ : - only (at most 128)')
+      .default(
+        () =>
+          hostname()
+            .replace(/[^A-Za-z0-9._:-]/g, '-')
+            .slice(0, 128) || 'orch',
+      ),
+  ),
+  /**
+   * Instances sharing the database and this name form one cluster (leader election, messaging,
+   * shared rate limits). Only change it to run separate orch deployments on one database.
+   */
+  ORCH_CLUSTER_NAME: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,40}$/, 'letters, digits, _ and - only (at most 40)')
+      .default('orch'),
+  ),
+  /** How often an instance proves it is alive; silent for 3 heartbeats means gone. */
+  ORCH_INSTANCE_HEARTBEAT_MS: z.coerce.number().int().min(100).default(10_000),
+  /** How often a follower retries to take a free leadership (dispatcher, maintenance). */
+  ORCH_LEADER_RETRY_MS: z.coerce.number().int().min(50).default(5_000),
   // Dispatcher (M4).
   DISPATCHER_ENABLED: z
     .enum(['true', 'false'])
@@ -209,6 +239,11 @@ const ConfigSchema = z.object({
   NOTIFY_RETRY_BASE_MS: z.coerce.number().int().positive().default(2_000),
   /** In-app notifications older than this are deleted. */
   NOTIFY_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  /**
+   * The delivery queue is polled this often for retries and for jobs left by another instance
+   * (new jobs are sent at once by the instance that queued them).
+   */
+  NOTIFY_QUEUE_POLL_MS: z.coerce.number().int().min(10).default(5_000),
   /** Optional SMTP server for e-mail notifications. The e-mail channel exists only when set. */
   SMTP_HOST: z.preprocess(emptyToUndefined, z.string().optional()),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),

@@ -18,6 +18,7 @@ import {
 import { encrypt } from '../auth/crypto';
 import { requireUser, type AuthDeps } from '../auth';
 import { HttpError, parseBody } from '../http/errors';
+import { SharedCounter, SharedRateLimiter } from '../http/shared-limit';
 import { confirmToken, issueToken, overLimit } from './emailVerification';
 import { absoluteLink } from './format';
 import {
@@ -113,7 +114,13 @@ export function registerNotifications(
     publicKey: notifier.pusher ? (config.VAPID_PUBLIC_KEY ?? null) : null,
     subscriptions: await prisma.pushSubscription.count({ where: { userId } }),
   });
-  const testSends = new Map<string, number[]>();
+  // Per user, shared by every instance.
+  const testSends = new SharedRateLimiter(
+    new SharedCounter(prisma, config.ORCH_CLUSTER_NAME, app.log),
+    'notify-test',
+    TEST_LIMIT,
+    TEST_WINDOW_MS,
+  );
 
   app.get('/api/notifications', async (req): Promise<NotificationListResponse> => {
     const user = requireUser(req);
@@ -343,12 +350,9 @@ export function registerNotifications(
   app.post('/api/notifications/test', async (req): Promise<SendTestNotificationResponse> => {
     const user = requireUser(req);
     const { channel } = parseBody(SendTestNotificationRequestSchema, req.body);
-    const now = Date.now();
-    const recent = (testSends.get(user.id) ?? []).filter((t) => now - t < TEST_WINDOW_MS);
-    if (recent.length >= TEST_LIMIT) {
+    if (!(await testSends.allow(user.id))) {
       throw new HttpError(429, 'rate_limited', 'Too many test notifications, wait a minute');
     }
-    testSends.set(user.id, [...recent, now]);
 
     const testPush = async (userId: string): Promise<SendTestNotificationResponse> => {
       if (!notifier.pusher) return { ok: false, error: 'push_not_configured' };

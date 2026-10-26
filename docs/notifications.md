@@ -206,7 +206,7 @@ Messages travel through the browser vendor's push service (Google, Mozilla, Appl
 
 Notifications never slow down the action that caused them: they are prepared in the background after the action is recorded in the audit log. External deliveries are retried on network errors, timeouts (10 s), `408`, `429` and `5xx` answers, with exponential backoff (2 s, 8 s, 32 s by default, `NOTIFY_MAX_ATTEMPTS` attempts in total). Other `4xx` answers (for example a deleted Slack hook) stop at once. Failures are written to the server log with the channel and the user, never the URL.
 
-Retries are kept in memory: a server restart drops deliveries still waiting for a retry. In-app notifications are written to the database first and are not affected.
+External deliveries are queued in the database: a restart does not drop a delivery waiting for a retry, and with several server instances each delivery is sent by one of them (the one that queued it, or another one if it stops). A server killed in the middle of a delivery may send that one notification twice. The generic webhook payload carries a stable `id` (the same on every attempt): use it to drop duplicates. In-app notifications are written to the database first.
 
 ## Security: no requests to private networks
 

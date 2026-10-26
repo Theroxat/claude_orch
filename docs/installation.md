@@ -111,6 +111,46 @@ Notes:
 - "Always Use HTTPS" is fine.
 - Update the GitHub App URLs as in {doc}`github-app`; they use your public `https` domain.
 
+(multi-instance)=
+
+## Running several server instances
+
+One server handles a team comfortably; run several to keep orch up while one restarts (upgrades, host maintenance) or crashes. The instances share **Postgres and nothing else**: no Redis, no shared disk, no sticky sessions.
+
+```sh
+cd deploy/server
+docker compose -f compose.yaml -f compose.replicas.yaml up -d   # 2 replicas (ORCH_SERVER_REPLICAS)
+```
+
+`compose.replicas.yaml` scales the `server` service and mounts `upstream.replicas.caddy` in place of `upstream.caddy`: the routes of `routes.caddy` stay the same, every proxied route now load-balances over every replica (Caddy reads the A records of `server` every 5 s, sends each request to the least busy replica and retries on another one when a replica is restarting). Elsewhere (Kubernetes, another proxy), the same rules apply:
+
+- Every instance gets the **same configuration** (`.env`): same `DATABASE_URL`, `ORCH_ENCRYPTION_KEY`, GitHub App, `DISPATCHER_ENABLED`, rate limits.
+- Each one needs a **unique `ORCH_INSTANCE_ID`**. The default, the hostname, is unique per container; set it explicitly when several processes share a hostname (host networking).
+- Instances cooperate when they share the database **and** `ORCH_CLUSTER_NAME` (default `orch`; only change it to run separate orch deployments on one database).
+- Migrations run on every start; Prisma holds a database lock while it applies them, so replicas starting together are safe.
+- Every instance must have the **same `ORCH_ENCRYPTION_KEY`**: messages between instances are encrypted and authenticated with a key derived from it (any database role can `LISTEN`/`NOTIFY`, so a message that does not open with that key is dropped).
+- Each instance opens **one extra Postgres connection** (outside Prisma's pool) for `LISTEN` and the leader locks: budget `instances × (pool size + 1)` against `max_connections`. That connection needs a session: through PgBouncer, point `DATABASE_URL` at a **session-mode** pool (transaction pooling breaks `LISTEN` and advisory locks, and then no instance ever becomes the dispatcher leader).
+
+**Why no sticky sessions, WebSockets included.** Nothing a client depends on lives in one process: sessions, OAuth codes, tokens and tasks are in Postgres, and the MCP endpoint is stateless. An agent's WebSocket stays on the replica that accepted it for as long as it is open; that replica writes "agent X is on instance B" to the database and tells the others. When the dispatcher (running on another replica) offers a task to that agent, or anyone cancels a run or changes its configuration, the message is relayed to the replica holding the socket over Postgres `LISTEN/NOTIFY`, and an offer the socket did not take counts as "offline" exactly as on a single server. When the agent reconnects (after a restart of its replica, say), it may land on another replica, which takes over: the agent replays its outbox and the server reconciles its runs, as it already does after any reconnect. A browser's live-log stream (SSE) can likewise open on any replica: that replica mirrors the run from the replica receiving the agent's output while someone watches it.
+
+What runs where:
+
+| Concern                                             | With several instances                                                                                                                                                                                                                                                 |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dispatcher loop                                     | One **leader** (Postgres advisory lock on a dedicated connection). A kick on another instance (a new task, a finished run) is forwarded to it. When the leader stops or loses its database connection, another instance takes over within `ORCH_LEADER_RETRY_MS` (5 s) |
+| Retention purges, cleanup of expired rows           | One `maintenance` leader, same mechanism                                                                                                                                                                                                                               |
+| Agent WebSockets                                    | Any instance; messages for an agent are relayed to the instance holding its socket                                                                                                                                                                                     |
+| Live task output (SSE)                              | Kept in memory by the instance holding the agent's socket, mirrored on demand by the instances with viewers. Still never written to disk                                                                                                                               |
+| Notification deliveries (Slack, webhook, e-mail...) | A durable queue in the database: sent at once by the instance that queued them, retries and leftovers of a dead instance picked up by any instance, each delivery by one worker at a time                                                                              |
+| Unread notification counts                          | Read from the database on every request: nothing to invalidate                                                                                                                                                                                                         |
+| Access decisions of admins                          | Cached per instance for `ORCH_ALLOWLIST_CACHE_SEC`; an approval, denial or removal clears the cache on every instance at once and disconnects the person's agents wherever they are                                                                                    |
+
+**Rate limits.** The limits that stop abuse hold for the whole deployment: the `auth` and `agent-connect` tiers, access requests, OAuth client registration and token requests, and test notifications are counted in Postgres (they are rare requests that already use the database). The other tiers (`api`, `heavy`, `stream`, `mcp`, `webhook`) protect a process from load and are counted **per instance**, so a client whose requests are spread over N instances gets up to N times the limit; every API request stays free of an extra query. The concurrent live-log streams per user (8) are per instance too. If Postgres is unreachable, shared limits fall back to per-instance counting rather than failing requests.
+
+**What stays per instance.** The `orch_agents_connected` metric counts the sockets of the instance that serves `/metrics` (sum the series over the instances); every instance exports its own `orch_cluster_leader{lease}` (1 on the leader), `orch_cluster_leader_changes_total`, `orch_cluster_peers` and `orch_cluster_messages_total`. Scrape each replica: in `deploy/observability/prometheus.yml`, replace the static target with `dns_sd_configs: [{ names: ['server'], type: A, port: 3000 }]`. Leadership changes are also logged (`cluster: leadership acquired` / `lost`).
+
+**Failure behaviour.** Messages between instances are best effort; the database stays the truth and each instance reloads the agent directory every `ORCH_INSTANCE_HEARTBEAT_MS` (10 s) and after a reconnect. A leader whose host vanishes without closing its connection keeps its lock until Postgres notices (about 25 s: the server sets short TCP keepalives on that connection). An instance that crashes is considered gone after three missed heartbeats (30 s): until then, offers relayed to its agents time out (5 s) and are treated as undeliverable, and its agents reconnect elsewhere. Running alone, an instance costs one heartbeat query every 10 s and one row write per agent connect or disconnect; nothing is added to request paths.
+
 ## Monitoring
 
 The server exposes `/healthz` (liveness) and `/readyz` (database reachable), plus optional Prometheus metrics and OpenTelemetry traces. See {doc}`observability` for the metrics, the optional Prometheus and Grafana stack in `deploy/observability/`, and how `/metrics` stays off the public internet.

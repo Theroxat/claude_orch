@@ -4,12 +4,14 @@ import { redactSecrets } from '@orch/shared';
 import { createAgentGateway, registerAgents } from './agents';
 import { registerAccess } from './access';
 import { registerAuth } from './auth';
+import { Cluster } from './cluster';
 import type { Config } from './config';
 import type { PrismaClient } from './db';
 import type { GithubClient } from './github';
 import { Dispatcher } from './dispatch/dispatcher';
 import { installErrorHandling } from './http/errors';
 import { registerRateLimit } from './http/rate-limit';
+import { SharedCounter } from './http/shared-limit';
 import { registerOffers } from './offers';
 import { registerParticipation } from './participation';
 import { registerProjects } from './projects';
@@ -21,7 +23,7 @@ import { registerTokens } from './tokens';
 import { registerOnboarding } from './onboarding';
 import { registerOAuth } from './oauth';
 import { registerUsage } from './usage/dashboard';
-import { LiveLogStore, registerLiveLogs } from './logs';
+import { LiveLogRelay, LiveLogStore, registerLiveLogs } from './logs';
 import { Metrics, registerObservability } from './observability';
 import { Notifier, registerNotifications } from './notifications';
 import { recipientCheck } from './notifications/access';
@@ -34,6 +36,7 @@ declare module 'fastify' {
   interface FastifyInstance {
     dispatcher: Dispatcher;
     notifier: Notifier;
+    cluster: Cluster;
   }
 }
 
@@ -101,10 +104,22 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
         warn: (obj, msg) => app.log.warn(obj, msg),
       },
     });
-    const deps = { config, prisma, github, metrics };
+    // Other instances sharing this database (alone, it only keeps a heartbeat row).
+    const cluster = new Cluster({ prisma, config, log: app.log, metrics });
+    app.decorate('cluster', cluster);
+    const deps = { config, prisma, github, metrics, cluster };
     const liveLogs = new LiveLogStore();
+    const relay = new LiveLogRelay({ store: liveLogs, cluster });
     const gateway = createAgentGateway(app, { ...deps, liveLogs });
-    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics, github });
+    const dispatcher = new Dispatcher({
+      prisma,
+      config,
+      gateway,
+      log: app.log,
+      metrics,
+      cluster,
+      github,
+    });
     gateway.setDispatcher(dispatcher);
     metrics.attach({ prisma, log: app.log, agentVersions: () => gateway.connectedByVersion() });
     app.decorate('dispatcher', dispatcher);
@@ -118,24 +133,33 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
         github,
         isAllowed: async (user) => (await app.allowlist.check(user)) === 'allowed',
       }),
+      cluster,
+      metrics,
       ...notify,
     });
     app.decorate('notifier', notifier);
+    // First: the dispatcher competes for its leadership on the cluster connection.
+    app.addHook('onReady', async () => cluster.start());
     app.addHook('onReady', async () => notifier.start());
     app.addHook('onClose', async () => notifier.stop());
     app.addHook('onReady', async () => dispatcher.start());
     // Runs before the gateway's onClose (hooks run in order): no tick sends on closed sockets.
     app.addHook('preClose', async () => dispatcher.stop());
+    // Last (after the gateway closed its sockets): leaderships released, instance row removed.
+    app.addHook('onClose', async () => {
+      relay.stop();
+      await cluster.stop();
+    });
     const m4 = { ...deps, dispatcher, gateway };
     registerAuth(app, deps);
     // After the session lookup hook: requests are keyed by user id when signed in.
-    registerRateLimit(app, config);
+    registerRateLimit(app, config, new SharedCounter(prisma, config.ORCH_CLUSTER_NAME, app.log));
     registerAccess(app, deps);
     registerProjects(app, m4);
     registerParticipation(app, m4);
     registerTasks(app, m4);
     registerTemplates(app, deps);
-    registerLiveLogs(app, { ...deps, liveLogs });
+    registerLiveLogs(app, { ...deps, liveLogs, relay });
     registerOffers(app, m4);
     registerWebhooks(app, m4);
     registerTokens(app, deps);

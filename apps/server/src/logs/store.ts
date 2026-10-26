@@ -2,6 +2,10 @@
  * Live task output (v0.8): bounded in-memory buffers, one per assignment, fed by the agents'
  * `task.log` batches and read by the web (SSE). Nothing is written to the database: a server
  * restart forgets them, and a finished run's buffer is kept for `retainMs`, then dropped.
+ *
+ * Several instances: a run is owned by the instance holding the agent's socket. Another instance
+ * with viewers of the task keeps a mirror of it (`remote` runs, fed through ./relay by `ingest`),
+ * so its SSE streams read the same store the same way.
  */
 import {
   StreamRedactor,
@@ -20,6 +24,20 @@ export type LiveLogEvent =
 
 export type LiveLogListener = (e: LiveLogEvent) => void;
 
+/** What another instance needs to mirror a run. */
+export interface LiveRunInfo {
+  assignmentId: string;
+  taskId: string;
+  agentId: string;
+  /** Epoch ms: the latest run of a task wins. */
+  startedAt: number;
+  truncated: number;
+  finished: boolean;
+}
+
+/** Called for every change of a run this instance owns (to forward it to other instances). */
+export type OwnedRunListener = (taskId: string, run: LiveRunInfo, lines: LiveLogLine[]) => void;
+
 interface Run {
   assignmentId: string;
   taskId: string;
@@ -29,6 +47,9 @@ interface Run {
   truncated: number;
   finished: boolean;
   lastAt: number;
+  startedAt: number;
+  /** A mirror of a run owned by another instance. */
+  remote: boolean;
   /** Per entry kind: a token split between two lines or two batches is masked too. */
   streams: Map<string, StreamRedactor>;
 }
@@ -70,6 +91,8 @@ export class LiveLogStore {
   private readonly idleMs: number;
   private readonly maxRuns: number;
   private readonly now: () => number;
+  /** Set by the relay (multi-instance). */
+  onOwnedChange: OwnedRunListener | undefined;
 
   constructor(o: LiveLogStoreOptions = {}) {
     this.maxBytes = o.maxBytesPerRun ?? 512 * 1024;
@@ -102,11 +125,14 @@ export class LiveLogStore {
       truncated: 0,
       finished: false,
       lastAt: this.now(),
+      startedAt: this.now(),
+      remote: false,
       streams: new Map(),
     };
     this.runs.set(assignmentId, run);
     this.byTask.set(taskId, assignmentId);
     this.emit(taskId, { type: 'meta', meta: this.metaOf(run) });
+    this.owned(run, []);
   }
 
   /** Adds a batch (sanitized again here: redacted, ANSI stripped, clipped). */
@@ -115,6 +141,11 @@ export class LiveLogStore {
     if (!run || run.finished) return;
     run.lastAt = this.now();
     run.truncated += lost;
+    // The agent moved to this instance mid-run: its mirror becomes the run.
+    run.remote = false;
+    // Ids follow the clock too, so a run that moves to (or restarts on) another instance keeps
+    // growing ids for a browser resuming with `Last-Event-ID`.
+    this.nextId = Math.max(this.nextId, Math.floor(this.now()) * 1000);
     const added: LiveLogLine[] = [];
     for (const e of entries) {
       let stream = run.streams.get(e.kind);
@@ -139,6 +170,75 @@ export class LiveLogStore {
     if (added.length > 0 && this.byTask.get(run.taskId) === assignmentId) {
       this.emit(run.taskId, { type: 'lines', lines: added });
     }
+    if (added.length > 0) this.owned(run, added);
+  }
+
+  /**
+   * Mirrors a run owned by another instance (already sanitized lines, with the owner's ids). Only
+   * lines newer than the mirror's last one are added; a run older than the task's latest is
+   * ignored. Never touches a run this instance owns.
+   */
+  ingest(info: LiveRunInfo, lines: readonly LiveLogLine[]): void {
+    let run = this.runs.get(info.assignmentId);
+    if (run && !run.remote) return;
+    const latestId = this.byTask.get(info.taskId);
+    const latest = latestId ? this.runs.get(latestId) : undefined;
+    if (!run) {
+      if (latest && latest.startedAt > info.startedAt) return;
+      this.sweep();
+      if (latest && !latest.finished) latest.finished = true; // superseded
+      run = {
+        assignmentId: info.assignmentId,
+        taskId: info.taskId,
+        agentId: info.agentId,
+        lines: [],
+        bytes: 0,
+        truncated: info.truncated,
+        finished: false,
+        lastAt: this.now(),
+        startedAt: info.startedAt,
+        remote: true,
+        streams: new Map(),
+      };
+      this.runs.set(run.assignmentId, run);
+      this.byTask.set(run.taskId, run.assignmentId);
+      this.emit(run.taskId, { type: 'meta', meta: this.metaOf(run) });
+    }
+    run.lastAt = this.now();
+    run.truncated = Math.max(run.truncated, info.truncated);
+    const last = run.lines.at(-1)?.id ?? 0;
+    const fresh = lines.filter((l) => l.id > last);
+    for (const l of fresh) {
+      run.lines.push(l);
+      run.bytes += lineBytes(l);
+      // A later run owned here must still get higher ids than what a browser saw of this one.
+      if (l.id >= this.nextId) this.nextId = l.id + 1;
+    }
+    while (run.bytes > this.maxBytes && run.lines.length > 0) {
+      const old = run.lines.shift() as LiveLogLine;
+      run.bytes -= lineBytes(old);
+    }
+    const isLatest = this.byTask.get(run.taskId) === run.assignmentId;
+    if (fresh.length > 0 && isLatest) this.emit(run.taskId, { type: 'lines', lines: fresh });
+    if (info.finished && !run.finished) {
+      run.finished = true;
+      if (isLatest) this.emit(run.taskId, { type: 'end', meta: this.metaOf(run) });
+    }
+  }
+
+  /** The task's latest run when this instance owns it, with its lines after `after`. */
+  ownedRun(taskId: string, after = 0): { run: LiveRunInfo; lines: LiveLogLine[] } | null {
+    const id = this.byTask.get(taskId);
+    const run = id ? this.runs.get(id) : undefined;
+    if (!run || run.remote) return null;
+    return { run: this.infoOf(run), lines: run.lines.filter((l) => l.id > after) };
+  }
+
+  /** Latest run of a task and its last line id (resume point of a mirror). */
+  latest(taskId: string): { assignmentId: string; lastId: number } | null {
+    const id = this.byTask.get(taskId);
+    const run = id ? this.runs.get(id) : undefined;
+    return run ? { assignmentId: run.assignmentId, lastId: run.lines.at(-1)?.id ?? 0 } : null;
   }
 
   /** The run ended (`task.finished`); its buffer stays readable for `retainMs`. */
@@ -150,6 +250,7 @@ export class LiveLogStore {
     if (this.byTask.get(run.taskId) === assignmentId) {
       this.emit(run.taskId, { type: 'end', meta: this.metaOf(run) });
     }
+    this.owned(run, []);
   }
 
   /** Current state of a task's latest run and its lines after `after` (exclusive). */
@@ -206,6 +307,26 @@ export class LiveLogStore {
         meta: { assignmentId: null, state: 'waiting', truncated: 0 },
       });
     }
+  }
+
+  private owned(run: Run, lines: LiveLogLine[]): void {
+    if (run.remote || !this.onOwnedChange) return;
+    try {
+      this.onOwnedChange(run.taskId, this.infoOf(run), lines);
+    } catch {
+      // Forwarding is best effort: never fails the agent's frame.
+    }
+  }
+
+  private infoOf(run: Run): LiveRunInfo {
+    return {
+      assignmentId: run.assignmentId,
+      taskId: run.taskId,
+      agentId: run.agentId,
+      startedAt: run.startedAt,
+      truncated: run.truncated,
+      finished: run.finished,
+    };
   }
 
   private metaOf(run: Run): LiveLogMeta {

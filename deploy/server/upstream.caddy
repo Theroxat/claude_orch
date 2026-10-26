@@ -1,0 +1,3 @@
+# Upstream of every proxied route in routes.caddy: the single server container.
+# compose.replicas.yaml replaces this file with upstream.replicas.caddy.
+to server:3000

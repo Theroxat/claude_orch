@@ -32,6 +32,7 @@ import {
 import type { AgentGateway } from '../agents/gateway';
 import { OfferRefusedError } from '../agents/gateway';
 import { audit } from '../audit';
+import type { Cluster } from '../cluster';
 import type { Metrics } from '../observability';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
@@ -67,6 +68,11 @@ export interface DispatcherDeps {
   gateway: AgentGateway;
   log: FastifyBaseLogger;
   metrics?: Metrics;
+  /**
+   * Several instances: only the holder of the `dispatcher` leadership runs ticks; a kick on any
+   * other instance is forwarded to it. Absent: this process is alone and always dispatches.
+   */
+  cluster?: Cluster;
   /** Re-checks the GitHub access of members of private repositories (cached roles). */
   github?: GithubClient;
 }
@@ -179,6 +185,9 @@ export class Dispatcher {
   private chain: Promise<unknown> = Promise.resolve();
   private kicked = false;
   private stopped = false;
+  /** Runs ticks: always when alone, while holding the `dispatcher` leadership otherwise. */
+  private leading = false;
+  private forwarding = false;
 
   constructor(private readonly deps: DispatcherDeps) {}
 
@@ -189,21 +198,64 @@ export class Dispatcher {
     return this.deps.gateway;
   }
 
-  start(): void {
+  /** True while this instance runs the dispatcher loop (the leader, or alone). */
+  get isLeader(): boolean {
+    return this.leading;
+  }
+
+  /** Starts the loop, or competes for the leadership first when other instances may exist. */
+  async start(): Promise<void> {
     if (!this.deps.config.DISPATCHER_ENABLED) return;
+    const cluster = this.deps.cluster;
+    if (!cluster) {
+      this.lead();
+      return;
+    }
+    cluster.bus.on('dispatcher.kick', () => {
+      if (this.leading) this.kick();
+    });
+    await cluster.leadership.want('dispatcher', {
+      onAcquire: () => {
+        this.lead();
+        this.kick(); // catch up with whatever happened while nobody was leading
+      },
+      onLose: () => {
+        this.leading = false;
+        clearInterval(this.timer);
+      },
+    });
+  }
+
+  private lead(): void {
+    if (this.stopped || this.leading) return;
+    this.leading = true;
     this.timer = setInterval(() => this.kick(), this.deps.config.DISPATCHER_INTERVAL_MS);
     this.timer.unref();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.leading = false;
     clearInterval(this.timer);
     await this.settle();
   }
 
-  /** Schedules a tick soon. Several kicks before it runs collapse into one. */
+  /**
+   * Schedules a tick soon. Several kicks before it runs collapse into one. On an instance that is
+   * not the leader, the kick goes to the leader (one message, however many kicks meanwhile).
+   */
   kick(): void {
-    if (!this.deps.config.DISPATCHER_ENABLED || this.stopped || this.kicked) return;
+    if (!this.deps.config.DISPATCHER_ENABLED || this.stopped) return;
+    const cluster = this.deps.cluster;
+    if (cluster && !this.leading) {
+      if (this.forwarding) return;
+      this.forwarding = true;
+      void cluster.bus.publish('dispatcher.kick').finally(() => {
+        this.forwarding = false;
+      });
+      return;
+    }
+    if (this.kicked) return;
     this.kicked = true;
     this.enqueue(async () => {
       this.kicked = false;
@@ -235,6 +287,10 @@ export class Dispatcher {
 
   private async runTick(now: Date): Promise<void> {
     if (this.stopped) return;
+    const cluster = this.deps.cluster;
+    // Fenced: a tick queued before the leadership was lost, or on a lock lost since the last
+    // periodic check, does nothing (another instance may be dispatching).
+    if (cluster && !(this.leading && (await cluster.leadership.confirm('dispatcher')))) return;
     const stop = this.deps.metrics?.dispatcherTick.startTimer();
     try {
       await this.expireOffers(now);

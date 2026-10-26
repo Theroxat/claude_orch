@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AccessGrant, AccessGrantStatus, User } from '@prisma/client';
 import type { ApiUser } from '@orch/shared';
 import { audit } from '../audit';
+import type { Cluster } from '../cluster';
 import { signInIsRestricted, type Config } from '../config';
 import type { Metrics } from '../observability';
 import type { PrismaClient } from '../db';
@@ -86,6 +87,8 @@ export interface AuthDeps {
   github?: GithubClient;
   /** Prometheus instruments (see observability/). */
   metrics?: Metrics;
+  /** Other server instances (cache invalidations are broadcast to them). */
+  cluster?: Cluster;
 }
 
 export function toApiUser(u: User, isAdmin = false): ApiUser {
@@ -185,10 +188,19 @@ export function createAllowlist(deps: AuthDeps): Allowlist {
 
   const isAdmin = (login: string) => config.ORCH_ADMIN_GITHUB_LOGINS.includes(login.toLowerCase());
 
-  function invalidate(login: string): void {
+  function forget(login: string): void {
     grantCache.delete(login.toLowerCase());
     anyApproved = null;
   }
+
+  /** Drops the cached grant here and on every other instance (admin decisions apply at once). */
+  function invalidate(login: string): void {
+    forget(login);
+    void deps.cluster?.bus.publish('allowlist.invalidate', { login });
+  }
+  deps.cluster?.bus.on<{ login: string }>('allowlist.invalidate', ({ login }) => {
+    if (typeof login === 'string') forget(login);
+  });
 
   /** Allowlist decision for a user token. Lists and grants first (cheap), then org membership. */
   async function isAllowed(

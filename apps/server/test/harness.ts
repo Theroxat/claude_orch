@@ -191,6 +191,10 @@ export function makeApp(
     RATE_LIMIT_HEAVY_MAX: '1000000',
     RATE_LIMIT_STREAM_MAX: '1000000',
     RATE_LIMIT_AGENT_CONNECT_MAX: '1000000',
+    // Every app of a suite is its own one-instance cluster on the shared test database (no
+    // leadership, agents or shared limits in common); the cluster suite overrides both.
+    ORCH_INSTANCE_ID: `test-${uid()}`,
+    ORCH_CLUSTER_NAME: `t${uid()}`.slice(0, 40),
     ...opts.env,
   });
   return buildApp({ config, prisma, github, logStream: opts.logStream, notify: opts.notify });

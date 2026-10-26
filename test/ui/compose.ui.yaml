@@ -10,6 +10,7 @@ services:
     volumes:
       - ./deploy/server/Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
       - ./deploy/server/routes.caddy:/etc/caddy/routes.caddy:ro
+      - ./deploy/server/upstream.caddy:/etc/caddy/upstream.caddy:ro
       - ./apps/web/dist:/srv:ro
     depends_on:
       server:

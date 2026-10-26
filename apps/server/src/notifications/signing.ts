@@ -23,6 +23,14 @@ export function newWebhookId(): string {
   return `msg_${randomUUID().replaceAll('-', '')}`;
 }
 
+/**
+ * The id of a queued delivery (its NotificationJob id): stable across retries, and across
+ * instances when another one takes the job over, so receivers can dedupe on it.
+ */
+export function webhookIdOf(jobId: string): string {
+  return `msg_${jobId}`;
+}
+
 export function signWebhook(secret: string, id: string, timestamp: number, body: string): string {
   const raw = secret.startsWith(SECRET_PREFIX) ? secret.slice(SECRET_PREFIX.length) : secret;
   const mac = createHmac('sha256', Buffer.from(raw, 'base64'));

@@ -70,7 +70,7 @@ Org membership is checked at login with the user's own GitHub token, and again f
 
 ### Rate limits
 
-The server limits requests with an **in-memory** counter (`@fastify/rate-limit`). orch runs as one server instance, so no shared store is needed; counters reset when the server restarts and are not shared between instances. Each limit counts requests per window (`RATE_LIMIT_WINDOW_SEC`, default 60 s). Over the limit the server answers `429` with a `Retry-After` header, `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` headers, and the usual error body `{"error": {"code": "rate_limited", "message": "..."}}`. The web app shows a short notice.
+The server limits requests with `@fastify/rate-limit`. The `auth` and `agent-connect` counters live in Postgres and hold for the whole deployment when several server instances run; the other tiers are counted in each instance's memory (they protect one process from load) and reset when it restarts, see {ref}`multi-instance`. Each limit counts requests per window (`RATE_LIMIT_WINDOW_SEC`, default 60 s). Over the limit the server answers `429` with a `Retry-After` header, `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` headers, and the usual error body `{"error": {"code": "rate_limited", "message": "..."}}`. The web app shows a short notice.
 
 | Variable                       | Default | Applies to (key)                                                                                                                                                        |
 | ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -87,7 +87,7 @@ The server limits requests with an **in-memory** counter (`@fastify/rate-limit`)
 
 MCP is limited per bearer token and, to stop token spraying, also per client IP (5x the per-token limit). IPv6 clients are counted per /64. In `deploy/server/compose.yaml` these variables are passed through only when set in `.env` (an empty value means the default).
 
-Health checks (`/healthz`, `/api/healthz`), `install.sh` and `/agent/compose.yaml` are never limited. The existing per-IP limits on access requests and on OAuth registration and token calls stay in place on top of these.
+Health checks (`/healthz`, `/api/healthz`), `install.sh` and `/agent/compose.yaml` are never limited. The existing per-IP limits on access requests and on OAuth registration and token calls stay in place on top of these (counted in Postgres as well).
 
 The client IP comes from `X-Forwarded-For` only when the direct peer is in `ORCH_TRUST_PROXY` (default: private networks, i.e. the Caddy container, which sets the header itself; in Cloudflare Tunnel mode Caddy keeps the chain Cloudflare built). A client that reaches the server directly cannot choose its own IP by sending that header. If you publish the server port without Caddy, set `ORCH_TRUST_PROXY=false`.
 
@@ -95,28 +95,33 @@ The client IP comes from `X-Forwarded-For` only when the direct peer is in `ORCH
 
 These have defaults and are defined in `apps/server/src/config/index.ts`. To change one, add it to the `server` service `environment` in `compose.yaml`.
 
-| Variable                      | Default                     | Meaning                                                                          |
-| ----------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
-| `DISPATCHER_ENABLED`          | `true`                      | Run the dispatcher                                                               |
-| `DISPATCHER_INTERVAL_MS`      | 5000                        | Dispatcher tick                                                                  |
-| `AUTO_OFFER_TTL_SEC`          | 60                          | Pending auto offers expire after this                                            |
-| `CONSENT_REQUEST_TTL_SEC`     | 1800                        | Pending approval requests expire after this                                      |
-| `USAGE_STALE_SEC`             | 900                         | A usage report older than this makes a member ineligible for auto offers         |
-| `BUDGET_SAFETY_RESERVE`       | 0                           | Extra server-side reserve on top of the agent's own 20 %                         |
-| `OPUS_FACTOR`                 | 5                           | Weight of Opus relative to Sonnet in estimates                                   |
-| `PRO_WINDOW_WEIGHTED`         | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)                 |
-| `EXEC_LEASE_GRACE_SEC`        | 900                         | Grace added to task timeouts before an auto run is declared lost                 |
-| `AGENT_LEASE_SEC`             | 1800                        | Running assignments of an agent unseen this long become lost                     |
-| `AGENT_HEARTBEAT_SEC`         | 30                          | Agent heartbeat interval                                                         |
-| `AGENT_HEARTBEAT_TIMEOUT_MS`  | 90000                       | Agent considered offline after this                                              |
-| `AGENT_USAGE_SEC`             | 300                         | Usage report interval                                                            |
-| `ORCH_AGENT_IMAGE_REPO`       | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                             |
-| `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability` |
-| `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)             |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset          |
-| `NOTIFY_MAX_ATTEMPTS`         | 4                           | Attempts per external notification delivery before giving up                     |
-| `NOTIFY_RETRY_BASE_MS`        | 2000                        | First retry delay of a notification; each next one is 4x longer                  |
-| `NOTIFY_RETENTION_DAYS`       | 90                          | In-app notifications older than this are deleted                                 |
+| Variable                      | Default                     | Meaning                                                                                                         |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DISPATCHER_ENABLED`          | `true`                      | Run the dispatcher                                                                                              |
+| `DISPATCHER_INTERVAL_MS`      | 5000                        | Dispatcher tick                                                                                                 |
+| `AUTO_OFFER_TTL_SEC`          | 60                          | Pending auto offers expire after this                                                                           |
+| `CONSENT_REQUEST_TTL_SEC`     | 1800                        | Pending approval requests expire after this                                                                     |
+| `USAGE_STALE_SEC`             | 900                         | A usage report older than this makes a member ineligible for auto offers                                        |
+| `BUDGET_SAFETY_RESERVE`       | 0                           | Extra server-side reserve on top of the agent's own 20 %                                                        |
+| `OPUS_FACTOR`                 | 5                           | Weight of Opus relative to Sonnet in estimates                                                                  |
+| `PRO_WINDOW_WEIGHTED`         | 44000                       | Weighted tokens of a Pro 5-hour window (base of S/M/L estimates)                                                |
+| `EXEC_LEASE_GRACE_SEC`        | 900                         | Grace added to task timeouts before an auto run is declared lost                                                |
+| `AGENT_LEASE_SEC`             | 1800                        | Running assignments of an agent unseen this long become lost                                                    |
+| `AGENT_HEARTBEAT_SEC`         | 30                          | Agent heartbeat interval                                                                                        |
+| `AGENT_HEARTBEAT_TIMEOUT_MS`  | 90000                       | Agent considered offline after this                                                                             |
+| `AGENT_USAGE_SEC`             | 300                         | Usage report interval                                                                                           |
+| `ORCH_AGENT_IMAGE_REPO`       | ghcr.io/theroxat/orch-agent | Image repository offered for one-click agent updates                                                            |
+| `METRICS_ENABLED`             | `false`                     | Serve Prometheus metrics on `/metrics` (404 otherwise), see {doc}`observability`                                |
+| `METRICS_TOKEN`               | (empty)                     | Bearer token required on `/metrics` when set (16 characters minimum)                                            |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty)                     | OTLP/HTTP endpoint for OpenTelemetry traces; tracing is off while unset                                         |
+| `NOTIFY_MAX_ATTEMPTS`         | 4                           | Attempts per external notification delivery before giving up                                                    |
+| `NOTIFY_RETRY_BASE_MS`        | 2000                        | First retry delay of a notification; each next one is 4x longer                                                 |
+| `NOTIFY_RETENTION_DAYS`       | 90                          | In-app notifications older than this are deleted                                                                |
+| `NOTIFY_QUEUE_POLL_MS`        | 5000                        | How often the delivery queue is polled for retries and leftovers of other instances                             |
+| `ORCH_INSTANCE_ID`            | hostname                    | Unique name of this instance among those sharing the database ({ref}`multi-instance`)                           |
+| `ORCH_CLUSTER_NAME`           | `orch`                      | Instances with the same database and name cooperate; change it only to run separate deployments on one database |
+| `ORCH_INSTANCE_HEARTBEAT_MS`  | 10000                       | Instance heartbeat; an instance silent for 3 heartbeats is considered gone                                      |
+| `ORCH_LEADER_RETRY_MS`        | 5000                        | How often a follower tries to take a free leadership (dispatcher, maintenance)                                  |
 
 ## Agent environment
 

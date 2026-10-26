@@ -76,6 +76,16 @@ Consent is enforced twice: the server never creates an auto offer for someone wh
 
 Limits: at most 20 pending tasks per creator (an error is returned beyond that), 1 concurrent task per machine by default, and execution timeouts of 30, 90 and 180 minutes for sizes S, M and L.
 
+## Server architecture
+
+The server is one Node process (Fastify) with all its state in Postgres. In memory it only keeps what belongs to a connection or a cache: the agents' WebSockets, the live output of running tasks, short-lived caches (access decisions, GitHub clients) and per-process rate-limit counters.
+
+It can run as several instances behind a load balancer, with Postgres as the only shared dependency ({ref}`multi-instance`):
+
+- **Leadership.** Singleton loops (the dispatcher tick, retention purges) run on one instance, elected with a Postgres advisory lock held on a dedicated connection. Losing that connection means losing the lock, so a leader that cannot reach the database steps down and another instance takes over. The dispatcher is safe to overlap anyway: offers are created under row locks and unique indexes (see above).
+- **Messaging.** Each instance listens on a Postgres `LISTEN/NOTIFY` channel. An instance that needs to reach an agent connected elsewhere (offer, cancel, config push, disconnect) relays the message to the instance holding the socket, found in the agent directory table. The same channel forwards dispatcher kicks to the leader, access-cache invalidations and live output to instances whose users watch a task.
+- **Durable work.** Notification deliveries are rows claimed with `FOR UPDATE SKIP LOCKED`, so retries survive restarts and each delivery has one owner at a time.
+
 ## Execution and sandbox
 
 On the member machine the agent keeps a bare **mirror** of each repository and makes an **isolated clone** per task, not a worktree of your working copy. Each task runs in its own container: non-root, with only that clone mounted, no Docker socket and no host home directory. Git metadata (the mirror and the clone's `.git` bookkeeping) stays outside the task container so a task cannot rewrite hooks or config that the agent's git would run later.

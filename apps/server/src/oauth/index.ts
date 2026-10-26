@@ -36,6 +36,7 @@ import { randomToken, sha256Hex } from '../auth/crypto';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
 import { HttpError, parseBody } from '../http/errors';
+import { SharedCounter, SharedRateLimiter } from '../http/shared-limit';
 
 export const CODE_TTL_MS = 60_000;
 export const ACCESS_TOKEN_TTL_MS = 3600_000;
@@ -44,7 +45,7 @@ const LAST_USED_RESOLUTION_MS = 60_000;
 const SCOPE = 'mcp';
 const MAX_REDIRECT_URIS = 5;
 
-/** Fixed-window rate limits per client IP. */
+/** Fixed-window rate limits per client IP (shared by every instance). */
 export const RATE_LIMITS = {
   register: { max: 10, windowMs: 10 * 60_000 },
   token: { max: 60, windowMs: 60_000 },
@@ -123,26 +124,6 @@ function redirectHost(uri: string): string {
     return new URL(uri).host;
   } catch {
     return uri;
-  }
-}
-
-class RateLimiter {
-  private hits = new Map<string, { n: number; reset: number }>();
-  constructor(
-    private max: number,
-    private windowMs: number,
-  ) {}
-  allow(key: string, now = Date.now()): boolean {
-    if (this.hits.size > 10_000) {
-      for (const [k, v] of this.hits) if (v.reset <= now) this.hits.delete(k);
-    }
-    const h = this.hits.get(key);
-    if (!h || h.reset <= now) {
-      this.hits.set(key, { n: 1, reset: now + this.windowMs });
-      return true;
-    }
-    h.n++;
-    return h.n <= this.max;
   }
 }
 
@@ -225,9 +206,21 @@ interface ValidRequest {
 export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
   const { prisma, config } = deps;
   const urls = oauthUrls(config);
+  // Shared by every instance: a client cannot multiply its budget by hitting several of them.
+  const counter = new SharedCounter(prisma, config.ORCH_CLUSTER_NAME, app.log);
   const limits = {
-    register: new RateLimiter(RATE_LIMITS.register.max, RATE_LIMITS.register.windowMs),
-    token: new RateLimiter(RATE_LIMITS.token.max, RATE_LIMITS.token.windowMs),
+    register: new SharedRateLimiter(
+      counter,
+      'oauth-register',
+      RATE_LIMITS.register.max,
+      RATE_LIMITS.register.windowMs,
+    ),
+    token: new SharedRateLimiter(
+      counter,
+      'oauth-token',
+      RATE_LIMITS.token.max,
+      RATE_LIMITS.token.windowMs,
+    ),
   };
   let lastPurge = 0;
   const purge = async () => {
@@ -482,7 +475,7 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
     };
 
     scope.post('/api/oauth/register', async (req, reply) => {
-      if (!limits.register.allow(req.ip)) {
+      if (!(await limits.register.allow(req.ip))) {
         return sendOAuthError(reply, new OAuthError('slow_down', 'Too many registrations', 429));
       }
       const b = (req.body ?? {}) as Record<string, unknown>;
@@ -689,7 +682,7 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
 
     scope.post('/api/oauth/token', async (req, reply) => {
       try {
-        if (!limits.token.allow(req.ip)) {
+        if (!(await limits.token.allow(req.ip))) {
           throw new OAuthError('slow_down', 'Too many token requests', 429);
         }
         await purge();
@@ -712,7 +705,7 @@ export function registerOAuth(app: FastifyInstance, deps: AuthDeps): void {
 
     // RFC 7009: revoking an access or refresh token revokes its grant. Always 200.
     scope.post('/api/oauth/revoke', async (req, reply) => {
-      if (!limits.token.allow(req.ip)) {
+      if (!(await limits.token.allow(req.ip))) {
         return sendOAuthError(reply, new OAuthError('slow_down', 'Too many requests', 429));
       }
       const raw = field(req, 'token');

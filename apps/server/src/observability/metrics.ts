@@ -41,6 +41,11 @@ export class Metrics {
   readonly assignmentsFinished: Counter<'outcome' | 'failure_class'>;
   readonly wsMessages: Counter<'type'>;
   readonly webhookDeliveries: Counter<'event' | 'result'>;
+  readonly clusterLeader: Gauge<'lease'>;
+  readonly clusterLeaderChanges: Counter<'lease' | 'event'>;
+  readonly clusterMessages: Counter<'direction' | 'kind'>;
+  readonly clusterPeers: Gauge;
+  readonly notificationJobs: Counter<'channel' | 'result'>;
   readonly repoAccessChecks: Counter<'result'>;
   private sources: MetricsSources | undefined;
   private tasksFetchedAt = 0;
@@ -107,6 +112,35 @@ export class Metrics {
       registers,
     });
 
+    this.clusterLeader = new Gauge({
+      name: 'orch_cluster_leader',
+      help: 'Leaderships held by this instance (1) or not (0), by lease (dispatcher, maintenance).',
+      labelNames: ['lease'],
+      registers,
+    });
+    this.clusterLeaderChanges = new Counter({
+      name: 'orch_cluster_leader_changes_total',
+      help: 'Leadership changes on this instance, by lease and event (acquired, lost, released).',
+      labelNames: ['lease', 'event'],
+      registers,
+    });
+    this.clusterMessages = new Counter({
+      name: 'orch_cluster_messages_total',
+      help: 'Cross-instance messages sent (out) and received (in), by kind.',
+      labelNames: ['direction', 'kind'],
+      registers,
+    });
+    this.clusterPeers = new Gauge({
+      name: 'orch_cluster_peers',
+      help: 'Other live server instances this instance knows of.',
+      registers,
+    });
+    this.notificationJobs = new Counter({
+      name: 'orch_notification_deliveries_total',
+      help: 'External notification delivery attempts, by channel and result (sent, retry, failed).',
+      labelNames: ['channel', 'result'],
+      registers,
+    });
     this.repoAccessChecks = new Counter({
       name: 'orch_repo_access_checks_total',
       help: 'Repository access checks that went to GitHub, by result (refreshed, denied, grace, outage_denied, invalidated).',
@@ -118,7 +152,7 @@ export class Metrics {
     const self = this;
     new Gauge({
       name: 'orch_agents_connected',
-      help: 'Connected agents by reported agent version.',
+      help: 'Agents connected to this instance, by reported agent version.',
       labelNames: ['version'],
       registers,
       collect() {

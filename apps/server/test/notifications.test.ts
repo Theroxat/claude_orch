@@ -965,7 +965,7 @@ describe('webhook signatures (Standard Webhooks)', { timeout: 20_000 }, () => {
     expect(posted).toHaveLength(3);
     const ids = new Set(posted.map((x) => x.headers['webhook-id']));
     expect(ids.size).toBe(1);
-    expect([...ids][0]).toMatch(/^msg_[0-9a-f]{32}$/);
+    expect([...ids][0]).toMatch(/^msg_[0-9a-z]+$/);
     for (const x of posted) {
       const ts = Number(x.headers['webhook-timestamp']);
       expect(Math.abs(Date.now() / 1000 - ts)).toBeLessThan(30);
