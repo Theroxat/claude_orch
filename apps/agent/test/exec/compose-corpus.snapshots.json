@@ -2166,5 +2166,209 @@
         }
       }
     }
+  },
+  "app with a secrets file, read-only source and a writable data dir": {
+    "model": {
+      "configs": {
+        "app_conf": {
+          "name": "orch-task-corpus_app_conf",
+          "file": "@ROOT@/config/app.conf"
+        }
+      },
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "db_password": {
+          "name": "orch-task-corpus_db_password",
+          "file": "@ROOT@/secrets/db_password.txt"
+        }
+      },
+      "services": {
+        "app": {
+          "command": ["node", "/src/server.js"],
+          "configs": [
+            {
+              "source": "app_conf",
+              "target": "/etc/app.conf"
+            }
+          ],
+          "entrypoint": null,
+          "image": "node:24-alpine",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "db_password",
+              "target": "/run/secrets/db_password"
+            }
+          ],
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/src",
+              "target": "/src",
+              "read_only": true,
+              "bind": {}
+            },
+            {
+              "type": "bind",
+              "source": "@ROOT@/data",
+              "target": "/data",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "writable bind mount redirecting a secret file to the host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "tok": {
+          "name": "orch-task-corpus_tok",
+          "file": "@ROOT@/secrets/tok.txt"
+        }
+      },
+      "services": {
+        "planter": {
+          "command": ["sh", "-c", "ln -sfn /etc/shadow /repo/secrets/tok.txt"],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@",
+              "target": "/repo",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "tok",
+              "target": "/run/secrets/tok"
+            }
+          ],
+          "depends_on": {
+            "planter": {
+              "condition": "service_completed_successfully",
+              "required": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "writable bind mount redirecting a config file to the host": {
+    "model": {
+      "configs": {
+        "app": {
+          "name": "orch-task-corpus_app",
+          "file": "@ROOT@/conf/app.conf"
+        }
+      },
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "planter": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/conf",
+              "target": "/conf",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "configs": [
+            {
+              "source": "app"
+            }
+          ],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "writable bind mount of the secret file itself": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "tok": {
+          "name": "orch-task-corpus_tok",
+          "file": "@ROOT@/tok.txt"
+        }
+      },
+      "services": {
+        "app": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "tok",
+              "target": "/run/secrets/tok"
+            }
+          ],
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/tok.txt",
+              "target": "/tok.txt",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
   }
 }

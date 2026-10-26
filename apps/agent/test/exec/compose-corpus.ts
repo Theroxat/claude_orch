@@ -235,6 +235,32 @@ networks:
       'docs/index.html': '<p>docs</p>\n',
     },
   },
+  {
+    name: 'app with a secrets file, read-only source and a writable data dir',
+    files: {
+      'compose.yaml': `services:
+  app:
+    image: node:24-alpine
+    command: ["node", "/src/server.js"]
+    volumes:
+      - ./src:/src:ro
+      - ./data:/data
+    secrets: [db_password]
+    configs:
+      - source: app_conf
+        target: /etc/app.conf
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+configs:
+  app_conf:
+    file: ./config/app.conf
+`,
+      'src/server.js': 'console.log("ok");\n',
+      'secrets/db_password.txt': 'not-a-real-password\n',
+      'config/app.conf': 'port=3000\n',
+    },
+  },
 ];
 
 export const MALICIOUS: CorpusCase[] = [
@@ -625,5 +651,67 @@ export const MALICIOUS: CorpusCase[] = [
         '      - ./data:/host:ro\n',
     },
     refused: /writable bind mount of ".*" is a parent of .*'s bind mount/,
+  },
+  {
+    // Same redirection through a top-level secret: the planter swaps the secret file for a
+    // symlink to the host before the victim's container mounts it as /run/secrets/tok.
+    name: 'writable bind mount redirecting a secret file to the host',
+    files: {
+      'compose.yaml':
+        'services:\n' +
+        '  planter:\n' +
+        '    image: alpine:3\n' +
+        '    volumes:\n' +
+        '      - ./:/repo\n' +
+        '    command: ["sh", "-c", "ln -sfn /etc/shadow /repo/secrets/tok.txt"]\n' +
+        '  victim:\n' +
+        '    image: alpine:3\n' +
+        '    depends_on:\n' +
+        '      planter:\n' +
+        '        condition: service_completed_successfully\n' +
+        '    secrets: [tok]\n' +
+        'secrets:\n' +
+        '  tok:\n' +
+        '    file: ./secrets/tok.txt\n',
+      'secrets/tok.txt': 'x\n',
+    },
+    refused: /service "planter": writable bind mount of ".*" contains secret "tok" file/,
+  },
+  {
+    name: 'writable bind mount redirecting a config file to the host',
+    files: {
+      'compose.yaml':
+        'services:\n' +
+        '  planter:\n' +
+        '    image: alpine:3\n' +
+        '    volumes:\n' +
+        '      - ./conf:/conf\n' +
+        '  victim:\n' +
+        '    image: alpine:3\n' +
+        '    configs: [app]\n' +
+        'configs:\n' +
+        '  app:\n' +
+        '    file: ./conf/app.conf\n',
+      'conf/app.conf': 'x=1\n',
+    },
+    refused: /service "planter": writable bind mount of ".*" contains config "app" file/,
+  },
+  {
+    // Even the service using the secret: a restart mounts whatever the path then points to.
+    name: 'writable bind mount of the secret file itself',
+    files: {
+      'compose.yaml':
+        'services:\n' +
+        '  app:\n' +
+        '    image: alpine:3\n' +
+        '    volumes:\n' +
+        '      - ./tok.txt:/tok.txt\n' +
+        '    secrets: [tok]\n' +
+        'secrets:\n' +
+        '  tok:\n' +
+        '    file: ./tok.txt\n',
+      'tok.txt': 'x\n',
+    },
+    refused: /service "app": writable bind mount of ".*" contains secret "tok" file/,
   },
 ];

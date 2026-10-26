@@ -764,6 +764,31 @@ function checkBindOverlap(binds: BindMount[], out: string[]): void {
   }
 }
 
+/**
+ * The same redirection through top-level `secrets.*.file` / `configs.*.file`: the daemon binds
+ * that file into every service that uses it, following symlinks on the host. A writable bind of
+ * the file, or of a directory containing it, lets a service swap it for a symlink (to `/`,
+ * `/etc/shadow`...) before another service (or its own restart) mounts it. Refused for every
+ * service, the one using the file included.
+ */
+function checkTopFileOverlap(
+  binds: BindMount[],
+  files: Array<{ label: string; path: string }>,
+  out: string[],
+): void {
+  for (const a of binds) {
+    if (!a.writable) continue;
+    for (const f of files) {
+      if (a.source === f.path || isStrictAncestor(a.source, f.path)) {
+        out.push(
+          `${a.svc}: writable bind mount of "${a.source}" contains ${f.label} file "${f.path}" ` +
+            `(it could redirect it to the host); mount it read-only or move the file`,
+        );
+      }
+    }
+  }
+}
+
 /** A cache source without `type=` is an image reference; otherwise only registry / inline. */
 function safeCacheFrom(c: unknown): boolean {
   if (typeof c !== 'string') return false;
@@ -1079,6 +1104,7 @@ export function checkComposeModel(
   checkBindOverlap(ctx.binds, out);
   checkTopNetworks(topNetworks, project, out);
   checkTopVolumes(topVolumes, project, out);
+  const files: Array<{ label: string; path: string }> = [];
   for (const kind of ['secrets', 'configs'] as const) {
     const top = model[kind];
     if (!isObj(top)) continue;
@@ -1095,11 +1121,18 @@ export function checkComposeModel(
         kind === 'secrets' ? TOP_SECRET_KEYS : TOP_CONFIG_KEYS,
         out,
       );
-      if (typeof def.file === 'string' && !inRoot(root, def.file)) {
-        out.push(`${label} "${name}": file "${def.file}" is outside the repository`);
+      if (typeof def.file === 'string') {
+        if (!inRoot(root, def.file)) {
+          out.push(`${label} "${name}": file "${def.file}" is outside the repository`);
+        }
+        files.push({
+          label: `${label} "${name}"`,
+          path: isAbsolute(def.file) ? resolve(def.file) : resolve(root, def.file),
+        });
       }
     }
   }
+  checkTopFileOverlap(ctx.binds, files, out);
   return out;
 }
 
