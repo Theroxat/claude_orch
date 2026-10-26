@@ -460,6 +460,28 @@ describe('GitHub outage', () => {
       expect((await getRoleInfo(prisma, gh, row, asUser(owner))).role).toBe('NONE');
     }
   });
+
+  it('private: a rate-limited 403 or a 429 keeps the cached role inside the grace window', async () => {
+    const rateLimited403 = Object.assign(status(403), {
+      response: { headers: { 'x-ratelimit-remaining': '0' } },
+    });
+    for (const err of [rateLimited403, status(429)]) {
+      const { owner, row } = await world();
+      await age(owner.userId, ROLE_CACHE_TTL_MS + 1000);
+      gh.failRolesWith = err;
+      expect((await getRoleInfo(prisma, gh, row, asUser(owner))).role).toBe('ADMIN');
+      expect(results).toContain('grace');
+      results.length = 0;
+    }
+  });
+
+  it('private: a 401 (the app credentials, not the user) does not revoke the cached role', async () => {
+    const { owner, row } = await world();
+    await age(owner.userId, ROLE_CACHE_TTL_MS + 1000);
+    gh.failRolesWith = status(401);
+    expect((await getRoleInfo(prisma, gh, row, asUser(owner))).role).toBe('ADMIN');
+    expect(results).toContain('grace');
+  });
 });
 
 describe('public repositories are unaffected', () => {

@@ -245,9 +245,9 @@ function isRateLimited(err: unknown): boolean {
  *
  * The GitHub role is cached per (project, user) in ProjectPermission for `ttlMs`. For a PRIVATE
  * repository:
- *   - GitHub answers 401/403/404: denied (role NONE) and that answer is cached (fail closed). A
+ *   - GitHub answers 403/404: denied (role NONE) and that answer is cached (fail closed). A
  *     403 that is a rate limit is an outage, not a denial;
- *   - GitHub is down (5xx, 429, timeout, network): the last verified role is reused while it is
+ *   - GitHub is down or the app's own credentials fail (5xx, 429, 401, timeout, network): the last verified role is reused while it is
  *     younger than `graceMs`, otherwise denied (nothing is cached: the next check asks again);
  *   - webhooks mark rows stale (`invalidateRepoAccess`), which also ends the grace for them, and
  *     a refresh started before an invalidation never overwrites it (compare-and-set on syncedAt).
@@ -336,7 +336,7 @@ async function refreshRole(
   } catch (err) {
     if (!project.isPrivate) return cached?.githubRole ?? 'NONE';
     const status = statusOf(err);
-    if (status === 401 || status === 404 || (status === 403 && !isRateLimited(err))) {
+    if (status === 404 || (status === 403 && !isRateLimited(err))) {
       state.observer?.count('denied');
       await store('NONE');
       return 'NONE';
