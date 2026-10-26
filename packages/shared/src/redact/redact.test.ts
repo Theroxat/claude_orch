@@ -4,6 +4,7 @@ import {
   REDACTED,
   Redactor,
   SECRET_RULES,
+  SecretMatcher,
   SecretSet,
   StreamRedactor,
   composeSecrets,
@@ -110,6 +111,27 @@ describe('secret formats', () => {
     expect(redactSecrets(`x ${cut}`)).toBe(`x ${R}`);
     // Inside a JSON string: the closing quote and the rest of the line stay.
     expect(redactSecrets(`{"k":"${cut.replace(/\n/g, '\\n')}","n":1}`)).toBe(`{"k":"${R}","n":1}`);
+  });
+
+  it('masks orch and Anthropic tokens glued to a letter, digit or token character', () => {
+    const ant = j('sk-', 'ant-oat01-', 'a'.repeat(30));
+    const pat = j('orch_', 'pat_', 'Z9'.repeat(10));
+    const agent = j('orch_', 'agent_abc123.', 's'.repeat(32));
+    for (const token of [ant, pat, agent]) {
+      for (const before of ['\\n', 'x', '7', '_', '.', '-']) {
+        const out = redactSecrets(`{"log":"line${before}${token}"}`);
+        expect(out, `${before}${token}`).toContain(R);
+        expect(out).not.toContain(token.slice(0, 12));
+      }
+    }
+  });
+
+  it('the orch agent id is bounded: no quadratic scan, overlong ids are not a credential', () => {
+    expect(redactSecrets(j('orch_', 'agent_', 'a'.repeat(65), '.secret'))).not.toContain(R);
+    const text = j('orch_', 'agent_').repeat(4000);
+    const t0 = performance.now();
+    redactSecrets(text);
+    expect(performance.now() - t0).toBeLessThan(200);
   });
 });
 
@@ -289,6 +311,48 @@ describe('StreamRedactor', () => {
       'commit 3f2a9c1e5b7d4a6f8e0c2b4d6f8a0c2e4b6d8f0a',
     ];
     expect(feed(new StreamRedactor(known), lines)).toEqual(lines);
+  });
+});
+
+describe('SecretMatcher.partialAtEnd', () => {
+  // The previous implementation: every proper prefix (5+ chars) of every value in a Set.
+  const reference = (values: string[], text: string) => {
+    const prefixes = new Set<string>();
+    let maxLen = 0;
+    for (const v of values) {
+      maxLen = Math.max(maxLen, v.length);
+      for (let n = 5; n < v.length; n++) prefixes.add(v.slice(0, n));
+    }
+    for (let n = Math.min(maxLen - 1, text.length); n >= 5; n--) {
+      if (prefixes.has(text.slice(text.length - n))) return n;
+    }
+    return 0;
+  };
+
+  it('finds the longest end of the text that starts a value, like the reference', () => {
+    let x = 7;
+    const rnd = (n: number) => {
+      x = (Math.imul(x, 1103515245) + 12345) | 0;
+      return (x >>> 16) % n;
+    };
+    const word = (len: number) => Array.from({ length: len }, () => 'abAB'[rnd(4)]).join('');
+    for (let round = 0; round < 300; round++) {
+      const values = Array.from({ length: 1 + rnd(4) }, () => word(8 + rnd(20)));
+      const m = new SecretMatcher(values);
+      const v = values[rnd(values.length)] as string;
+      const texts = [word(rnd(40)), `${word(rnd(10))}${v.slice(0, rnd(v.length + 1))}`];
+      for (const text of texts) expect(m.partialAtEnd(text), text).toBe(reference(values, text));
+    }
+  });
+
+  it('stays fast with long values and long lines', () => {
+    const value = j('Qx7', 'k'.repeat(4000));
+    const m = new SecretMatcher([value, ...secretVariants(value)]);
+    const line = 'z'.repeat(8000);
+    const t0 = performance.now();
+    for (let i = 0; i < 200; i++) m.partialAtEnd(line);
+    expect(m.partialAtEnd(`${line}${value.slice(0, 3000)}`)).toBe(3000);
+    expect(performance.now() - t0).toBeLessThan(500);
   });
 });
 

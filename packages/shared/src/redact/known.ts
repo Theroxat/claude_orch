@@ -188,24 +188,36 @@ export class SecretMatcher {
     return found;
   }
 
-  private prefixes: Set<string> | null = null;
+  /** Values by their first PARTIAL_MIN characters: the candidates for a partial match. */
+  private heads: Map<string, string[]> | null = null;
 
   /**
    * Length of the longest end of `text` (5+ chars) that is the START of a value: the rest of
-   * the value may come in the next piece of a stream. 0 when there is none.
+   * the value may come in the next piece of a stream. 0 when there is none. Only the positions
+   * whose next 5 characters start some value are compared in full.
    */
   partialAtEnd(text: string): number {
     if (this.size === 0) return 0;
-    if (!this.prefixes) {
-      this.prefixes = new Set();
+    if (!this.heads) {
+      this.heads = new Map();
       for (const list of this.byHash.values()) {
         for (const v of list) {
-          for (let j = PARTIAL_MIN; j < v.length; j++) this.prefixes.add(v.slice(0, j));
+          const head = v.slice(0, PARTIAL_MIN);
+          const same = this.heads.get(head);
+          if (same) same.push(v);
+          else this.heads.set(head, [v]);
         }
       }
     }
-    for (let j = Math.min(this.maxLen - 1, text.length); j >= PARTIAL_MIN; j--) {
-      if (this.prefixes.has(text.slice(text.length - j))) return j;
+    // Longest end first: the leftmost start position.
+    const end = text.length;
+    for (let p = end - Math.min(this.maxLen - 1, end); p <= end - PARTIAL_MIN; p++) {
+      const list = this.heads.get(text.slice(p, p + PARTIAL_MIN));
+      if (!list) continue;
+      const n = end - p;
+      for (const v of list) {
+        if (v.length > n && text.startsWith(v.slice(0, n), p)) return n;
+      }
     }
     return 0;
   }

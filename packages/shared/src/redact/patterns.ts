@@ -76,11 +76,14 @@ export const SECRET_RULES: readonly SecretRule[] = [
   {
     id: 'orch-agent',
     hint: 'orch_agent_',
-    re: new RegExp(`${T}()(orch_agent_[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)`, 'g'),
+    // No look-behind on these three prefixes: they are distinctive, and a token glued to a
+    // letter or digit (after a JSON-escaped `\n`, in `x_sk-ant-...`) must still be masked. The
+    // bounded id keeps the scan linear on `orch_agent_orch_agent_...`.
+    re: /()(orch_agent_[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]+)/g,
   },
-  { id: 'orch-pat', hint: 'orch_pat_', re: new RegExp(`${T}()(orch_pat_[A-Za-z0-9_-]+)`, 'g') },
+  { id: 'orch-pat', hint: 'orch_pat_', re: /()(orch_pat_[A-Za-z0-9_-]+)/g },
   // Anthropic (Claude OAuth / API keys) and OpenAI project / service keys.
-  { id: 'anthropic', hint: 'sk-ant-', re: new RegExp(`${T}()(sk-ant-[A-Za-z0-9_-]+)`, 'g') },
+  { id: 'anthropic', hint: 'sk-ant-', re: /()(sk-ant-[A-Za-z0-9_-]+)/g },
   {
     id: 'openai',
     hint: 'sk-',
