@@ -51,7 +51,7 @@ phases() { # every phase runs (one report each); the status is the worst of them
   wait "$late" || rc=1
   return "$rc"
 }
-export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.8.1}" ORCH_VERSION="${ORCH_UI_VERSION:-0.8.1}"
+export ORCH_UI_VERSION="${ORCH_UI_VERSION:-0.9.0}" ORCH_VERSION="${ORCH_UI_VERSION:-0.9.0}"
 export ORCH_UI_BASE="${ORCH_UI_BASE:-http://web}" ORCH_UI_GH="${ORCH_UI_GH:-http://fake-github:8080}"
 
 case "${1:-up}" in
