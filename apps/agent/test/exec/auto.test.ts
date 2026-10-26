@@ -334,6 +334,35 @@ describe('auto mode: headless run', () => {
     expect(log).toContain('[REDACTED]');
   });
 
+  it('masks devcontainer env values (also encoded or split over lines) in logs and failures', async () => {
+    const live: TaskLogPayload[] = [];
+    const t = setup({ live: (p) => (live.push(p), true) });
+    const SECRET = 'repo-db-Pw-7Hq2Kx9Zt';
+    t.git.files['.devcontainer/devcontainer.json'] = JSON.stringify({
+      image: 'node:22',
+      containerEnv: { DB_PASSWORD: SECRET, NODE_ENV: 'development' },
+    });
+    const b64 = Buffer.from(`user:${SECRET}`).toString('base64');
+    t.proc.script = (run) => {
+      run.stderr(`connect failed for ${SECRET.slice(0, 9)}`);
+      run.stderr(`${SECRET.slice(9)} (development)`);
+      run.stdout(resultLine({ is_error: true, subtype: 'error', result: `auth ${b64} refused` }));
+      run.finish(1);
+    };
+    acceptAndAck(t, autoOffer());
+    await t.ex.idle();
+    const fin = t.of('task.finished')[0]!.payload;
+    expect(fin.error).toContain('[REDACTED]');
+    expect(fin.error).not.toContain(b64.slice(8, 20));
+    const log = readFileSync(join(t.cfg.dataDir, 'logs', 'asg_1.log'), 'utf8');
+    const texts = live.flatMap((p) => p.entries.map((e) => e.text)).join('\n');
+    for (const out of [String(fin.error), log, texts]) {
+      expect(out).not.toContain(SECRET.slice(0, 9));
+      expect(out).not.toContain(SECRET.slice(9));
+    }
+    expect(texts).toContain('(development)');
+  });
+
   it('kills the run when the timeout expires and reports a failure', async () => {
     const t = setup();
     acceptAndAck(t, autoOffer({ timeoutSec: 30 })); // 30 x 1 ms in tests

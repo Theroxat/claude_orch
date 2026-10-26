@@ -1,5 +1,6 @@
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { redactSecrets } from '@orch/shared';
 import { createAgentGateway, registerAgents } from './agents';
 import { registerAccess } from './access';
 import { registerAuth } from './auth';
@@ -53,6 +54,13 @@ export function redactUrl(url: string | undefined): string | undefined {
   return i < 0 ? url : `${url.slice(0, i)}?[redacted]`;
 }
 
+/** A log destination that masks secret formats in each line before writing it. */
+export function redactingStream(dest: { write(msg: string): unknown }): {
+  write(msg: string): void;
+} {
+  return { write: (msg: string) => void dest.write(redactSecrets(msg)) };
+}
+
 export function buildApp({ config, prisma, github, logStream, notify }: AppDeps): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -68,7 +76,8 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
           };
         },
       },
-      ...(logStream ? { stream: logStream } : {}),
+      // Every log line (errors included) goes through the shared secret-format redaction.
+      stream: redactingStream(logStream ?? process.stdout),
     },
     trustProxy: config.ORCH_TRUST_PROXY,
     // Explicit default (1 MiB); routes that take less set their own lower limit.

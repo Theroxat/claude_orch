@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFailure, redactSecrets, summarizeFailure } from './failure';
+import { classifyFailure, summarizeFailure } from './failure';
+import { redactSecrets } from '../redact';
 import { parseAgentMessage, agentMessage } from '../protocol';
 
 describe('classifyFailure', () => {

@@ -3,6 +3,7 @@ import { Prisma, type Agent, type Assignment, type Participation, type User } fr
 import {
   TASK_STATUSES,
   classifyFailure,
+  redactSecrets,
   summarizeFailure,
   type FailureClass,
   type AckPayload,
@@ -1559,7 +1560,9 @@ export class TaskService {
           status,
           lastSeq: p.seq,
           finishedAt: new Date(),
-          reason: p.error?.slice(0, 1000) ?? (p.outcome === 'no_changes' ? 'no_changes' : null),
+          reason:
+            (p.error ? redactSecrets(p.error).slice(0, 1000) : null) ??
+            (p.outcome === 'no_changes' ? 'no_changes' : null),
           failureClass,
           usageWeighted: BigInt(Math.round(p.usage.weighted)),
         },
@@ -1703,7 +1706,9 @@ function buildPrBody(
   if (task.acceptanceCriteria.length > 0) {
     lines.push('## Acceptance criteria', ...task.acceptanceCriteria.map((c) => `- [ ] ${c}`), '');
   }
-  if (p.summary.trim()) lines.push('## Summary', p.summary.trim().slice(0, 5000), '');
+  // The agent redacts the summary already; formats are masked again here (older agents).
+  if (p.summary.trim())
+    lines.push('## Summary', redactSecrets(p.summary.trim()).slice(0, 5000), '');
   lines.push(
     '---',
     `Opened by orch. Task by @${creatorLogin}, run by @${runnerLogin} (${execMode.toLowerCase()} mode, model ${task.model.toLowerCase()}, size ${task.size}).`,

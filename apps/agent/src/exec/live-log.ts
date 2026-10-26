@@ -4,13 +4,15 @@
  *
  * Rules: never block or break the run. Every public method swallows its own errors; a batch that
  * cannot be sent right away (offline, socket back-pressure) is dropped and only counted. Text is
- * redacted (known secret values, then the shared token patterns) and stripped of ANSI codes
+ * redacted (known secret values in every encoding, then the shared secret formats; per entry
+ * kind as a stream, so a secret split over two lines is masked too) and stripped of ANSI codes
  * before it is queued, so nothing unredacted is ever held for sending.
  */
 import {
+  Redactor,
+  StreamRedactor,
   TASK_LOG_MAX_ENTRIES,
   TASK_LOG_TEXT_MAX,
-  redactSecrets,
   stripAnsi,
   type TaskLogEntry,
   type TaskLogPayload,
@@ -26,23 +28,18 @@ export const LIVE_LOG_MAX_PENDING_BYTES = 256 * 1024;
 const RESULT_TEXT_MAX = 600;
 const ARGS_MAX = 240;
 
-/** Secret values shorter than this are not masked literally (too many false hits). */
-const MIN_SECRET_LEN = 8;
+/** A redaction function; `stream()` gives a stateful one for consecutive pieces of a stream. */
+export type RedactFn = ((text: string) => string) & { stream?: () => StreamRedactor };
 
 /**
- * Masks the literal `secrets` (Claude token, GitHub tokens of this run, agent credential...),
- * then the shared token patterns. Secrets are read on every call, so new ones apply at once.
+ * Masks the known `secrets` (Claude token, GitHub tokens of this run, agent credential, env
+ * values of the task and sidecar containers...) in every encoding and across line wraps, then
+ * the shared secret formats (@orch/shared `redact`). Secrets are read on every call, so new
+ * ones apply at once.
  */
-export function makeRedactor(secrets: () => Iterable<string | null | undefined>) {
-  return (text: string): string => {
-    let out = text;
-    for (const s of secrets()) {
-      if (typeof s === 'string' && s.length >= MIN_SECRET_LEN && out.includes(s)) {
-        out = out.split(s).join('[REDACTED]');
-      }
-    }
-    return redactSecrets(out);
-  };
+export function makeRedactor(secrets: () => Iterable<string | null | undefined>): RedactFn {
+  const r = new Redactor(secrets);
+  return Object.assign((text: string) => r.redact(text), { stream: () => new StreamRedactor(r) });
 }
 
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
@@ -168,7 +165,7 @@ export interface LiveLogOptions {
   assignmentId: string;
   /** Sends one batch right now; false when it could not (offline, back-pressure). */
   send: (payload: TaskLogPayload) => boolean;
-  redact: (text: string) => string;
+  redact: RedactFn;
   now?: () => number;
   flushMs?: number;
   batchBytes?: number;
@@ -179,6 +176,8 @@ export interface LiveLogOptions {
 /** One per auto run. `stdout`/`stderr` take raw lines; `close()` flushes and stops. */
 export class LiveLogStreamer {
   private pending: TaskLogEntry[] = [];
+  /** One stream redactor per entry kind: a secret split over two stderr lines is masked. */
+  private readonly streams = new Map<string, StreamRedactor>();
   private pendingBytes = 0;
   private dropped = 0;
   private chunk = 0;
@@ -242,8 +241,16 @@ export class LiveLogStreamer {
     }
   }
 
+  private redactText(kind: string, text: string): string {
+    const make = this.o.redact.stream;
+    if (!make) return this.o.redact(text);
+    let s = this.streams.get(kind);
+    if (!s) this.streams.set(kind, (s = make()));
+    return s.push(text);
+  }
+
   private push(raw: TaskLogEntry): void {
-    const text = clip(this.o.redact(stripAnsi(raw.text)), TASK_LOG_TEXT_MAX);
+    const text = clip(this.redactText(raw.kind, stripAnsi(raw.text)), TASK_LOG_TEXT_MAX);
     const entry: TaskLogEntry = {
       ...raw,
       text,
