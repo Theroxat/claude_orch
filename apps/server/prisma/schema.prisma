@@ -411,6 +411,11 @@ model Task {
   @@index([status, createdAt])
   /// History: stable keyset pagination, newest first.
   @@index([createdAt(sort: Desc), id(sort: Desc)])
+  /// History search: `title ILIKE '%q%'` (pg_trgm is created by the migration).
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "Task_title_trgm_idx")
+  /// History search by `#42`: OR-ed with the title match, so each branch needs an index.
+  @@index([githubIssueNumber])
+  @@index([prNumber])
 }
 
 /// Acyclic: checked before insert.
@@ -679,6 +684,13 @@ model NotificationSettings {
   discordHint   String?
   webhookUrlEnc Bytes?
   webhookHint   String?
+  /// Signing secret of the generic webhook (`whsec_...`, Standard Webhooks), AES-256-GCM encrypted.
+  webhookSecretEnc Bytes?
+  /// `••••abcd`: the last characters, the only trace of the secret once it was shown.
+  webhookSecretHint String?
+  /// Previous secret, still signing until `webhookPrevSecretExpiresAt` (rotation grace period).
+  webhookPrevSecretEnc Bytes?
+  webhookPrevSecretExpiresAt DateTime?
   /// Target address; only used once `emailVerifiedAt` is set.
   email         String?
   emailVerifiedAt DateTime?

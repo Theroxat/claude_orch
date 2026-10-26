@@ -14,7 +14,7 @@ const settings = (over: Record<string, unknown> = {}) => ({
   },
   slack: { configured: true, hint: 'https://hooks.slack.com/…a1b2' },
   discord: { configured: false, hint: null },
-  webhook: { configured: false, hint: null },
+  webhook: { configured: false, hint: null, secretHint: null, previousSecretExpiresAt: null },
   email: { available: true, address: 'octo@example.com', status: 'verified' },
   push: { available: false, publicKey: null, subscriptions: 0 },
   ...over,
@@ -119,6 +119,32 @@ describe('notification settings', () => {
       expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ slackWebhookUrl: null }),
     );
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Slack' })).toBeNull());
+  });
+
+  it('shows the signing secret hint and reveals a rotated secret once', async () => {
+    const hooked = (secretHint: string | null) => ({
+      configured: true,
+      hint: 'https://hooks.example.com/…z',
+      secretHint,
+      previousSecretExpiresAt: null,
+    });
+    const shown = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+    const calls = mockApi({
+      ...base(settings({ webhook: hooked('••••abcd') })),
+      'POST /notifications/webhook/rotate-secret': () => ({
+        json: { ...settings({ webhook: hooked('••••LaSw') }), webhookSecret: shown },
+      }),
+    });
+    renderApp('/my-server#notifications');
+    expect(await screen.findByText('••••abcd')).toBeTruthy();
+    expect(screen.queryByText(shown)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate secret' }));
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Copy secret/ })).toBeTruthy();
+    expect(calls.some((c) => c.method === 'POST')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'I have saved it' }));
+    await waitFor(() => expect(screen.queryByText(shown)).toBeNull());
+    expect(await screen.findByText('••••LaSw')).toBeTruthy();
   });
 
   it('sends a test and toasts the result', async () => {

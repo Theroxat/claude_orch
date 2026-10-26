@@ -1932,6 +1932,15 @@ progress::-moz-progress-bar {
   margin-top: 8px;
 }
 
+.notify-secret {
+  margin-bottom: 16px;
+  border-color: var(--caution, currentColor);
+}
+.notify-secret-value {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 /* ---------- Access admin ---------- */
 .invite-form {
   display: flex;

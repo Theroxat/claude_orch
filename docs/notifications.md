@@ -54,6 +54,122 @@ Webhook URLs are secrets (anyone who has one can post to your channel). orch sto
 
 `event` is one of `task_done`, `task_failed`, `task_needs_attention`, `pr_review`, `consent_request`, `access_request`, `participation_request`. `url` is the PR for `task_done` and `pr_review`, otherwise a page of the web app. Any `2xx` answer counts as delivered; redirects are not followed.
 
+### Verifying webhook signatures
+
+Generic JSON webhooks are signed following the [Standard Webhooks](https://www.standardwebhooks.com/) spec, so you can check that a request really comes from your orch server. Slack and Discord targets are not signed (those services have no such mechanism).
+
+When you save a webhook URL, orch generates a **signing secret** (`whsec_` followed by base64) and shows it **once**, with a copy button. It is stored encrypted with `ORCH_ENCRYPTION_KEY`, like the URL, and only a hint such as `••••abcd` is displayed afterwards. A webhook configured before signing existed has no secret: use **Generate secret** under **My Server → Notifications**.
+
+Every request carries three headers:
+
+| Header              | Content                                                                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `webhook-id`        | Unique id of the delivery (`msg_…`). **Identical on every retry of the same delivery**                                             |
+| `webhook-timestamp` | Unix time in seconds when this attempt was sent (it changes on each retry)                                                         |
+| `webhook-signature` | `v1,<base64>`: HMAC-SHA256 of `<webhook-id>.<webhook-timestamp>.<raw body>`; several signatures may be listed, separated by spaces |
+
+The HMAC key is the base64-decoded part of the secret after `whsec_`. Always sign the **raw request body**, byte for byte, not a re-serialised JSON.
+
+**Idempotency.** orch retries failed deliveries, and a receiver may also see a delivery twice when its `2xx` answer is lost. Deduplicate on `webhook-id`: the same id means the same notification.
+
+**Timestamp tolerance.** Reject requests whose `webhook-timestamp` is too far from your clock (5 minutes is the usual tolerance); this stops an attacker from replaying a captured request later. Retries are re-signed with a fresh timestamp, so a retry arriving hours later is still accepted.
+
+**Rotating the secret.** **Rotate secret** generates a new secret (shown once). For 24 hours, requests are signed with both the new and the previous secret (two space-separated values in `webhook-signature`), so you can deploy the new secret without losing deliveries. Accept a request as soon as one signature matches.
+
+**Test vector.** Use it to check your implementation:
+
+```text
+secret:    whsec_YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh
+webhook-id: msg_p5jXN8AQM9LWM0D4loKWxJek
+webhook-timestamp: 1614265330
+body:      {"test": 2432232314}
+signature: v1,p/aCZAPUoPHV4ef7o8HCy2oI82P4UXjmN+MG//Bx9gE=
+```
+
+Node.js (Express: use the raw body, for example `express.raw({ type: 'application/json' })`):
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+export function verify(secret, headers, rawBody, toleranceSec = 300) {
+  const id = headers['webhook-id'];
+  const ts = Number(headers['webhook-timestamp']);
+  if (!id || !Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > toleranceSec) return false;
+  const key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
+  const expected = createHmac('sha256', key).update(`${id}.${ts}.${rawBody}`).digest();
+  return String(headers['webhook-signature'] ?? '')
+    .split(' ')
+    .some((sig) => {
+      const [version, value] = sig.split(',');
+      if (version !== 'v1' || !value) return false;
+      const got = Buffer.from(value, 'base64');
+      return got.length === expected.length && timingSafeEqual(got, expected);
+    });
+}
+```
+
+Python:
+
+```python
+import base64, hashlib, hmac, time
+
+def verify(secret: str, headers: dict, raw_body: bytes, tolerance: int = 300) -> bool:
+    msg_id = headers.get("webhook-id", "")
+    try:
+        ts = int(headers.get("webhook-timestamp", ""))
+    except ValueError:
+        return False
+    if not msg_id or abs(time.time() - ts) > tolerance:
+        return False
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    signed = f"{msg_id}.{ts}.".encode() + raw_body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    for sig in headers.get("webhook-signature", "").split(" "):
+        version, _, value = sig.partition(",")
+        if version == "v1" and hmac.compare_digest(value, expected):
+            return True
+    return False
+```
+
+Go:
+
+```go
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"math"
+	"strconv"
+	"strings"
+	"time"
+)
+
+func Verify(secret string, h map[string]string, rawBody []byte, tolerance time.Duration) bool {
+	id := h["webhook-id"]
+	ts, err := strconv.ParseInt(h["webhook-timestamp"], 10, 64)
+	if err != nil || id == "" {
+		return false
+	}
+	if math.Abs(float64(time.Now().Unix()-ts)) > tolerance.Seconds() {
+		return false
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(secret, "whsec_"))
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(id + "." + strconv.FormatInt(ts, 10) + "."))
+	mac.Write(rawBody)
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	for _, sig := range strings.Split(h["webhook-signature"], " ") {
+		if v, ok := strings.CutPrefix(sig, "v1,"); ok && hmac.Equal([]byte(v), []byte(expected)) {
+			return true
+		}
+	}
+	return false
+}
+```
+
 ## Browser notifications
 
 With browser notifications (Web Push), orch shows a system notification on your computer or phone, even when orch is not open. Clicking it opens the related page of the app.

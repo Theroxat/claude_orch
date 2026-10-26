@@ -14,6 +14,7 @@ import { ApiError } from '../api/client';
 import {
   fetchNotificationSettings,
   resendEmailConfirmation,
+  rotateWebhookSecret,
   pushSubscribe,
   pushUnsubscribe,
   sendTestNotification,
@@ -21,6 +22,7 @@ import {
 } from '../api/endpoints';
 import { useMe } from '../auth';
 import { errorMessage } from '../i18n/errors.ts';
+import { formatDateTime } from '../i18n/format.ts';
 import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { motionAllowed } from '../ui/motion';
 import {
@@ -31,6 +33,10 @@ import {
 } from '../push/browser';
 import { CHANNEL_LABEL, EVENT_META } from '../ui/notificationMeta';
 import { useToast } from '../ui/Toast';
+import { CopyButton } from './CopyButton';
+
+const SIGNING_DOCS =
+  'https://claude-orch.readthedocs.io/en/latest/notifications.html#verifying-webhook-signatures';
 
 const KEY = ['notifications', 'settings'] as const;
 
@@ -81,6 +87,12 @@ export function NotificationSettings() {
   const section = useRef<HTMLElement>(null);
   const { hash } = useLocation();
   const ready = settings.isSuccess;
+  // The full secret lives here only: never in the query cache, gone once dismissed.
+  const [secret, setSecret] = useState<string | null>(null);
+  const reveal = (view: NotificationSettingsView) => {
+    if (view.webhookSecret) setSecret(view.webhookSecret);
+    return { ...view, webhookSecret: undefined };
+  };
   useEffect(() => {
     if (hash !== '#notifications' || !ready) return;
     section.current?.scrollIntoView?.({ behavior: motionAllowed() ? 'smooth' : 'auto' });
@@ -94,7 +106,10 @@ export function NotificationSettings() {
       <p className="lede">{t('notifications.settings.lede')}</p>
       {settings.isPending && <p className="hint">{t('notifications.settings.loading')}</p>}
       {settings.error && <p className="error">{errorMessage(settings.error)}</p>}
-      {settings.data && <SettingsForm key={formKey(settings.data)} data={settings.data} />}
+      {secret && <SecretReveal secret={secret} onDone={() => setSecret(null)} />}
+      {settings.data && (
+        <SettingsForm key={formKey(settings.data)} data={settings.data} reveal={reveal} />
+      )}
     </section>
   );
 }
@@ -105,7 +120,13 @@ export function NotificationSettings() {
  */
 const formKey = (d: NotificationSettingsView) => JSON.stringify({ ...d, push: undefined });
 
-function SettingsForm({ data }: { data: NotificationSettingsView }) {
+function SettingsForm({
+  data,
+  reveal,
+}: {
+  data: NotificationSettingsView;
+  reveal: (v: NotificationSettingsView) => NotificationSettingsView;
+}) {
   const t = useT();
   const rich = useRich();
   const qc = useQueryClient();
@@ -123,7 +144,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
   const save = useMutation({
     mutationFn: updateNotificationSettings,
     onSuccess: (view) => {
-      qc.setQueryData(KEY, view);
+      qc.setQueryData(KEY, reveal(view));
       setProblem(null);
       toast(t('notifications.settings.saved'));
     },
@@ -168,6 +189,19 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
           name: t(CHANNEL_LABEL[channel]),
           error: errorMessage(e),
         }),
+        'info',
+      ),
+  });
+
+  const rotate = useMutation({
+    mutationFn: rotateWebhookSecret,
+    onSuccess: (view) => {
+      qc.setQueryData(KEY, reveal(view));
+      toast(t('notifications.settings.signing.generated'));
+    },
+    onError: (e) =>
+      toast(
+        e instanceof ApiError ? errorMessage(e) : t('notifications.settings.signing.rotateFailed'),
         'info',
       ),
   });
@@ -289,6 +323,34 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
                   onTest={() => test.mutate(c)}
                 />
               </div>
+              {c === 'webhook' && data.webhook.configured && (
+                <div className="notify-status">
+                  <span>
+                    {rich(
+                      'notifications.settings.signing.secret',
+                      { code: (x) => <code>{x}</code> },
+                      {
+                        hint: data.webhook.secretHint ?? t('notifications.settings.signing.none'),
+                      },
+                    )}
+                  </span>
+                  <button type="button" disabled={rotate.isPending} onClick={() => rotate.mutate()}>
+                    {data.webhook.secretHint
+                      ? t('notifications.settings.signing.rotate')
+                      : t('notifications.settings.signing.generate')}
+                  </button>
+                  <a href={SIGNING_DOCS} target="_blank" rel="noreferrer">
+                    {t('notifications.settings.signing.docs')}
+                  </a>
+                  {data.webhook.previousSecretExpiresAt && (
+                    <span className="hint">
+                      {t('notifications.settings.signing.previous', {
+                        date: formatDateTime(data.webhook.previousSecretExpiresAt),
+                      })}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
@@ -556,5 +618,26 @@ function TargetActions({
         </button>
       )}
     </span>
+  );
+}
+
+/** The signing secret, shown once after it is created or rotated. */
+function SecretReveal({ secret, onDone }: { secret: string; onDone: () => void }) {
+  const t = useT();
+  const rich = useRich();
+  return (
+    <div className="card notify-secret" role="alert">
+      <h3 className="notify-sub">{t('notifications.settings.signing.revealTitle')}</h3>
+      <p className="hint">
+        {rich('notifications.settings.signing.revealHint', { code: (x) => <code>{x}</code> })}
+      </p>
+      <div className="notify-status">
+        <code className="notify-secret-value">{secret}</code>
+        <CopyButton text={secret} label={t('notifications.settings.signing.copy')} />
+        <button type="button" onClick={onDone}>
+          {t('notifications.settings.signing.saved')}
+        </button>
+      </div>
+    </div>
   );
 }

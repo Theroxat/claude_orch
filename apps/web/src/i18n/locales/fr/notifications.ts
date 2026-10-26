@@ -105,6 +105,21 @@ export default {
       label: 'URL du webhook JSON',
       hint: 'Reçoit chaque notification dans une requête POST JSON.',
     },
+    signing: {
+      secret: 'Secret de signature : <code>{hint}</code>',
+      none: 'pas encore créé',
+      rotate: 'Renouveler le secret',
+      generate: 'Générer un secret',
+      docs: 'Vérifier les signatures',
+      previous: 'L’ancien secret signe aussi jusqu’au {date}.',
+      generated: 'Nouveau secret de signature généré',
+      rotateFailed: 'Impossible de renouveler le secret',
+      revealTitle: 'Secret de signature du webhook',
+      revealHint:
+        'Le copier maintenant : il n’est affiché qu’une fois. Les destinataires s’en servent pour vérifier l’en-tête <code>webhook-signature</code> et doivent dédoublonner sur <code>webhook-id</code>.',
+      copy: 'Copier le secret',
+      saved: 'Je l’ai enregistré',
+    },
     inApp: { hint: 'La cloche de l’en-tête. Toujours disponible.' },
     browser: {
       enable: 'Activer les notifications du navigateur',

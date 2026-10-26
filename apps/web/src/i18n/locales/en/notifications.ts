@@ -95,6 +95,21 @@ export default {
       label: 'JSON webhook URL',
       hint: 'Receives each notification as a JSON POST.',
     },
+    signing: {
+      secret: 'Signing secret: <code>{hint}</code>',
+      none: 'none yet',
+      rotate: 'Rotate secret',
+      generate: 'Generate secret',
+      docs: 'How to verify signatures',
+      previous: 'The previous secret also signs until {date}.',
+      generated: 'New signing secret generated',
+      rotateFailed: 'Could not rotate the secret',
+      revealTitle: 'Webhook signing secret',
+      revealHint:
+        'Copy it now: it is shown only once. Receivers use it to verify the <code>webhook-signature</code> header, and should dedupe on <code>webhook-id</code>.',
+      copy: 'Copy secret',
+      saved: 'I have saved it',
+    },
     inApp: { hint: 'The bell in the header. Always available.' },
     browser: {
       enable: 'Enable browser notifications',
