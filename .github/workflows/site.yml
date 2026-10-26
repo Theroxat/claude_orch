@@ -1,0 +1,37 @@
+name: Website check
+
+# Validates the static site in site/ on pull requests that touch it:
+# HTML validation and an offline link check (local files and anchors only).
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+      - '.github/workflows/pages.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Validate HTML and links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate HTML
+        run: npx --yes html-validate@11.17.0 --config site/.htmlvalidate.json site/index.html
+      - name: Check local links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --include-fragments --no-progress site/index.html
+          fail: true
