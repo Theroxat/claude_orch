@@ -16,7 +16,7 @@ Issues carrying the project's pool label (default `pool`) become tasks.
 
 ## Language
 
-The web interface is available in English and French. On the first visit it follows the browser's preferred language (French for any `fr-*` setting, English otherwise). To change it, use the **EN | FR** switch in the header, next to the theme toggle, or at the top right of the sign-in page. The choice is remembered on this browser (local storage) and applies at once, without a reload; it does not follow your account to other browsers.
+The web interface is available in English and French. It is in English by default, whatever the browser language. To switch to French, use the **EN | FR** switch in the header, next to the theme toggle, or at the top right of the sign-in page. The choice is remembered on this browser (local storage) and applies at once, without a reload; it does not follow your account to other browsers.
 
 Dates and numbers follow the chosen language (`Oct 14, 2026` and `12,345` in English, `14 oct. 2026` and `12 345` in French). Some texts stay in English whatever the language: data written by people (task titles, template content, project names), notifications composed by the server (in the app, e-mail, Slack, Discord, push), the CLI and the MCP tools, and the detail of some server error messages.
 

@@ -89,14 +89,14 @@ describe('t', () => {
 });
 
 describe('locale detection', () => {
-  it('prefers the saved choice, then the browser language, then English', () => {
-    vi.stubGlobal('navigator', { language: 'fr-CA', languages: ['fr-CA', 'en'] });
+  it('defaults to English whatever the browser language; French only when chosen', () => {
+    vi.stubGlobal('navigator', { language: 'fr-CA', languages: ['fr-CA', 'fr', 'en'] });
+    expect(detectLocale()).toBe('en');
+    localStorage.setItem(STORAGE_KEY, 'fr');
     expect(detectLocale()).toBe('fr');
     localStorage.setItem(STORAGE_KEY, 'en');
     expect(detectLocale()).toBe('en');
     localStorage.removeItem(STORAGE_KEY);
-    vi.stubGlobal('navigator', { language: 'de-DE', languages: ['de-DE'] });
-    expect(detectLocale()).toBe('en');
   });
 
   it('ignores a garbled saved value and survives unavailable storage', () => {

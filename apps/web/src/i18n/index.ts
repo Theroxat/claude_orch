@@ -35,17 +35,9 @@ function stored(): Locale | null {
   }
 }
 
-/** Saved choice, then the browser's preferred languages, then English. */
+/** The choice saved on this browser, else English: French only when the user picks it. */
 export function detectLocale(): Locale {
-  const saved = stored();
-  if (saved) return saved;
-  const nav = typeof navigator === 'undefined' ? undefined : navigator;
-  const wanted = [...(nav?.languages ?? []), nav?.language ?? ''];
-  for (const tag of wanted) {
-    const base = tag.toLowerCase().split('-')[0];
-    if (isLocale(base)) return base;
-  }
-  return DEFAULT_LOCALE;
+  return stored() ?? DEFAULT_LOCALE;
 }
 
 export function getLocale(): Locale {
