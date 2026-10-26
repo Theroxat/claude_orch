@@ -14,10 +14,16 @@ import type { Dispatcher } from '../dispatch/dispatcher';
 import { HttpError } from '../http/errors';
 import type { GithubClient } from '../github';
 import { canSubmit } from '../projects/roles';
-import { getRoleInfo, participationStatus } from '../projects/service';
+import {
+  RoleMemo,
+  getRoleInfo,
+  participationStatus,
+  repoAccessAllows,
+  stillOwns,
+} from '../projects/service';
 
 const offerInclude = {
-  task: { include: { project: true, createdBy: true } },
+  task: { include: { project: { include: { installation: true } }, createdBy: true } },
 } satisfies Prisma.AssignmentInclude;
 type OfferRow = Prisma.AssignmentGetPayload<{ include: typeof offerInclude }>;
 
@@ -71,7 +77,18 @@ export function registerOffers(
       include: offerInclude,
       orderBy: { offeredAt: 'asc' },
     });
-    return rows.map((r) => toOfferView(r, config.GITHUB_WEB_URL));
+    // A request for a private repository GitHub no longer lets the member into is not shown
+    // (accepting it is refused too).
+    const memo = new RoleMemo();
+    await memo.prime(
+      prisma,
+      [...new Set(rows.filter((r) => r.task.project.isPrivate).map((r) => r.task.projectId))],
+      [user.id],
+    );
+    const allowed = await Promise.all(
+      rows.map((r) => repoAccessAllows(prisma, deps.github, r.task.project, user, memo)),
+    );
+    return rows.filter((_, i) => allowed[i]).map((r) => toOfferView(r, config.GITHUB_WEB_URL));
   });
 
   for (const action of ['accept', 'reject'] as const) {
@@ -130,23 +147,43 @@ export async function buildPool(
       ...(projectId ? { id: projectId } : {}),
       OR: [{ addedById: user.id }, { participations: { some: { userId: user.id } } }],
     },
-    include: { participations: { where: { userId: user.id } } },
+    include: { participations: { where: { userId: user.id } }, installation: true },
     orderBy: { fullName: 'asc' },
   });
-  // Owners and ACTIVE participants only: a pending, rejected or inactive row sees nothing.
-  const projects = candidates.filter(
-    (p) =>
-      p.addedById === user.id ||
-      p.participations.some(
-        (r) => participationStatus(r, p.requireParticipantApproval) === 'active',
-      ),
+  // Owners and ACTIVE participants only: a pending, rejected or inactive row sees nothing. A
+  // private repository's stored owner counts only while GitHub still gives them ADMIN, and an
+  // owner who lost the repository entirely is not let back in through an old participation row.
+  // One query for the cached roles, GitHub only for the stale ones (in parallel).
+  const memo = new RoleMemo();
+  await memo.prime(
+    prisma,
+    candidates.filter((p) => p.isPrivate).map((p) => p.id),
+    [user.id],
   );
+  const decided = await Promise.all(
+    candidates.map(async (p) => {
+      if (await stillOwns(deps.prisma, deps.github, p, user, memo)) return 'owner' as const;
+      if (!(await repoAccessAllows(deps.prisma, deps.github, p, user, memo))) return null;
+      return p.participations.some(
+        (r) => participationStatus(r, p.requireParticipantApproval) === 'active',
+      )
+        ? ('member' as const)
+        : null;
+    }),
+  );
+  const projects = [];
+  const ownedIds = new Set<string>();
+  candidates.forEach((p, i) => {
+    if (!decided[i]) return;
+    projects.push(p);
+    if (decided[i] === 'owner') ownedIds.add(p.id);
+  });
   if (projectId && projects.length === 0) {
     const asSubmitter = await submitterProject(deps, user, projectId);
     if (!asSubmitter) throw new HttpError(404, 'not_found', 'Project not found');
     projects.push(asSubmitter);
   }
-  const owned = new Set(projects.filter((p) => p.addedById === user.id).map((p) => p.id));
+  const owned = ownedIds;
   const parts = await prisma.participation.findMany({
     where: { projectId: { in: projects.map((p) => p.id) }, active: true },
     include: { user: { include: { agents: true } }, project: true },

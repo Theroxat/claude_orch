@@ -307,6 +307,8 @@ describe('GET /api/tasks/history', () => {
     const priv = await project(owner, true);
     const pub = await project(owner, false);
     await participate(member, priv.id);
+    // A participant of a private repository needs a GitHub role on it (re-checked, cached).
+    gh.roles.set(`4242:${priv.fullName}:${member.login}`, 'READ');
     await participate(pending, priv.id, { active: false, approvedAt: null });
     const secret = await seed(priv.id, owner, { title: 'Secret roadmap' });
     const open = await seed(pub.id, owner, { title: 'Public work' });
