@@ -684,6 +684,13 @@ model NotificationSettings {
   discordHint   String?
   webhookUrlEnc Bytes?
   webhookHint   String?
+  /// Signing secret of the generic webhook (`whsec_...`, Standard Webhooks), AES-256-GCM encrypted.
+  webhookSecretEnc Bytes?
+  /// `••••abcd`: the last characters, the only trace of the secret once it was shown.
+  webhookSecretHint String?
+  /// Previous secret, still signing until `webhookPrevSecretExpiresAt` (rotation grace period).
+  webhookPrevSecretEnc Bytes?
+  webhookPrevSecretExpiresAt DateTime?
   /// Target address; only used once `emailVerifiedAt` is set.
   email         String?
   emailVerifiedAt DateTime?
