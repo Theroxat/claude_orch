@@ -157,7 +157,7 @@ export interface PostResult {
 export type WebhookPoster = (
   url: string,
   body: unknown,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; headers?: Record<string, string>; rawBody?: string },
 ) => Promise<PostResult>;
 
 /**
@@ -166,7 +166,8 @@ export type WebhookPoster = (
  */
 export const safePost: WebhookPoster = (url, body, opts = {}) => {
   const u = validateWebhookUrl(url);
-  const payload = Buffer.from(JSON.stringify(body));
+  // `rawBody`: the exact bytes a signature was computed over.
+  const payload = Buffer.from(opts.rawBody ?? JSON.stringify(body));
   return new Promise<PostResult>((resolve, reject) => {
     const req = httpsRequest(
       u,
@@ -181,6 +182,7 @@ export const safePost: WebhookPoster = (url, body, opts = {}) => {
         // one byte at a time never trips.
         signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
         headers: {
+          ...opts.headers,
           'content-type': 'application/json',
           'content-length': payload.length,
           'user-agent': 'orch-notifier',

@@ -25,6 +25,7 @@ import {
   type OutgoingNotification,
 } from './format';
 import { PushError, createPushSender, type PushPayload, type PushSender } from './push';
+import { newWebhookId, webhookHeaders } from './signing';
 import { safePost, type WebhookPoster } from './ssrf';
 
 export type ExternalChannel = Exclude<NotificationChannel, 'in_app'>;
@@ -108,6 +109,35 @@ export function channelTarget(
   } catch {
     return null; // key rotated: the member sets the target again
   }
+}
+
+/** Secrets that sign the generic webhook now: the current one, plus the previous during a rotation. */
+export function webhookSecrets(
+  s: NotificationSettings | null,
+  config: Config,
+  now = new Date(),
+): string[] {
+  if (!s || !config.ORCH_ENCRYPTION_KEY) return [];
+  const out: string[] = [];
+  try {
+    if (s.webhookSecretEnc) out.push(decrypt(s.webhookSecretEnc, config.ORCH_ENCRYPTION_KEY));
+    if (
+      s.webhookPrevSecretEnc &&
+      s.webhookPrevSecretExpiresAt &&
+      s.webhookPrevSecretExpiresAt > now
+    ) {
+      out.push(decrypt(s.webhookPrevSecretEnc, config.ORCH_ENCRYPTION_KEY));
+    }
+  } catch {
+    return []; // key rotated: unsigned until the member rotates the secret
+  }
+  return out;
+}
+
+/** Signing context of one generic webhook delivery. `secrets` may be empty (no secret yet). */
+export interface WebhookSigning {
+  id: string;
+  secrets: string[];
 }
 
 const RETRYABLE_STATUS = (status: number) => status === 408 || status === 429 || status >= 500;
@@ -222,7 +252,16 @@ export class Notifier {
       }
       const target = channelTarget(settings, channel, config, !!this.mailer);
       if (!target) continue;
-      this.schedule(userId, channel, target, out, 1, 0);
+      // One id per delivery, kept across retries; receivers dedupe on it.
+      this.schedule(
+        userId,
+        channel,
+        target,
+        out,
+        1,
+        0,
+        channel === 'webhook' ? newWebhookId() : undefined,
+      );
     }
   }
 
@@ -233,36 +272,55 @@ export class Notifier {
     n: OutgoingNotification,
     attempt: number,
     delayMs: number,
+    webhookId?: string,
   ): void {
     if (this.closed) return;
-    const run = () =>
-      this.send(channel, target, n).catch((err: unknown) => {
+    const run = async () => {
+      // Secrets are read on every attempt: a rotation during the retries takes effect at once.
+      const sign = webhookId
+        ? {
+            id: webhookId,
+            secrets: webhookSecrets(
+              await this.deps.prisma.notificationSettings.findUnique({ where: { userId } }),
+              this.deps.config,
+            ),
+          }
+        : undefined;
+      return this.send(channel, target, n, sign);
+    };
+    const attemptOnce = () =>
+      run().catch((err: unknown) => {
         const retryable = !(err instanceof DeliveryError) || err.retryable;
         const reason = err instanceof Error ? err.message : String(err);
         const ctx = { userId, channel, event: n.event, attempt, reason };
         if (retryable && attempt < this.deps.config.NOTIFY_MAX_ATTEMPTS) {
           const next = this.deps.config.NOTIFY_RETRY_BASE_MS * 4 ** (attempt - 1);
           this.deps.log.info({ ...ctx, retryInMs: next }, 'notification delivery failed, retrying');
-          this.schedule(userId, channel, target, n, attempt + 1, next);
+          this.schedule(userId, channel, target, n, attempt + 1, next, webhookId);
         } else {
           // Never log the target: webhook URLs are secrets.
           this.deps.log.warn(ctx, 'notification delivery failed');
         }
       });
     if (delayMs <= 0) {
-      this.track(run());
+      this.track(attemptOnce());
       return;
     }
     const t = setTimeout(() => {
       this.timers.delete(t);
-      this.track(run());
+      this.track(attemptOnce());
     }, delayMs);
     t.unref();
     this.timers.add(t);
   }
 
   /** One delivery attempt. Throws DeliveryError on failure. */
-  async send(channel: ExternalChannel, target: string, n: OutgoingNotification): Promise<void> {
+  async send(
+    channel: ExternalChannel,
+    target: string,
+    n: OutgoingNotification,
+    sign?: WebhookSigning,
+  ): Promise<void> {
     if (channel === 'email') {
       if (!this.mailer) throw new DeliveryError('smtp_not_configured', false);
       const m = emailMessage(n, this.deps.config.ORCH_BASE_URL);
@@ -284,7 +342,15 @@ export class Notifier {
           : genericPayload(n);
     let res;
     try {
-      res = await this.post(target, body);
+      if (channel === 'webhook' && sign) {
+        const rawBody = JSON.stringify(body);
+        res = await this.post(target, body, {
+          rawBody,
+          headers: webhookHeaders(sign.secrets, sign.id, rawBody),
+        });
+      } else {
+        res = await this.post(target, body);
+      }
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code === 'ESSRF') throw new DeliveryError('refused_private_address', false);
