@@ -122,6 +122,8 @@ async function runningTask() {
     (await api(app, owner)('POST', '/api/projects', { githubRepoId: repo.githubRepoId })).json(),
   );
   const member = await loginAs(app, gh);
+  // A participant of a private repository needs a GitHub role on it to be offered its tasks.
+  gh.roles.set(`${repo.installationId}:${repo.fullName}:${member.login}`, 'READ');
   await prisma.participation.create({
     data: {
       userId: member.userId,

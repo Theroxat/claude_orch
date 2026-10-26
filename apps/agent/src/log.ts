@@ -1,5 +1,5 @@
 /** Minimal leveled logger. Every line is passed through `redact` so secrets never reach the logs. */
-import { redactSecrets } from '@orch/shared';
+import { Redactor, SecretSet, StreamRedactor } from '@orch/shared';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 type Fields = Record<string, unknown>;
@@ -13,9 +13,22 @@ export interface Logger {
 
 const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
 
-/** Masks agent credentials and Claude / GitHub tokens (the shared list, also used server-side). */
+/**
+ * Secret values this agent knows, by scope: `agent` (its credential), one scope per run (Claude
+ * token, the run's GitHub tokens, env values of its task and sidecar containers). Masked, in
+ * every encoding, by `redact` (logs, run logs, failure messages, summaries, commit messages).
+ */
+export const agentSecrets = new SecretSet();
+const redactor = new Redactor(() => agentSecrets.values());
+
+/** Masks the known secret values, then the shared secret formats (also applied server-side). */
 export function redact(text: string): string {
-  return redactSecrets(text);
+  return redactor.redact(text);
+}
+
+/** `redact` for consecutive lines of one stream: a secret split between two lines is masked. */
+export function redactStream(): StreamRedactor {
+  return new StreamRedactor(redactor);
 }
 
 export function createLogger(

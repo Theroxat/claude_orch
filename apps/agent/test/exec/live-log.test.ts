@@ -132,6 +132,23 @@ describe('LiveLogStreamer', () => {
     expect(b!.text.length).toBe(4000);
   });
 
+  it('masks a secret split over two stderr lines, on both lines', () => {
+    const { s, sent } = streamer();
+    const gh = 'ghp_' + 'A1b2C3d4E5'.repeat(4);
+    s.stderr(`push ${gh.slice(0, 20)}`);
+    s.stderr(`${gh.slice(20)} rejected`);
+    s.stderr(`known ${PLAIN_SECRET.slice(0, 12)}`);
+    s.stderr(`${PLAIN_SECRET.slice(12)} end`);
+    s.close();
+    const texts = sent[0]!.entries.map((e) => e.text);
+    expect(texts).toEqual([
+      'push [REDACTED]',
+      '[REDACTED] rejected',
+      'known [REDACTED]',
+      '[REDACTED] end',
+    ]);
+  });
+
   it('redacts before shortening: a token cut by the clip never leaks its first characters', () => {
     const { s, sent } = streamer();
     const gh = 'ghp_' + 'A1b2C3d4E5'.repeat(4);

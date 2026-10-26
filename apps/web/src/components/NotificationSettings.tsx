@@ -14,6 +14,7 @@ import { ApiError } from '../api/client';
 import {
   fetchNotificationSettings,
   resendEmailConfirmation,
+  rotateWebhookSecret,
   pushSubscribe,
   pushUnsubscribe,
   sendTestNotification,
@@ -29,6 +30,10 @@ import {
 } from '../push/browser';
 import { CHANNEL_LABEL, EVENT_META } from '../ui/notificationMeta';
 import { useToast } from '../ui/Toast';
+import { CopyButton } from './CopyButton';
+
+const SIGNING_DOCS =
+  'https://claude-orch.readthedocs.io/en/latest/notifications.html#verifying-webhook-signatures';
 
 const KEY = ['notifications', 'settings'] as const;
 
@@ -75,6 +80,12 @@ export function NotificationSettings() {
   const section = useRef<HTMLElement>(null);
   const { hash } = useLocation();
   const ready = settings.isSuccess;
+  // The full secret lives here only: never in the query cache, gone once dismissed.
+  const [secret, setSecret] = useState<string | null>(null);
+  const reveal = (view: NotificationSettingsView) => {
+    if (view.webhookSecret) setSecret(view.webhookSecret);
+    return { ...view, webhookSecret: undefined };
+  };
   useEffect(() => {
     if (hash !== '#notifications' || !ready) return;
     section.current?.scrollIntoView?.({ behavior: motionAllowed() ? 'smooth' : 'auto' });
@@ -90,7 +101,10 @@ export function NotificationSettings() {
       </p>
       {settings.isPending && <p className="hint">Loading notification settings...</p>}
       {settings.error && <p className="error">{settings.error.message}</p>}
-      {settings.data && <SettingsForm key={formKey(settings.data)} data={settings.data} />}
+      {secret && <SecretReveal secret={secret} onDone={() => setSecret(null)} />}
+      {settings.data && (
+        <SettingsForm key={formKey(settings.data)} data={settings.data} reveal={reveal} />
+      )}
     </section>
   );
 }
@@ -101,7 +115,13 @@ export function NotificationSettings() {
  */
 const formKey = (d: NotificationSettingsView) => JSON.stringify({ ...d, push: undefined });
 
-function SettingsForm({ data }: { data: NotificationSettingsView }) {
+function SettingsForm({
+  data,
+  reveal,
+}: {
+  data: NotificationSettingsView;
+  reveal: (v: NotificationSettingsView) => NotificationSettingsView;
+}) {
   const qc = useQueryClient();
   const toast = useToast();
   const isAdmin = !!useMe().data?.isAdmin;
@@ -117,7 +137,7 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
   const save = useMutation({
     mutationFn: updateNotificationSettings,
     onSuccess: (view) => {
-      qc.setQueryData(KEY, view);
+      qc.setQueryData(KEY, reveal(view));
       setProblem(null);
       toast('Notification settings saved');
     },
@@ -142,6 +162,16 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
     },
     onError: (e, channel) =>
       toast(`Test to ${CHANNEL_LABEL[channel]} failed: ${e.message}`, 'info'),
+  });
+
+  const rotate = useMutation({
+    mutationFn: rotateWebhookSecret,
+    onSuccess: (view) => {
+      qc.setQueryData(KEY, reveal(view));
+      toast('New signing secret generated');
+    },
+    onError: (e) =>
+      toast(e instanceof ApiError ? e.message : 'Could not rotate the secret', 'info'),
   });
 
   const resend = useMutation({
@@ -258,6 +288,25 @@ function SettingsForm({ data }: { data: NotificationSettingsView }) {
                   onTest={() => test.mutate(c)}
                 />
               </div>
+              {c === 'webhook' && data.webhook.configured && (
+                <div className="notify-status">
+                  <span>
+                    Signing secret: <code>{data.webhook.secretHint ?? 'none yet'}</code>
+                  </span>
+                  <button type="button" disabled={rotate.isPending} onClick={() => rotate.mutate()}>
+                    {data.webhook.secretHint ? 'Rotate secret' : 'Generate secret'}
+                  </button>
+                  <a href={SIGNING_DOCS} target="_blank" rel="noreferrer">
+                    How to verify signatures
+                  </a>
+                  {data.webhook.previousSecretExpiresAt && (
+                    <span className="hint">
+                      The previous secret also signs until{' '}
+                      {new Date(data.webhook.previousSecretExpiresAt).toLocaleString()}.
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
@@ -513,5 +562,25 @@ function TargetActions({
         </button>
       )}
     </span>
+  );
+}
+
+/** The signing secret, shown once after it is created or rotated. */
+function SecretReveal({ secret, onDone }: { secret: string; onDone: () => void }) {
+  return (
+    <div className="card notify-secret" role="alert">
+      <h3 className="notify-sub">Webhook signing secret</h3>
+      <p className="hint">
+        Copy it now: it is shown only once. Receivers use it to verify the{' '}
+        <code>webhook-signature</code> header, and should dedupe on <code>webhook-id</code>.
+      </p>
+      <div className="notify-status">
+        <code className="notify-secret-value">{secret}</code>
+        <CopyButton text={secret} label="Copy secret" />
+        <button type="button" onClick={onDone}>
+          I have saved it
+        </button>
+      </div>
+    </div>
   );
 }

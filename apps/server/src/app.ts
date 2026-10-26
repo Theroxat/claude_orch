@@ -1,5 +1,6 @@
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { redactSecrets } from '@orch/shared';
 import { createAgentGateway, registerAgents } from './agents';
 import { registerAccess } from './access';
 import { registerAuth } from './auth';
@@ -24,6 +25,7 @@ import { LiveLogStore, registerLiveLogs } from './logs';
 import { Metrics, registerObservability } from './observability';
 import { Notifier, registerNotifications } from './notifications';
 import { recipientCheck } from './notifications/access';
+import { configureRepoAccess } from './projects/service';
 import type { Mailer } from './notifications/service';
 import type { PushSender } from './notifications/push';
 import type { WebhookPoster } from './notifications/ssrf';
@@ -52,6 +54,13 @@ export function redactUrl(url: string | undefined): string | undefined {
   return i < 0 ? url : `${url.slice(0, i)}?[redacted]`;
 }
 
+/** A log destination that masks secret formats in each line before writing it. */
+export function redactingStream(dest: { write(msg: string): unknown }): {
+  write(msg: string): void;
+} {
+  return { write: (msg: string) => void dest.write(redactSecrets(msg)) };
+}
+
 export function buildApp({ config, prisma, github, logStream, notify }: AppDeps): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -67,7 +76,8 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
           };
         },
       },
-      ...(logStream ? { stream: logStream } : {}),
+      // Every log line (errors included) goes through the shared secret-format redaction.
+      stream: redactingStream(logStream ?? process.stdout),
     },
     trustProxy: config.ORCH_TRUST_PROXY,
     // Explicit default (1 MiB); routes that take less set their own lower limit.
@@ -83,10 +93,18 @@ export function buildApp({ config, prisma, github, logStream, notify }: AppDeps)
   app.get('/api/healthz', health);
 
   if (prisma) {
+    configureRepoAccess(github, {
+      ttlMs: config.ORCH_REPO_ACCESS_TTL_SEC * 1000,
+      graceMs: config.ORCH_REPO_ACCESS_GRACE_SEC * 1000,
+      observer: {
+        count: (result) => metrics.repoAccessChecks.inc({ result }),
+        warn: (obj, msg) => app.log.warn(obj, msg),
+      },
+    });
     const deps = { config, prisma, github, metrics };
     const liveLogs = new LiveLogStore();
     const gateway = createAgentGateway(app, { ...deps, liveLogs });
-    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics });
+    const dispatcher = new Dispatcher({ prisma, config, gateway, log: app.log, metrics, github });
     gateway.setDispatcher(dispatcher);
     metrics.attach({ prisma, log: app.log, agentVersions: () => gateway.connectedByVersion() });
     app.decorate('dispatcher', dispatcher);

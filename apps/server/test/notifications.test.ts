@@ -19,6 +19,8 @@ import {
   type TaskView,
 } from '@orch/shared';
 import { audit } from '../src/audit';
+import { decrypt } from '../src/auth/crypto';
+import { signWebhook, webhookHeaders } from '../src/notifications/signing';
 import { signBody } from '../src/webhooks';
 import { recipientCheck } from '../src/notifications/access';
 import type { Mailer } from '../src/notifications/service';
@@ -47,16 +49,29 @@ let wsUrl: string;
 interface Posted {
   url: string;
   body: Record<string, unknown>;
+  headers: Record<string, string>;
+  rawBody?: string;
 }
 let posted: Posted[] = [];
 /** Next responses of the fake webhook endpoint (default 200). */
 let replies: Array<PostResult | Error> = [];
-const post = vi.fn(async (url: string, body: unknown): Promise<PostResult> => {
-  posted.push({ url, body: body as Record<string, unknown> });
-  const r = replies.shift() ?? { ok: true, status: 200 };
-  if (r instanceof Error) throw r;
-  return r;
-});
+const post = vi.fn(
+  async (
+    url: string,
+    body: unknown,
+    opts?: { headers?: Record<string, string>; rawBody?: string },
+  ): Promise<PostResult> => {
+    posted.push({
+      url,
+      body: body as Record<string, unknown>,
+      headers: opts?.headers ?? {},
+      rawBody: opts?.rawBody,
+    });
+    const r = replies.shift() ?? { ok: true, status: 200 };
+    if (r instanceof Error) throw r;
+    return r;
+  },
+);
 const mails: Array<{ to: string; subject: string; text: string; from: string }> = [];
 const mailer: Mailer = {
   sendMail: async (m) => {
@@ -416,6 +431,9 @@ describe('recipients who lost access', { timeout: 20_000 }, () => {
     const creator = await loginAs(app, gh);
     gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'WRITE');
     const m = await member(p.id);
+    // The runner can read the private repository (a participant without a GitHub role gets no
+    // offer on a private repository with the default policy).
+    gh.roles.set(`4242:${repo.fullName}:${m.user.login}`, 'READ');
     const t = await createTask(creator, p.id, 'Secret thing');
     // The creator is removed from the repository; the cached role expires.
     gh.roles.set(`4242:${repo.fullName}:${creator.login}`, 'NONE');
@@ -437,7 +455,7 @@ describe('recipients who lost access', { timeout: 20_000 }, () => {
     await settle();
     expect(await rows(creator.userId)).toHaveLength(0);
     expect(posted.filter((x) => x.url.includes('/creator'))).toHaveLength(0);
-    // The runner has no GitHub role but an active participation: its agent ran the code.
+    // The runner still has its GitHub role and an active participation: its agent ran the code.
     expect(await events(m.user.userId)).toEqual(['task_failed']);
   });
 
@@ -793,7 +811,7 @@ describe('external channels', () => {
     );
     let release!: () => void;
     post.mockImplementationOnce(async (url, body) => {
-      posted.push({ url, body: body as Record<string, unknown> });
+      posted.push({ url, body: body as Record<string, unknown>, headers: {} });
       await new Promise<void>((r) => (release = r));
       return { ok: true, status: 200 };
     });
@@ -870,5 +888,150 @@ describe('REST API', () => {
     });
     expect((await test('webhook')).body).toEqual({ ok: false, error: 'not_configured' });
     expect((await test('webhook')).status).toBe(429); // 5 per minute
+  });
+});
+
+describe('webhook signatures (Standard Webhooks)', { timeout: 20_000 }, () => {
+  const encKey = () =>
+    (app.notifier as unknown as { deps: { config: { ORCH_ENCRYPTION_KEY: string } } }).deps.config
+      .ORCH_ENCRYPTION_KEY;
+  const attention = (p: { id: string }, t: { id: string }) =>
+    audit(prisma, {
+      actorType: 'SYSTEM',
+      action: 'task.needs_attention',
+      projectId: p.id,
+      taskId: t.id,
+      data: { reason: 'x' },
+    });
+  const sigs = (h: Record<string, string>) => (h['webhook-signature'] ?? '').split(' ');
+  const url = 'https://hooks.example.com/signed';
+
+  it('matches the documented test vector', () => {
+    expect(
+      signWebhook(
+        'whsec_YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh',
+        'msg_p5jXN8AQM9LWM0D4loKWxJek',
+        1614265330,
+        '{"test": 2432232314}',
+      ),
+    ).toBe('v1,p/aCZAPUoPHV4ef7o8HCy2oI82P4UXjmN+MG//Bx9gE=');
+  });
+
+  it('creation shows the secret once; it is encrypted at rest and never returned again', async () => {
+    const u = await loginAs(app, gh);
+    const created = await setPrefs(u, {}, { webhookUrl: url });
+    expect(created.webhookSecret).toMatch(/^whsec_[A-Za-z0-9+/]{43}=$/);
+    expect(created.webhook.secretHint).toBe(`••••${created.webhookSecret!.slice(-4)}`);
+
+    const row = await prisma.notificationSettings.findUniqueOrThrow({
+      where: { userId: u.userId },
+    });
+    expect(Buffer.from(row.webhookSecretEnc!).includes(created.webhookSecret!)).toBe(false);
+    expect(decrypt(row.webhookSecretEnc!, encKey())).toBe(created.webhookSecret);
+
+    const get = await api(app, u)('GET', '/api/notifications/settings');
+    expect(get.body).not.toContain(created.webhookSecret);
+    expect(NotificationSettingsViewSchema.parse(get.json()).webhookSecret).toBeUndefined();
+
+    // Saving again (new URL) keeps the secret and does not reveal it.
+    const again = await setPrefs(u, {}, { webhookUrl: 'https://hooks.example.com/other' });
+    expect(again.webhookSecret).toBeUndefined();
+    expect(again.webhook.secretHint).toBe(created.webhook.secretHint);
+
+    // Removing the webhook removes the secret.
+    const cleared = await setPrefs(u, {}, { webhookUrl: null });
+    expect(cleared.webhook).toMatchObject({ configured: false, secretHint: null });
+    const gone = await prisma.notificationSettings.findUniqueOrThrow({
+      where: { userId: u.userId },
+    });
+    expect(gone.webhookSecretEnc).toBeNull();
+  });
+
+  it('signs deliveries and keeps the same webhook-id across retries', async () => {
+    const { owner, project: p } = await project();
+    const { webhookSecret } = await setPrefs(
+      owner,
+      { task_needs_attention: ['webhook'] },
+      { webhookUrl: url },
+    );
+    const t = await createTask(owner, p.id, 'Sign me');
+    replies = [
+      { ok: false, status: 503 },
+      { ok: false, status: 502 },
+      { ok: true, status: 200 },
+    ];
+    await attention(p, t);
+    await settle();
+    expect(posted).toHaveLength(3);
+    const ids = new Set(posted.map((x) => x.headers['webhook-id']));
+    expect(ids.size).toBe(1);
+    expect([...ids][0]).toMatch(/^msg_[0-9a-f]{32}$/);
+    for (const x of posted) {
+      const ts = Number(x.headers['webhook-timestamp']);
+      expect(Math.abs(Date.now() / 1000 - ts)).toBeLessThan(30);
+      expect(x.rawBody).toBe(JSON.stringify(x.body));
+      expect(sigs(x.headers)).toEqual([
+        signWebhook(webhookSecret!, x.headers['webhook-id']!, ts, x.rawBody!),
+      ]);
+    }
+    // A second delivery is a new webhook-id.
+    posted = [];
+    await attention(p, t);
+    await settle();
+    expect(posted[0]!.headers['webhook-id']).not.toBe([...ids][0]);
+  });
+
+  it('rotation signs with both secrets for 24 hours, then only the new one', async () => {
+    const { owner, project: p } = await project();
+    const first = (
+      await setPrefs(owner, { task_needs_attention: ['webhook'] }, { webhookUrl: url })
+    ).webhookSecret!;
+    const rot = await api(app, owner)('POST', '/api/notifications/webhook/rotate-secret', {});
+    expect(rot.statusCode).toBe(200);
+    const view = NotificationSettingsViewSchema.parse(rot.json());
+    const second = view.webhookSecret!;
+    expect(second).not.toBe(first);
+    expect(view.webhook.previousSecretExpiresAt).not.toBeNull();
+    const get = await api(app, owner)('GET', '/api/notifications/settings');
+    expect(get.body).not.toContain(second);
+    expect(get.body).not.toContain(first);
+
+    const t = await createTask(owner, p.id, 'Rotate');
+    await attention(p, t);
+    await settle();
+    const x = posted.at(-1)!;
+    const ts = Number(x.headers['webhook-timestamp']);
+    const id = x.headers['webhook-id']!;
+    expect(sigs(x.headers)).toEqual([
+      signWebhook(second, id, ts, x.rawBody!),
+      signWebhook(first, id, ts, x.rawBody!),
+    ]);
+
+    // After the grace period only the new secret signs.
+    await prisma.notificationSettings.update({
+      where: { userId: owner.userId },
+      data: { webhookPrevSecretExpiresAt: new Date(Date.now() - 1000) },
+    });
+    posted = [];
+    await attention(p, t);
+    await settle();
+    const y = posted.at(-1)!;
+    expect(sigs(y.headers)).toEqual([
+      signWebhook(
+        second,
+        y.headers['webhook-id']!,
+        Number(y.headers['webhook-timestamp']),
+        y.rawBody!,
+      ),
+    ]);
+  });
+
+  it('rotate needs a webhook; several secrets give space-separated signatures', async () => {
+    const u = await loginAs(app, gh);
+    const res = await api(app, u)('POST', '/api/notifications/webhook/rotate-secret', {});
+    expect(res.statusCode).toBe(400);
+    const h = webhookHeaders(['whsec_QQ==', 'whsec_Qg=='], 'msg_1', '{}', new Date(5000));
+    expect(h['webhook-timestamp']).toBe('5');
+    expect(h['webhook-signature']!.split(' ')).toHaveLength(2);
   });
 });

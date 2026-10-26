@@ -27,6 +27,8 @@ export class FakeGithub implements GithubClient {
   roles = new Map<string, GithubRole>(); // `${installationId}:${fullName}:${login}`
   roleCalls = 0;
   failRoles = false;
+  /** Thrown by getUserRole when set (e.g. an Error with `status = 403`). */
+  failRolesWith: Error | undefined;
 
   async exchangeCode(code: string): Promise<GithubTokens> {
     return {
@@ -60,6 +62,7 @@ export class FakeGithub implements GithubClient {
   async getUserRole(installationId: number, fullName: string, login: string): Promise<GithubRole> {
     this.roleCalls++;
     if (this.failRoles) throw new Error('github down');
+    if (this.failRolesWith) throw this.failRolesWith;
     return this.roles.get(`${installationId}:${fullName}:${login}`) ?? 'NONE';
   }
 

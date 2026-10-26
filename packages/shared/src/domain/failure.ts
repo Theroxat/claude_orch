@@ -12,6 +12,7 @@
  * Only `task` and `timeout` count toward the dispatcher's per-member shut-out.
  */
 import { z } from 'zod';
+import { redactSecrets } from '../redact';
 
 export const FailureClass = z.enum(['env', 'claude_auth', 'rate_limited', 'timeout', 'task']);
 export type FailureClass = z.infer<typeof FailureClass>;
@@ -40,31 +41,6 @@ export function classifyFailure(error: string | null | undefined): FailureClass 
 
 /** Failure classes that count toward the per-member shut-out (and its backoff). */
 export const SHUT_OUT_FAILURE_CLASSES: readonly FailureClass[] = ['task', 'timeout'];
-
-/** Agent credentials, Claude OAuth/API tokens, GitHub tokens, auth headers. */
-const SECRET_PATTERNS = [
-  /orch_agent_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-  /orch_pat_[A-Za-z0-9_-]+/g,
-  /sk-ant-[A-Za-z0-9_-]+/g,
-  // GitHub installation / user / OAuth tokens.
-  /\bgh[sopur]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  // git extraHeader values.
-  /(Authorization:\s*(?:Basic|Bearer)\s+)[A-Za-z0-9+/=._-]+/gi,
-  // Credentials in URLs (https://user:secret@host).
-  /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+(?=@)/gi,
-];
-
-/** Replaces secrets with `[REDACTED]`. */
-export function redactSecrets(text: string): string {
-  return SECRET_PATTERNS.reduce(
-    (t, re) =>
-      t.replace(re, (m, prefix?: unknown) =>
-        typeof prefix === 'string' && m.startsWith(prefix) ? `${prefix}[REDACTED]` : '[REDACTED]',
-      ),
-    text,
-  );
-}
 
 /** Absolute host paths (2+ segments, not part of a URL): only the last segment is kept. */
 const ABS_PATH_RE = /(?<![\w:/.~-])(?:\/[\w.@+-]+){2,}\/?/g;

@@ -4,7 +4,8 @@
  * uses the existing (status, finishedAt) index on Assignment.
  *
  * Visibility of a run: admin, or the run is the caller's own, or it belongs to a project the caller
- * owns. Nobody else's runs are ever read into the response, and the token split (reports describe a
+ * owns. For a private repository, "owns" means GitHub still gives the stored owner the ADMIN role
+ * (cached check); a repository the owner lost access to disappears from their runs and budgets. Nobody else's runs are ever read into the response, and the token split (reports describe a
  * whole machine) is limited to the caller's own agents (all agents for admins).
  */
 import type { FastifyInstance } from 'fastify';
@@ -24,6 +25,8 @@ import { requireUser, type AuthDeps } from '../auth';
 import type { PrismaClient } from '../db';
 import { computeMargin, windowStartOf, type UsageSnapshot } from '../dispatch/budget';
 import { parseBody } from '../http/errors';
+import type { GithubClient } from '../github';
+import { RoleMemo, ownerLostAccess, repoAccessAllows, stillOwns } from '../projects/service';
 import { USAGE_RETENTION_MS } from './index';
 
 const DAY_MS = 24 * 3600_000;
@@ -35,18 +38,27 @@ const dayKey = (d: Date) => d.toISOString().slice(0, 10);
 
 interface Viewer {
   id: string;
+  /** Needed with `github`, to re-check the owner's access on GitHub. */
+  login?: string;
   isAdmin: boolean;
 }
 
 /** Runs the viewer may see, finished in [from, to). Aliases: a = Assignment, t = Task. */
-function visibleRuns(viewer: Viewer, owned: string[], from: Date, to: Date): Prisma.Sql {
+function visibleRuns(
+  viewer: Viewer,
+  owned: string[],
+  lost: string[],
+  from: Date,
+  to: Date,
+): Prisma.Sql {
   const who = viewer.isAdmin
     ? Prisma.sql`TRUE`
     : owned.length > 0
       ? Prisma.sql`(a."userId" = ${viewer.id} OR t."projectId" IN (${Prisma.join(owned)}))`
       : Prisma.sql`a."userId" = ${viewer.id}`;
   return Prisma.sql`a."status" IN ('SUCCEEDED', 'FAILED')
-    AND a."finishedAt" >= ${from} AND a."finishedAt" < ${to} AND ${who}`;
+    AND a."finishedAt" >= ${from} AND a."finishedAt" < ${to} AND ${who}
+    ${lost.length > 0 ? Prisma.sql`AND t."projectId" NOT IN (${Prisma.join(lost)})` : Prisma.empty}`;
 }
 
 const TOTALS = Prisma.sql`COUNT(*)::int AS runs,
@@ -67,6 +79,7 @@ export async function computeUsageDashboard(
   range: UsageRange,
   reserve: number,
   now: Date = new Date(),
+  github?: GithubClient,
 ): Promise<UsageDashboard> {
   const days = RANGE_DAYS[range];
   const startOfToday = new Date(Math.floor(now.getTime() / DAY_MS) * DAY_MS);
@@ -75,9 +88,32 @@ export async function computeUsageDashboard(
 
   const ownedRows = viewer.isAdmin
     ? []
-    : await prisma.project.findMany({ where: { addedById: viewer.id }, select: { id: true } });
-  const owned = ownedRows.map((p) => p.id);
-  const where = visibleRuns(viewer, owned, from, to);
+    : await prisma.project.findMany({
+        where: { addedById: viewer.id },
+        include: { installation: true },
+      });
+  const who = { id: viewer.id, login: viewer.login ?? '' };
+  // One query for the cached roles of the request, GitHub only for the stale ones.
+  const memo = new RoleMemo();
+  await memo.prime(
+    prisma,
+    ownedRows.filter((p) => p.isPrivate).map((p) => p.id),
+    [viewer.id],
+  );
+  const owned: string[] = [];
+  // Private repositories the stored owner can no longer reach: not even their own runs show.
+  const lost: string[] = [];
+  const checks = await Promise.all(
+    ownedRows.map(async (p) => [
+      await stillOwns(prisma, github, p, who, memo),
+      await ownerLostAccess(prisma, github, p, who, memo),
+    ]),
+  );
+  ownedRows.forEach((p, i) => {
+    if (checks[i]![0]) owned.push(p.id);
+    if (checks[i]![1]) lost.push(p.id);
+  });
+  const where = visibleRuns(viewer, owned, lost, from, to);
 
   const reportScope = viewer.isAdmin ? Prisma.sql`TRUE` : Prisma.sql`"userId" = ${viewer.id}`;
 
@@ -113,7 +149,7 @@ export async function computeUsageDashboard(
         WHERE "windowStart" >= ${from} AND "windowStart" < ${to} AND ${reportScope}
         ORDER BY "agentId", "windowStart", "reportedAt" DESC
       ) w GROUP BY 1`,
-    ownBudgets(prisma, viewer.id, reserve, now),
+    ownBudgets(prisma, github, who, reserve, now, memo),
   ]);
 
   const dayMap = new Map(byDay.map((r) => [String(r.day), totalsOf(r)]));
@@ -191,15 +227,28 @@ export async function computeUsageDashboard(
 /** The member's active project budgets against the current window (same arithmetic as dispatch). */
 async function ownBudgets(
   prisma: PrismaClient,
-  userId: string,
+  github: GithubClient | undefined,
+  user: { id: string; login: string },
   reserve: number,
   now: Date,
+  memo: RoleMemo,
 ): Promise<UsageBudgetRow[]> {
-  const parts = await prisma.participation.findMany({
+  const userId = user.id;
+  const all = await prisma.participation.findMany({
     where: { userId, active: true },
-    include: { project: { select: { id: true, fullName: true } } },
+    include: { project: { include: { installation: true } } },
     orderBy: { project: { fullName: 'asc' } },
   });
+  await memo.prime(
+    prisma,
+    all.filter((p) => p.project.isPrivate).map((p) => p.projectId),
+    [userId],
+  );
+  // A private repository GitHub no longer lets the member into (owner or not): no budget row.
+  const allowed = await Promise.all(
+    all.map((p) => repoAccessAllows(prisma, github, p.project, user, memo)),
+  );
+  const parts = all.filter((_, i) => allowed[i]);
   if (parts.length === 0) return [];
   const report = await prisma.usageReport.findFirst({
     where: { userId },
@@ -270,9 +319,11 @@ export function registerUsage(
     const { range } = parseBody(UsageRangeQuerySchema, req.query);
     return computeUsageDashboard(
       deps.prisma,
-      { id: user.id, isAdmin: app.allowlist.isAdmin(user.login) },
+      { id: user.id, login: user.login, isAdmin: app.allowlist.isAdmin(user.login) },
       range,
       deps.config.BUDGET_SAFETY_RESERVE,
+      new Date(),
+      deps.github,
     );
   });
 }

@@ -17,6 +17,7 @@ import {
 let app: FastifyInstance;
 let gh: FakeGithub;
 let installationId: string;
+let githubInstallationId: number;
 
 beforeAll(async () => {
   gh = new FakeGithub();
@@ -29,6 +30,7 @@ beforeAll(async () => {
     },
   });
   installationId = inst.id;
+  githubInstallationId = Number(inst.githubInstallationId);
 });
 afterAll(async () => {
   await app.close();
@@ -39,7 +41,7 @@ const HOUR = 3600_000;
 const ago = (days: number, hours = 0) => new Date(Date.now() - days * 24 * HOUR - hours * HOUR);
 
 async function project(owner: TestUser, name: string) {
-  return prisma.project.create({
+  const p = await prisma.project.create({
     data: {
       githubRepoId: BigInt(uniqueInt()),
       fullName: `acme/${name}-${uid()}`,
@@ -49,6 +51,9 @@ async function project(owner: TestUser, name: string) {
       addedById: owner.userId,
     },
   });
+  // The stored owner of a private repository must still be ADMIN on GitHub.
+  gh.roles.set(`${githubInstallationId}:${p.fullName}:${owner.login}`, 'ADMIN');
+  return p;
 }
 async function task(projectId: string, creator: TestUser, title: string) {
   return prisma.task.create({

@@ -151,6 +151,13 @@ const ConfigSchema = z.object({
    * access is denied (fail closed).
    */
   ORCH_ACCESS_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
+  /** How long a user's role on a repository is cached before GitHub is asked again. */
+  ORCH_REPO_ACCESS_TTL_SEC: z.coerce.number().int().nonnegative().default(300),
+  /**
+   * GitHub outage on a private repository: the last verified role is reused if younger than this,
+   * then access is denied.
+   */
+  ORCH_REPO_ACCESS_GRACE_SEC: z.coerce.number().int().nonnegative().default(900),
   ORCH_ENCRYPTION_KEY: z.preprocess(emptyToUndefined, z.string().optional()),
   // Files served to member machines. Default: resolved from the repository root.
   ORCH_INSTALL_SH_PATH: z.preprocess(emptyToUndefined, z.string().optional()),
