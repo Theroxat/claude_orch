@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mockApi, me, renderApp } from '../test/helpers';
+import { mockApi, me, renderApp, switchToFrench } from '../test/helpers';
 
 const grant = (over: Record<string, unknown> = {}) => ({
   id: 'g1',
@@ -130,5 +130,39 @@ describe('Admin access', () => {
     // A fresh failure still shows.
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
     expect(await screen.findByText('Deny exploded')).toBeTruthy();
+  });
+});
+
+describe('Admin access in French', () => {
+  it('translates headings, buttons and invite plurals', async () => {
+    await switchToFrench();
+    const invite = (over: Record<string, unknown>) => ({
+      id: 'i1',
+      multiUse: true,
+      uses: 1,
+      expiresAt: '2099-01-01T10:00:00Z',
+      revokedAt: null,
+      createdBy: 'root',
+      createdAt: '2026-10-20T10:00:00Z',
+      lastUsedAt: null,
+      active: true,
+      ...over,
+    });
+    mockApi({
+      'GET /me': () => ({ json: admin }),
+      'GET /admin/access/pending-count': () => ({ json: { count: 1 } }),
+      'GET /admin/access': () => ({
+        json: { ...access, invites: [invite({}), invite({ id: 'i2', uses: 3 })] },
+      }),
+    });
+    renderApp('/admin/access');
+    expect(await screen.findByRole('heading', { name: 'Demandes en attente' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approuver' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refuser' })).toBeTruthy();
+    expect(screen.getByLabelText('Ajouter un login GitHub')).toBeTruthy();
+    expect(screen.getByText(/^1 utilisation, expire le 01\/01\/2099/)).toBeTruthy();
+    expect(screen.getByText(/^3 utilisations, expire le /)).toBeTruthy();
+    expect(screen.getAllByText('actif')).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Configuré sur le serveur' })).toBeTruthy();
   });
 });

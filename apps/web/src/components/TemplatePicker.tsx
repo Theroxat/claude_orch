@@ -2,12 +2,14 @@ import { useQuery } from '@tanstack/react-query';
 import type { TaskTemplateView } from '@orch/shared';
 import { useId, useRef, useState } from 'react';
 import { fetchTemplates } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 
-export const SCOPE_LABEL = {
-  builtin: 'Built-in',
-  personal: 'Personal',
-  project: 'Shared',
-} as const;
+export const SCOPE_KEY = {
+  builtin: 'templates.scope.builtin',
+  personal: 'templates.scope.personal',
+  project: 'templates.scope.project',
+} as const satisfies Record<TaskTemplateView['scope'], MessageKey>;
 
 /** "Start from a template": a collapsible list with search. Picking one reports it upward. */
 export function TemplatePicker({
@@ -18,9 +20,11 @@ export function TemplatePicker({
 }: {
   projectId: string;
   selected: TaskTemplateView | null;
-  onPick: (t: TaskTemplateView) => void;
+  onPick: (tpl: TaskTemplateView) => void;
   onClear: () => void;
 }) {
+  const t = useT();
+  const rich = useRich();
   const uid = useId();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -32,11 +36,11 @@ export function TemplatePicker({
   });
   const q = query.trim().toLowerCase();
   const shown = (templates.data ?? []).filter(
-    (t) =>
+    (tpl) =>
       q === '' ||
-      t.name.toLowerCase().includes(q) ||
-      t.description.toLowerCase().includes(q) ||
-      t.labels.some((l) => l.toLowerCase().includes(q)),
+      tpl.name.toLowerCase().includes(q) ||
+      tpl.description.toLowerCase().includes(q) ||
+      tpl.labels.some((l) => l.toLowerCase().includes(q)),
   );
   return (
     <div className="tpl-picker">
@@ -54,13 +58,17 @@ export function TemplatePicker({
             } else setOpen(false);
           }}
         >
-          Start from a template
+          {t('templates.picker.start')}
         </button>
         {selected && (
           <span className="tpl-chosen">
             <span className="lamp" data-scope={selected.scope} aria-hidden="true" />
             <span>
-              Using <strong>{selected.name}</strong>
+              {rich(
+                'templates.picker.using',
+                { strong: (c) => <strong>{c}</strong> },
+                { name: selected.name },
+              )}
             </span>
             <button
               type="button"
@@ -70,7 +78,7 @@ export function TemplatePicker({
                 toggle.current?.focus();
               }}
             >
-              Remove template
+              {t('templates.picker.remove')}
             </button>
           </span>
         )}
@@ -78,40 +86,40 @@ export function TemplatePicker({
       <div className="tpl-panel" id={`${uid}-panel`} data-open={open || undefined}>
         <div className="tpl-panel-inner" inert={!open}>
           <label className="field">
-            Search templates
+            {t('templates.picker.search')}
             <input
               type="search"
               ref={search}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="bug, upgrade, tests..."
+              placeholder={t('templates.picker.searchPlaceholder')}
             />
           </label>
-          {templates.isPending && <p className="hint">Loading templates...</p>}
-          {templates.error && <p className="error">{templates.error.message}</p>}
+          {templates.isPending && <p className="hint">{t('templates.picker.loading')}</p>}
+          {templates.error && <p className="error">{errorMessage(templates.error)}</p>}
           {templates.isSuccess && shown.length === 0 && (
-            <p className="hint">No template matches "{query.trim()}".</p>
+            <p className="hint">{t('templates.picker.noMatch', { query: query.trim() })}</p>
           )}
           <ul className="tpl-list">
-            {shown.map((t) => (
-              <li key={t.id}>
+            {shown.map((tpl) => (
+              <li key={tpl.id}>
                 <button
                   type="button"
                   className="tpl-row"
-                  aria-pressed={selected?.id === t.id}
+                  aria-pressed={selected?.id === tpl.id}
                   onClick={() => {
-                    onPick(t);
+                    onPick(tpl);
                     setOpen(false);
                     // The focused row is about to become inert: keep focus on the toggle.
                     toggle.current?.focus();
                   }}
                 >
-                  <span className="lamp" data-scope={t.scope} aria-hidden="true" />
+                  <span className="lamp" data-scope={tpl.scope} aria-hidden="true" />
                   <span className="tpl-row-main">
-                    <span className="tpl-row-name">{t.name}</span>
-                    {t.description && <span className="tpl-row-desc">{t.description}</span>}
+                    <span className="tpl-row-name">{tpl.name}</span>
+                    {tpl.description && <span className="tpl-row-desc">{tpl.description}</span>}
                   </span>
-                  <span className="tag">{SCOPE_LABEL[t.scope]}</span>
+                  <span className="tag">{t(SCOPE_KEY[tpl.scope])}</span>
                 </button>
               </li>
             ))}

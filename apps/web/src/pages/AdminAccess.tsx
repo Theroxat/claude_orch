@@ -11,6 +11,9 @@ import {
   type AccessInvite,
 } from '../api/endpoints';
 import { CopyButton } from '../components/CopyButton';
+import { errorMessage } from '../i18n/errors.ts';
+import { formatDate } from '../i18n/format.ts';
+import { useT, type MessageKey } from '../i18n/index.ts';
 import { presenceProps, usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 
@@ -18,10 +21,20 @@ const KEY = ['admin', 'access'];
 const COUNT_KEY = ['admin', 'pending-count'];
 
 const EXPIRIES = [
-  { hours: 24, label: '24 hours' },
-  { hours: 168, label: '7 days' },
-  { hours: 720, label: '30 days' },
-];
+  { hours: 24, label: 'admin.invites.expiry.h24' },
+  { hours: 168, label: 'admin.invites.expiry.h168' },
+  { hours: 720, label: 'admin.invites.expiry.h720' },
+] as const satisfies ReadonlyArray<{ hours: number; label: MessageKey }>;
+
+/** Same fields as `toLocaleString()`: date and time with seconds, in the active locale. */
+const DATE_TIME: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: 'numeric',
+  second: 'numeric',
+};
 
 function Avatar({ g }: { g: AccessGrant }) {
   return (
@@ -37,7 +50,7 @@ function Avatar({ g }: { g: AccessGrant }) {
   );
 }
 
-function inviteStatus(i: AccessInvite): string {
+function inviteStatus(i: AccessInvite) {
   if (i.revokedAt) return 'revoked';
   if (new Date(i.expiresAt).getTime() <= Date.now()) return 'expired';
   if (!i.multiUse && i.uses > 0) return 'used';
@@ -45,6 +58,7 @@ function inviteStatus(i: AccessInvite): string {
 }
 
 export function AdminAccess() {
+  const t = useT();
   const me = useMe().data;
   const qc = useQueryClient();
   const toast = useToast();
@@ -57,7 +71,7 @@ export function AdminAccess() {
   const [actionError, setActionError] = useState<string | null>(null);
   const tracked = {
     onMutate: () => setActionError(null),
-    onError: (e: Error) => setActionError(e.message),
+    onError: (e: unknown) => setActionError(errorMessage(e)),
   };
   const access = useQuery({
     queryKey: KEY,
@@ -76,8 +90,13 @@ export function AdminAccess() {
     mutationFn: (v: { id: string; action: 'approve' | 'deny' | 'remove' }) =>
       decideGrant(v.id, v.action),
     onSuccess: async (g, v) => {
-      const verb = v.action === 'approve' ? 'approved' : v.action === 'deny' ? 'denied' : 'removed';
-      toast(`${g.grant.githubLogin} ${verb}`, v.action === 'approve' ? 'ok' : 'info');
+      const key =
+        v.action === 'approve'
+          ? 'admin.toast.approved'
+          : v.action === 'deny'
+            ? 'admin.toast.denied'
+            : 'admin.toast.removed';
+      toast(t(key, { login: g.grant.githubLogin }), v.action === 'approve' ? 'ok' : 'info');
       await refresh();
     },
   });
@@ -85,7 +104,7 @@ export function AdminAccess() {
     ...tracked,
     mutationFn: () => preApprove(login.trim().replace(/^@/, '')),
     onSuccess: async (g) => {
-      toast(`${g.grant.githubLogin} pre-approved`);
+      toast(t('admin.toast.preApproved', { login: g.grant.githubLogin }));
       setLogin('');
       await refresh();
     },
@@ -102,7 +121,7 @@ export function AdminAccess() {
     ...tracked,
     mutationFn: (id: string) => revokeInvite(id),
     onSuccess: async () => {
-      toast('Invite link revoked', 'info');
+      toast(t('admin.toast.inviteRevoked'), 'info');
       await refresh();
     },
   });
@@ -111,38 +130,31 @@ export function AdminAccess() {
   const pending = usePresence(d?.pending, (g) => g.id);
   const approved = usePresence(d?.approved, (g) => g.id);
   const invites = usePresence(d?.invites, (i) => i.id);
-  if (me && !me.isAdmin) return <p className="hint">Admins only.</p>;
+  if (me && !me.isAdmin) return <p className="hint">{t('admin.adminsOnly')}</p>;
   const remove = (g: AccessGrant) => {
-    if (
-      window.confirm(
-        `Remove ${g.githubLogin}? This denies their access to the server until an admin approves them again.`,
-      )
-    )
+    if (window.confirm(t('admin.members.confirmRemove', { login: g.githubLogin })))
       decide.mutate({ id: g.id, action: 'remove' });
   };
-  const err = actionError ?? access.error?.message;
+  const err = actionError ?? (access.error ? errorMessage(access.error) : null);
 
   return (
     <div>
       <header className="page-head">
         <div>
-          <h1>Access</h1>
-          <p className="lede">
-            Decide who may sign in to this orch server: answer requests, pre-approve logins and send
-            invite links.
-          </p>
+          <h1>{t('admin.title')}</h1>
+          <p className="lede">{t('admin.lede')}</p>
         </div>
       </header>
       {err && <p className="error">{err}</p>}
-      {access.isPending && <p className="hint">Loading...</p>}
+      {access.isPending && <p className="hint">{t('common.status.loading')}</p>}
       {d && (
         <>
-          <section className="card" aria-label="Pending requests">
+          <section className="card" aria-label={t('admin.pending.title')}>
             <div className="card-head">
-              <h2>Pending requests</h2>
+              <h2>{t('admin.pending.title')}</h2>
               {d.pending.length > 0 && <span className="badge pending">{d.pending.length}</span>}
             </div>
-            {d.pending.length === 0 && <p className="hint">No pending requests.</p>}
+            {d.pending.length === 0 && <p className="hint">{t('admin.pending.none')}</p>}
             <div>
               {pending.map(({ key, item: g, phase }) => (
                 <div className="list-row" key={key} {...presenceProps(phase)}>
@@ -151,7 +163,7 @@ export function AdminAccess() {
                     <strong>{g.githubLogin}</strong>
                     {g.note && <span>{g.note}</span>}
                     {g.requestedAt && (
-                      <span className="hint">{new Date(g.requestedAt).toLocaleString()}</span>
+                      <span className="hint">{formatDate(g.requestedAt, DATE_TIME)}</span>
                     )}
                   </div>
                   <div className="row">
@@ -160,14 +172,14 @@ export function AdminAccess() {
                       disabled={decide.isPending}
                       onClick={() => decide.mutate({ id: g.id, action: 'approve' })}
                     >
-                      Approve
+                      {t('admin.actions.approve')}
                     </button>
                     <button
                       className="danger"
                       disabled={decide.isPending}
                       onClick={() => decide.mutate({ id: g.id, action: 'deny' })}
                     >
-                      Deny
+                      {t('admin.actions.deny')}
                     </button>
                   </div>
                 </div>
@@ -176,23 +188,27 @@ export function AdminAccess() {
           </section>
 
           <div className="split">
-            <section className="card" aria-label="Members">
-              <h2>Members</h2>
-              {d.approved.length === 0 && <p className="hint">No approved members yet.</p>}
+            <section className="card" aria-label={t('admin.members.title')}>
+              <h2>{t('admin.members.title')}</h2>
+              {d.approved.length === 0 && <p className="hint">{t('admin.members.none')}</p>}
               <div>
                 {approved.map(({ key, item: g, phase }) => (
                   <div className="list-row" key={key} {...presenceProps(phase)}>
                     <div className="who">
                       <Avatar g={g} />
                       <strong>{g.githubLogin}</strong>
-                      {g.decidedBy && <span className="hint">approved by {g.decidedBy}</span>}
+                      {g.decidedBy && (
+                        <span className="hint">
+                          {t('admin.members.approvedBy', { name: g.decidedBy })}
+                        </span>
+                      )}
                     </div>
                     <button
                       className="danger"
                       disabled={decide.isPending}
                       onClick={() => remove(g)}
                     >
-                      Remove
+                      {t('admin.actions.remove')}
                     </button>
                   </div>
                 ))}
@@ -205,17 +221,17 @@ export function AdminAccess() {
                 }}
               >
                 <label className="field">
-                  Add a GitHub login
+                  {t('admin.members.addLogin')}
                   <input value={login} onChange={(e) => setLogin(e.target.value)} />
                 </label>
                 <button type="submit" disabled={add.isPending || !login.trim()}>
-                  Pre-approve
+                  {t('admin.actions.preApprove')}
                 </button>
               </form>
             </section>
 
-            <section className="card" aria-label="Invite links">
-              <h2>Invite links</h2>
+            <section className="card" aria-label={t('admin.invites.title')}>
+              <h2>{t('admin.invites.title')}</h2>
               <form
                 className="invite-form"
                 onSubmit={(e) => {
@@ -224,37 +240,37 @@ export function AdminAccess() {
                 }}
               >
                 <label className="field">
-                  Type
+                  {t('admin.invites.type')}
                   <select
                     value={multiUse ? 'multi' : 'single'}
                     onChange={(e) => setMultiUse(e.target.value === 'multi')}
                   >
-                    <option value="single">Single-use</option>
-                    <option value="multi">Multi-use</option>
+                    <option value="single">{t('admin.invites.singleUse')}</option>
+                    <option value="multi">{t('admin.invites.multiUse')}</option>
                   </select>
                 </label>
                 <label className="field">
-                  Expires after
+                  {t('admin.invites.expiresAfter')}
                   <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
                     {EXPIRIES.map((x) => (
                       <option key={x.hours} value={x.hours}>
-                        {x.label}
+                        {t(x.label)}
                       </option>
                     ))}
                   </select>
                 </label>
                 <button type="submit" className="primary" disabled={invite.isPending}>
-                  Create invite link
+                  {t('admin.actions.createInvite')}
                 </button>
               </form>
               {created && (
                 <div className="invite-created reveal" key={created}>
                   <code data-testid="invite-url">{created}</code>
                   <CopyButton text={created} />
-                  <p className="hint">This link won't be shown again. Copy it now.</p>
+                  <p className="hint">{t('admin.invites.notShownAgain')}</p>
                 </div>
               )}
-              {d.invites.length === 0 && <p className="hint">No invite links.</p>}
+              {d.invites.length === 0 && <p className="hint">{t('admin.invites.none')}</p>}
               <div>
                 {invites.map(({ key, item: i, phase }) => {
                   const status = inviteStatus(i);
@@ -262,12 +278,16 @@ export function AdminAccess() {
                     <div className="list-row" key={key} {...presenceProps(phase)}>
                       <span className="who">
                         <span className={`badge ${status === 'active' ? 'ok' : 'off'}`}>
-                          {status}
+                          {t(`admin.invites.status.${status}`)}
                         </span>
-                        <strong>{i.multiUse ? 'Multi-use' : 'Single-use'}</strong>
+                        <strong>
+                          {i.multiUse ? t('admin.invites.multiUse') : t('admin.invites.singleUse')}
+                        </strong>
                         <span className="hint">
-                          {i.uses} {i.uses === 1 ? 'use' : 'uses'}, expires{' '}
-                          {new Date(i.expiresAt).toLocaleString()}
+                          {t('admin.invites.usesExpires', {
+                            count: i.uses,
+                            date: formatDate(i.expiresAt, DATE_TIME),
+                          })}
                         </span>
                       </span>
                       {status === 'active' && (
@@ -276,7 +296,7 @@ export function AdminAccess() {
                           disabled={revoke.isPending}
                           onClick={() => revoke.mutate(i.id)}
                         >
-                          Revoke
+                          {t('admin.actions.revoke')}
                         </button>
                       )}
                     </div>
@@ -286,25 +306,21 @@ export function AdminAccess() {
             </section>
           </div>
 
-          <section className="card" aria-label="Configured on the server">
-            <h2>Configured on the server</h2>
-            <p className="hint">
-              These entries are configured on the server (environment) and cannot be changed here.
-            </p>
-            {d.configured.allowAny && (
-              <p className="warning">Any GitHub account is allowed on this server.</p>
-            )}
+          <section className="card" aria-label={t('admin.configured.title')}>
+            <h2>{t('admin.configured.title')}</h2>
+            <p className="hint">{t('admin.configured.hint')}</p>
+            {d.configured.allowAny && <p className="warning">{t('admin.configured.allowAny')}</p>}
             <dl className="config-list">
               {(
                 [
-                  ['Logins', d.configured.logins],
-                  ['Organizations', d.configured.orgs],
-                  ['Admins', d.configured.admins],
+                  ['admin.configured.logins', d.configured.logins],
+                  ['admin.configured.orgs', d.configured.orgs],
+                  ['admin.configured.admins', d.configured.admins],
                 ] as const
               ).map(([label, items]) => (
                 <Fragment key={label}>
-                  <dt>{label}</dt>
-                  <dd>{items.length ? items.join(', ') : 'none'}</dd>
+                  <dt>{t(label)}</dt>
+                  <dd>{items.length ? items.join(', ') : t('admin.configured.none')}</dd>
                 </Fragment>
               ))}
             </dl>
@@ -312,7 +328,7 @@ export function AdminAccess() {
 
           {d.denied.length > 0 && (
             <details className="card">
-              <summary>Declined ({d.denied.length})</summary>
+              <summary>{t('admin.declined', { count: d.denied.length })}</summary>
               {d.denied.map((g) => (
                 <div className="list-row" key={g.id}>
                   <div className="who">
@@ -323,7 +339,7 @@ export function AdminAccess() {
                     disabled={decide.isPending}
                     onClick={() => decide.mutate({ id: g.id, action: 'approve' })}
                   >
-                    Approve
+                    {t('admin.actions.approve')}
                   </button>
                 </div>
               ))}

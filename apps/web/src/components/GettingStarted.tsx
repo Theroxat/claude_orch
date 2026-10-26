@@ -4,6 +4,8 @@ import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { fetchInstallUrl, fetchOnboarding } from '../api/endpoints';
 import { AddRepoDialog } from './AddRepoDialog';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 import { claudeRejectedText, relativeTime } from './AgentCard';
 
 export const DISMISS_KEY = 'orch.gettingStarted.dismissed';
@@ -34,25 +36,27 @@ function writeDismissed(v: boolean) {
   }
 }
 
-const TITLES: Record<OnboardingStepId, string> = {
-  github_app_installed: 'Install the GitHub App',
-  project_added: 'Add or join a project',
-  participation_set: 'Choose how much capacity you lend',
-  agent_connected: 'Install your machine',
-  claude_connected: 'Connect Claude on your machine',
-  mcp_connected: 'Connect Claude Code (MCP)',
-};
+const TITLES = {
+  github_app_installed: 'welcome.card.title.github_app_installed',
+  project_added: 'welcome.card.title.project_added',
+  participation_set: 'welcome.card.title.participation_set',
+  agent_connected: 'welcome.card.title.agent_connected',
+  claude_connected: 'welcome.card.title.claude_connected',
+  mcp_connected: 'welcome.card.title.mcp_connected',
+} as const satisfies Record<OnboardingStepId, MessageKey>;
 
-const EXPLAIN: Record<OnboardingStepId, string> = {
-  github_app_installed: 'The orch GitHub App lets orch read issues and open pull requests.',
-  project_added: 'Add a repository you administer, or join a project shared with you.',
-  participation_set: 'Pick a project and a budget so your machine can take its tasks.',
-  agent_connected: 'The agent runs tasks on the machine that has your Claude subscription.',
-  claude_connected: 'Sign in to Claude once on that machine so tasks can run.',
-  mcp_connected: 'Let Claude Code view the pool and submit tasks through orch.',
-};
+const EXPLAIN = {
+  github_app_installed: 'welcome.card.explain.github_app_installed',
+  project_added: 'welcome.card.explain.project_added',
+  participation_set: 'welcome.card.explain.participation_set',
+  agent_connected: 'welcome.card.explain.agent_connected',
+  claude_connected: 'welcome.card.explain.claude_connected',
+  mcp_connected: 'welcome.card.explain.mcp_connected',
+} as const satisfies Record<OnboardingStepId, MessageKey>;
 
 export function GettingStarted() {
+  const t = useT();
+  const rich = useRich();
   const q = useOnboarding();
   const [dismissed, setDismissed] = useState(readDismissed);
   const [adding, setAdding] = useState(false);
@@ -75,7 +79,7 @@ export function GettingStarted() {
     return (
       <div className="row">
         <button className="ghost" onClick={() => dismiss(false)}>
-          Show getting started
+          {t('welcome.card.show')}
         </button>
       </div>
     );
@@ -87,7 +91,9 @@ export function GettingStarted() {
       const { url } = await fetchInstallUrl();
       window.open(url, '_blank', 'noopener');
     } catch (e) {
-      setInstallError(e instanceof Error ? e.message : 'Could not get the install link');
+      setInstallError(
+        e instanceof Error && e.message ? errorMessage(e) : t('welcome.card.installLinkError'),
+      );
     }
   };
 
@@ -96,41 +102,41 @@ export function GettingStarted() {
       case 'github_app_installed':
         return (
           <button className="primary" onClick={() => void installApp()}>
-            Install the GitHub App
+            {t(TITLES.github_app_installed)}
           </button>
         );
       case 'project_added':
         return (
           <>
             <button className="primary" onClick={() => setAdding(true)}>
-              Add a repository
+              {t('welcome.card.addRepo')}
             </button>
             <Link className="btn" to="/discover">
-              Join a project
+              {t('welcome.card.joinProject')}
             </Link>
           </>
         );
       case 'participation_set':
         return (
           <Link className="btn primary" to="/discover">
-            Join a project
+            {t('welcome.card.joinProject')}
           </Link>
         );
       case 'agent_connected':
         return (
           <Link className="btn primary" to="/my-server">
-            Install your machine
+            {t(TITLES.agent_connected)}
           </Link>
         );
       case 'claude_connected':
         return (
           <>
             <button className="primary" onClick={() => setShowLogin((v) => !v)}>
-              Connect Claude on your machine
+              {t(TITLES.claude_connected)}
             </button>
             {showLogin && (
               <p className="reveal">
-                Run <code>orch login</code> on that machine.
+                {rich('welcome.card.runLogin', { code: (c) => <code>{c}</code> })}
               </p>
             )}
           </>
@@ -138,28 +144,28 @@ export function GettingStarted() {
       case 'mcp_connected':
         return (
           <Link className="btn primary" to="/claude-code">
-            Connect Claude Code (MCP)
+            {t(TITLES.mcp_connected)}
           </Link>
         );
     }
   };
 
   return (
-    <section className="card getting-started" aria-label="Getting started">
+    <section className="card getting-started" aria-label={t('welcome.card.ariaLabel')}>
       <div className="card-head">
-        <h2>Getting started</h2>
+        <h2>{t('welcome.card.heading')}</h2>
         <div className="row">
           <span className="badge ok">
-            {done}/{steps.length} done
+            {t('welcome.card.progress', { done, total: steps.length })}
           </span>
           {!allDone && (
             <Link className="btn" to="/welcome">
-              Open the setup wizard
+              {t('welcome.card.openWizard')}
             </Link>
           )}
         </div>
       </div>
-      {allDone && <p className="hint">All set. You can hide this card.</p>}
+      {allDone && <p className="hint">{t('welcome.card.allSet')}</p>}
       <ol>
         {steps.map((s, i) => (
           <li
@@ -170,34 +176,43 @@ export function GettingStarted() {
             <span
               className="check"
               role="img"
-              aria-label={s.done ? 'Done' : s.state === 'unknown' ? 'Unknown' : 'To do'}
+              aria-label={
+                s.done
+                  ? t('welcome.card.stateDone')
+                  : s.state === 'unknown'
+                    ? t('welcome.card.stateUnknown')
+                    : t('welcome.card.stateTodo')
+              }
             >
               {s.done ? '✓' : s.state === 'unknown' ? '?' : i + 1}
             </span>
             <div className="step-body">
-              <strong className="step-title">{TITLES[s.id]}</strong>
-              <div className="hint">{EXPLAIN[s.id]}</div>
+              <strong className="step-title">{t(TITLES[s.id])}</strong>
+              <div className="hint">{t(EXPLAIN[s.id])}</div>
               {s.id === 'claude_connected' &&
                 s.state === 'todo' &&
                 s.reason === 'claude_login_expired' && (
                   <p className="warning">
                     {claudeRejectedText(
                       { claudeAuthError: s.errorClass },
-                      s.agentName ? <> on {s.agentName}</> : null,
+                      s.agentName ? (
+                        <> {t('welcome.card.onMachine', { name: s.agentName })}</>
+                      ) : null,
                     )}
                   </p>
                 )}
               {s.id === 'claude_connected' && s.done && (
                 <p className="hint">
-                  {s.reason === 'claude_login_unverified' ? (
-                    <>
-                      Claude login not verified yet: run <code>orch doctor</code>
-                    </>
-                  ) : s.reason === 'claude_check_inconclusive' ? (
-                    `Could not verify (${s.errorClass ?? 'error'}) ${relativeTime(s.checkedAt)}`
-                  ) : s.checkedAt ? (
-                    `Claude login verified ${relativeTime(s.checkedAt)}`
-                  ) : null}
+                  {s.reason === 'claude_login_unverified'
+                    ? rich('welcome.card.loginUnverified', { code: (c) => <code>{c}</code> })
+                    : s.reason === 'claude_check_inconclusive'
+                      ? t('welcome.card.inconclusive', {
+                          error: s.errorClass ?? t('welcome.card.inconclusiveFallback'),
+                          when: relativeTime(s.checkedAt),
+                        })
+                      : s.checkedAt
+                        ? t('welcome.card.verified', { when: relativeTime(s.checkedAt) })
+                        : null}
                 </p>
               )}
               {!s.done && <div className="step-actions">{actions(s)}</div>}
@@ -208,7 +223,7 @@ export function GettingStarted() {
       {installError && <p className="error">{installError}</p>}
       {canDismiss && (
         <button className="ghost" onClick={() => dismiss(true)}>
-          Hide
+          {t('welcome.card.hide')}
         </button>
       )}
       {adding && <AddRepoDialog onClose={() => setAdding(false)} />}

@@ -1,0 +1,75 @@
+import type en from '../en/history.ts';
+import type { Catalog } from '../../types.ts';
+
+export default {
+  title: 'Historique',
+  lede: 'Toutes les tâches exécutées, dans les projets visibles. Les filtres sont conservés dans l’adresse, ce qui permet de partager une vue.',
+  status: {
+    DONE: 'Terminée',
+    IN_REVIEW: 'En relecture',
+    IN_PROGRESS: 'En cours',
+    TODO: 'De nouveau en file',
+    CANCELLED: 'Annulée',
+  },
+  failure: {
+    env: 'Configuration du dépôt',
+    claude_auth: 'Connexion à Claude',
+    rate_limited: 'Limite de débit',
+    timeout: 'Délai dépassé',
+    task: 'Tâche échouée',
+  },
+  columns: {
+    status: 'Statut',
+    task: 'Tâche',
+    runs: 'Exécutions',
+    duration: 'Durée',
+    tokens: 'Jetons',
+    people: 'Participants',
+    created: 'Création',
+  },
+  filters: {
+    label: 'Filtrer l’historique des tâches',
+    search: 'Rechercher',
+    searchPlaceholder: 'Titre, numéro de ticket ou de PR',
+    more: 'Plus de filtres',
+    hide: 'Masquer les filtres',
+    status: 'Statut',
+    model: 'Modèle',
+    project: 'Projet',
+    allProjects: 'Tous les projets',
+    createdBy: 'Créée par',
+    runBy: 'Exécutée par',
+    anyone: 'Tout le monde',
+    from: 'Créée à partir du',
+    until: 'Créée jusqu’au',
+    clear: 'Effacer les filtres',
+  },
+  loaded: { one: '{count} tâche chargée', other: '{count} tâches chargées' },
+  loadedMore: {
+    one: '{count} tâche chargée, d’autres sont disponibles',
+    other: '{count} tâches chargées, d’autres sont disponibles',
+  },
+  loadError: '<strong>Impossible de charger l’historique.</strong> {message}',
+  noMatch:
+    '<strong>Aucune tâche ne correspond à ces filtres.</strong> Élargir les dates ou retirer un filtre.',
+  empty:
+    '<strong>Rien n’a encore été exécuté.</strong> Les tâches apparaissent ici dès que l’agent d’un membre de l’équipe les démarre.',
+  caption: 'Historique des tâches, les plus récentes d’abord',
+  issueOnGithub: 'ticket sur GitHub',
+  prOnGithub: 'sur GitHub',
+  runs: { one: '{count} exécution', other: '{count} exécutions' },
+  lastFailureClass: 'Type d’échec de la dernière exécution',
+  ranBy: 'exécutée par {person}',
+  moreError: 'Impossible de charger d’autres tâches.',
+  end: 'Voilà toutes les tâches correspondantes.',
+  duration: {
+    seconds: '{n} s',
+    minutes: '{n} min',
+    hours: '{n} h',
+    hoursMinutes: '{h} h {m} min',
+  },
+  tokens: {
+    thousands: '{n} k',
+    millions: '{n} M',
+  },
+} satisfies Catalog<typeof en>;

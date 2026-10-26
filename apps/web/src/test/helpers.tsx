@@ -3,6 +3,12 @@ import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { vi } from 'vitest';
 import { App } from '../App';
+import { loadLocale } from '../i18n/index.ts';
+
+/** Switches the UI to French for one test (setup.ts resets to English afterwards). */
+export async function switchToFrench() {
+  await loadLocale('fr');
+}
 
 export type Handler = (body: unknown) => { status?: number; json?: unknown };
 export type Routes = Record<string, Handler>;

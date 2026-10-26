@@ -6,7 +6,7 @@ test('requests: pending approval request listed, nav badge, reject', async ({ ne
   await page.goto('/requests');
   await settle(page);
   await expect(
-    page.getByRole('link', { name: /Requests/ }).getByLabel(/pending requests/),
+    page.getByRole('link', { name: /Requests/ }).getByLabel(/pending requests?/),
   ).toBeVisible();
   const card = page.getByRole('article', { name: /Request #/ }).first();
   await expect(card).toContainText('Expires in');

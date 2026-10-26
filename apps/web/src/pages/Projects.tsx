@@ -4,9 +4,12 @@ import { fetchMyProjects } from '../api/endpoints';
 import { AddRepoDialog } from '../components/AddRepoDialog';
 import { GettingStarted } from '../components/GettingStarted';
 import { ProjectCard } from '../components/ProjectCard';
+import { useT } from '../i18n/index.ts';
+import { errorMessage } from '../i18n/errors.ts';
 import { usePresence } from '../ui/presence';
 
 export function Projects() {
+  const t = useT();
   const [adding, setAdding] = useState(false);
   const q = useQuery({ queryKey: ['projects', 'mine'], queryFn: fetchMyProjects });
   const projects = usePresence(q.data, (p) => p.id);
@@ -14,27 +17,24 @@ export function Projects() {
     <section>
       <header className="page-head">
         <div>
-          <h1>My projects</h1>
-          <p className="lede">
-            Repositories you own in orch, who can see them, and who may lend capacity or submit
-            tasks.
-          </p>
+          <h1>{t('projects.list.title')}</h1>
+          <p className="lede">{t('projects.list.lede')}</p>
         </div>
         <div className="page-actions">
           <button className="primary" onClick={() => setAdding(true)}>
-            Add repository
+            {t('projects.list.add')}
           </button>
         </div>
       </header>
       <GettingStarted />
-      {q.isPending && <p className="hint">Loading...</p>}
-      {q.error && <p className="error">{q.error.message}</p>}
+      {q.isPending && <p className="hint">{t('common.status.loading')}</p>}
+      {q.error && <p className="error">{errorMessage(q.error)}</p>}
       {q.isSuccess && q.data.length === 0 && (
         <div className="onboarding">
-          <h2>Add your first repository to the pool</h2>
-          <p>Install the orch GitHub App on a repository, then add it here to start sharing.</p>
+          <h2>{t('projects.list.emptyTitle')}</h2>
+          <p>{t('projects.list.emptyBody')}</p>
           <button className="primary" onClick={() => setAdding(true)}>
-            Add your first repository
+            {t('projects.list.emptyAction')}
           </button>
         </div>
       )}

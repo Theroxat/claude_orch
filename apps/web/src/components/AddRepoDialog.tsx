@@ -1,16 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { addProject, fetchAvailableRepos, fetchInstallUrl } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT } from '../i18n/index.ts';
 import { Icon } from '../ui/Icon';
 import { Modal } from '../ui/Modal';
 import { presenceProps, usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 
-const ADMIN_NOTE =
-  'Only repositories where you are an admin are listed: the project owner must be a repository admin.';
+const BOLD = { b: (c: ReactNode) => <strong>{c}</strong> };
 
 /** Repository list + "Install the GitHub App" guide. Shared by the dialog and the setup wizard. */
 export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: number }) {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const toast = useToast();
   const repos = useQuery({
@@ -22,7 +25,7 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
   const add = useMutation({
     mutationFn: (githubRepoId: number) => addProject({ githubRepoId }),
     onSuccess: async (p) => {
-      toast(`${p.fullName} added to orch`);
+      toast(t('projects.picker.addedToast', { name: p.fullName }));
       await qc.invalidateQueries({ queryKey: ['projects'] });
       await qc.invalidateQueries({ queryKey: ['repos'] });
       await qc.invalidateQueries({ queryKey: ['onboarding'] });
@@ -40,41 +43,38 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
   const noRepos = repos.isSuccess && list.length === 0;
   return (
     <>
-      {repos.isPending && <p className="hint">Loading repositories...</p>}
-      {repos.error && <p className="error">{repos.error.message}</p>}
-      {add.error && <p className="error">{add.error.message}</p>}
+      {repos.isPending && <p className="hint">{t('projects.picker.loading')}</p>}
+      {repos.error && <p className="error">{errorMessage(repos.error)}</p>}
+      {add.error && <p className="error">{errorMessage(add.error)}</p>}
       <ul className="list">
         {rows.map(({ key, item: r, phase }) => (
           <li key={key} {...presenceProps(phase)}>
             <span className="who">
               <strong>{r.fullName}</strong>
-              {r.private && <span className="badge">private</span>}
+              {r.private && <span className="badge">{t('projects.card.private')}</span>}
             </span>
             {r.alreadyAdded ? (
-              <span className="badge ok">Added</span>
+              <span className="badge ok">{t('projects.picker.added')}</span>
             ) : (
               <button
                 className="primary"
                 disabled={add.isPending}
-                aria-label={`Add ${r.fullName}`}
+                aria-label={t('projects.picker.addAria', { name: r.fullName })}
                 onClick={() => add.mutate(r.githubRepoId)}
               >
-                Add
+                {t('projects.picker.add')}
               </button>
             )}
           </li>
         ))}
       </ul>
       {noRepos ? (
-        <section className="onboarding" aria-label="Install the GitHub App first">
-          <h3>Install the GitHub App first</h3>
-          <p>
-            Signing in with GitHub doesn&apos;t give orch access to any repository. You need to
-            install the orch GitHub App on the repositories you want to add to the pool.
-          </p>
+        <section className="onboarding" aria-label={t('projects.picker.installFirst')}>
+          <h3>{t('projects.picker.installFirst')}</h3>
+          <p>{t('projects.picker.installBody')}</p>
           <ol>
             <li>
-              Click <strong>Install the GitHub App</strong>.{' '}
+              {rich('projects.picker.step1', BOLD)}{' '}
               {install.data ? (
                 <a
                   className="btn primary"
@@ -83,43 +83,37 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
                   rel="noopener noreferrer"
                 >
                   <Icon name="github" />
-                  Install the GitHub App
+                  {t('projects.picker.installApp')}
                 </a>
               ) : (
-                <span className="hint">Loading the install link...</span>
+                <span className="hint">{t('projects.picker.installLoading')}</span>
               )}
             </li>
-            <li>Pick your account or organization.</li>
-            <li>
-              Choose <strong>Only select repositories</strong> and tick the repos you want in the
-              pool (or <strong>All repositories</strong>).
-            </li>
-            <li>
-              Click <strong>Install</strong>. GitHub sends you back to orch.
-            </li>
-            <li>
-              Click <strong>Refresh</strong> below.
-            </li>
+            <li>{t('projects.picker.step2')}</li>
+            <li>{rich('projects.picker.step3', BOLD)}</li>
+            <li>{rich('projects.picker.step4', BOLD)}</li>
+            <li>{rich('projects.picker.step5', BOLD)}</li>
           </ol>
           <button disabled={repos.isFetching} onClick={() => void repos.refetch()}>
-            Refresh
+            {t('projects.picker.refresh')}
           </button>
-          <p className="hint">{ADMIN_NOTE}</p>
+          <p className="hint">{t('projects.picker.adminNote')}</p>
         </section>
       ) : (
         <>
           <p className="hint">
-            Repository missing?{' '}
-            {install.data ? (
-              <a href={install.data.url} target="_blank" rel="noopener noreferrer">
-                Install the GitHub App
-              </a>
-            ) : (
-              'Install the GitHub App'
-            )}{' '}
-            on it.
+            {rich('projects.picker.missing', {
+              link: (c) =>
+                install.data ? (
+                  <a href={install.data.url} target="_blank" rel="noopener noreferrer">
+                    {c}
+                  </a>
+                ) : (
+                  c
+                ),
+            })}
           </p>
-          <p className="hint">{ADMIN_NOTE}</p>
+          <p className="hint">{t('projects.picker.adminNote')}</p>
         </>
       )}
     </>
@@ -127,8 +121,9 @@ export function RepoPicker({ onAdded, pollMs }: { onAdded: () => void; pollMs?: 
 }
 
 export function AddRepoDialog({ onClose }: { onClose: () => void }) {
+  const t = useT();
   return (
-    <Modal label="Add repository" title="Add repository" onClose={onClose} wide>
+    <Modal label={t('projects.list.add')} title={t('projects.list.add')} onClose={onClose} wide>
       {/* Closes in the same render as the new project card appears, which animates in. */}
       <RepoPicker onAdded={onClose} />
     </Modal>

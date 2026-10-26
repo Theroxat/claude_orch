@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { REJECTION_REASON_MAX, type ProjectView, type UpdateProjectRequest } from '@orch/shared';
+import {
+  REJECTION_REASON_MAX,
+  type ApiParticipationMode,
+  type ProjectView,
+  type UpdateProjectRequest,
+} from '@orch/shared';
 import {
   decideParticipant,
   deleteProject,
@@ -8,23 +13,25 @@ import {
   undoRejection,
   updateProject,
 } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { formatDate } from '../i18n/format.ts';
+import { useT, type MessageKey } from '../i18n/index.ts';
 import { Modal, closeModal } from '../ui/Modal';
 import { presenceProps, usePresence, type Phase } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 import { OwnerParticipation } from './OwnerParticipation';
 import { TemplatesManager } from './TemplatesManager';
 
-const PARTICIPATE_HELP: Record<ProjectView['whoCanParticipate'], string> = {
-  GITHUB:
-    'Only people who are collaborators on the GitHub repository can lend their Claude capacity. Anyone else is told to ask you for access.',
-  ALLOWLIST:
-    'Only people you or an admin explicitly allowed on this server can lend their Claude capacity, whether or not they are GitHub collaborators.',
-  ALL_MEMBERS: 'Every user of this orch server can lend their Claude capacity to this project.',
-};
+const PARTICIPATE_HELP = {
+  GITHUB: 'projects.card.participateHelp.GITHUB',
+  ALLOWLIST: 'projects.card.participateHelp.ALLOWLIST',
+  ALL_MEMBERS: 'projects.card.participateHelp.ALL_MEMBERS',
+} as const satisfies Record<ProjectView['whoCanParticipate'], MessageKey>;
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString();
-}
+const MODE_LABEL = {
+  auto: 'projects.approvals.mode.auto',
+  approval: 'projects.approvals.mode.approval',
+} as const satisfies Record<ApiParticipationMode, MessageKey>;
 
 function RejectDialog({
   login,
@@ -39,12 +46,18 @@ function RejectDialog({
   onConfirm: (reason: string) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const [reason, setReason] = useState('');
   const tooLong = reason.trim().length > REJECTION_REASON_MAX;
   return (
-    <Modal label="Reject participant" title={`Reject ${login}?`} onClose={onClose} tone="danger">
+    <Modal
+      label={t('projects.reject.label')}
+      title={t('projects.reject.title', { login })}
+      onClose={onClose}
+      tone="danger"
+    >
       <label className="field">
-        Reason (optional, shown to {login})
+        {t('projects.reject.reason', { login })}
         <textarea
           rows={3}
           maxLength={REJECTION_REASON_MAX}
@@ -54,18 +67,18 @@ function RejectDialog({
       </label>
       {tooLong && (
         <p className="error" role="alert">
-          The reason is limited to {REJECTION_REASON_MAX} characters.
+          {t('projects.reject.tooLong', { max: REJECTION_REASON_MAX })}
         </p>
       )}
-      {error && <p className="error">{error.message}</p>}
+      {error && <p className="error">{errorMessage(error)}</p>}
       <div className="modal-actions">
-        <button onClick={() => closeModal(onClose)}>Cancel</button>
+        <button onClick={() => closeModal(onClose)}>{t('common.actions.cancel')}</button>
         <button
           className="danger solid"
           disabled={pending || tooLong}
           onClick={() => onConfirm(reason.trim())}
         >
-          Confirm reject
+          {t('projects.reject.confirm')}
         </button>
       </div>
     </Modal>
@@ -73,6 +86,7 @@ function RejectDialog({
 }
 
 function ParticipantsApproval({ project }: { project: ProjectView }) {
+  const t = useT();
   const projectId = project.id;
   const qc = useQueryClient();
   const toast = useToast();
@@ -88,7 +102,11 @@ function ParticipantsApproval({ project }: { project: ProjectView }) {
       reason?: string;
     }) => decideParticipant(projectId, v.userId, v.decision, v.reason),
     onSuccess: (_r, v) => {
-      toast(v.decision === 'approve' ? `${v.login} approved` : `${v.login} rejected`);
+      toast(
+        v.decision === 'approve'
+          ? t('projects.approvals.approved', { login: v.login })
+          : t('projects.approvals.rejected', { login: v.login }),
+      );
       if (v.decision === 'reject') closeModal(() => setToReject(null));
       return refresh();
     },
@@ -98,7 +116,9 @@ function ParticipantsApproval({ project }: { project: ProjectView }) {
       undoRejection(projectId, v.userId, { to: v.to }),
     onSuccess: (_r, v) => {
       toast(
-        v.to === 'approved' ? `${v.login} approved` : `${v.login} is back in the pending requests`,
+        v.to === 'approved'
+          ? t('projects.approvals.approved', { login: v.login })
+          : t('projects.approvals.backPending', { login: v.login }),
       );
       return refresh();
     },
@@ -111,38 +131,44 @@ function ParticipantsApproval({ project }: { project: ProjectView }) {
   const rejectedRows = usePresence(rejected, (p) => p.user.id);
   return (
     <div className="subpanel">
-      <h3>Pending participants</h3>
+      <h3>{t('projects.approvals.heading')}</h3>
       {!project.requireParticipantApproval && (
-        <p className="hint">
-          Approval is off: new participants are active as soon as they join. You can still reject
-          them.
-        </p>
+        <p className="hint">{t('projects.approvals.approvalOff')}</p>
       )}
-      {q.error && <p className="error">{q.error.message}</p>}
-      {decide.error && !toReject && <p className="error">{decide.error.message}</p>}
-      {undo.error && <p className="error">{undo.error.message}</p>}
-      {q.isSuccess && pending?.length === 0 && <p className="hint">No pending requests.</p>}
+      {q.error && <p className="error">{errorMessage(q.error)}</p>}
+      {decide.error && !toReject && <p className="error">{errorMessage(decide.error)}</p>}
+      {undo.error && <p className="error">{errorMessage(undo.error)}</p>}
+      {q.isSuccess && pending?.length === 0 && (
+        <p className="hint">{t('projects.approvals.none')}</p>
+      )}
       <ul className="list">
         {rows.map(({ key, item: p, phase }) => (
           <li key={key} {...presenceProps(phase)}>
             <span className="who">
               <strong>{p.user.githubLogin}</strong>
-              <span className="badge">{p.participation.budgetPercent}%</span>
-              <span className="badge">{p.participation.mode}</span>
+              <span className="badge">
+                {t('projects.approvals.budget', { percent: p.participation.budgetPercent })}
+              </span>
+              <span className="badge">{t(MODE_LABEL[p.participation.mode])}</span>
               {p.participation.previouslyRejectedAt && (
                 <span
                   className="badge stop"
-                  title={`Rejected on ${formatDate(p.participation.previouslyRejectedAt)}`}
+                  title={t('projects.approvals.previouslyRejectedOn', {
+                    date: formatDate(p.participation.previouslyRejectedAt, {}),
+                  })}
                 >
-                  previously rejected
-                  {p.participation.rejectionReason ? ` (${p.participation.rejectionReason})` : ''}
+                  {p.participation.rejectionReason
+                    ? t('projects.approvals.previouslyRejectedReason', {
+                        reason: p.participation.rejectionReason,
+                      })
+                    : t('projects.approvals.previouslyRejected')}
                 </span>
               )}
             </span>
             <span className="row">
               <button
                 className="primary"
-                aria-label={`Approve ${p.user.githubLogin}`}
+                aria-label={t('projects.approvals.approveAria', { login: p.user.githubLogin })}
                 onClick={() =>
                   decide.mutate({
                     userId: p.user.id,
@@ -151,52 +177,52 @@ function ParticipantsApproval({ project }: { project: ProjectView }) {
                   })
                 }
               >
-                Approve
+                {t('projects.approvals.approve')}
               </button>
               <button
                 className="danger"
-                aria-label={`Reject ${p.user.githubLogin}`}
+                aria-label={t('projects.approvals.rejectAria', { login: p.user.githubLogin })}
                 onClick={() => {
                   decide.reset();
                   setToReject({ userId: p.user.id, login: p.user.githubLogin });
                 }}
               >
-                Reject
+                {t('projects.approvals.reject')}
               </button>
             </span>
           </li>
         ))}
       </ul>
-      {rejected.length > 0 && <h3>Rejected members</h3>}
+      {rejected.length > 0 && <h3>{t('projects.approvals.rejectedHeading')}</h3>}
       <ul className="list">
         {rejectedRows.map(({ key, item: p, phase }) => (
           <li key={key} {...presenceProps(phase)}>
             <span className="who">
               <strong>{p.user.githubLogin}</strong>
-              <span className="badge stop">rejected</span>
+              <span className="badge stop">{t('projects.approvals.rejectedBadge')}</span>
               {p.participation.rejectionReason && (
                 <span className="hint">{p.participation.rejectionReason}</span>
               )}
             </span>
             <span className="row">
               <button
-                aria-label={`Undo rejection of ${p.user.githubLogin}: back to pending`}
+                aria-label={t('projects.approvals.undoPendingAria', { login: p.user.githubLogin })}
                 disabled={undo.isPending}
                 onClick={() =>
                   undo.mutate({ userId: p.user.id, login: p.user.githubLogin, to: 'pending' })
                 }
               >
-                Undo: back to pending
+                {t('projects.approvals.undoPending')}
               </button>
               <button
                 className="primary"
-                aria-label={`Undo rejection of ${p.user.githubLogin}: approve`}
+                aria-label={t('projects.approvals.undoApproveAria', { login: p.user.githubLogin })}
                 disabled={undo.isPending}
                 onClick={() =>
                   undo.mutate({ userId: p.user.id, login: p.user.githubLogin, to: 'approved' })
                 }
               >
-                Undo: approve
+                {t('projects.approvals.undoApprove')}
               </button>
             </span>
           </li>
@@ -218,19 +244,20 @@ function ParticipantsApproval({ project }: { project: ProjectView }) {
 }
 
 export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView; phase?: Phase }) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const update = useMutation({
     mutationFn: (patch: UpdateProjectRequest) => updateProject(project.id, patch),
     onSuccess: () => {
-      toast(`${project.fullName} settings saved`);
+      toast(t('projects.card.saved', { name: project.fullName }));
       return qc.invalidateQueries({ queryKey: ['projects', 'mine'] });
     },
   });
   const remove = useMutation({
     mutationFn: () => deleteProject(project.id),
     onSuccess: () => {
-      toast(`${project.fullName} removed from orch`);
+      toast(t('projects.card.removed', { name: project.fullName }));
       // The repo picker caches `alreadyAdded` per repository: drop it so reopening the dialog
       // never flashes a removed repo as "Added" before the refetch lands.
       qc.removeQueries({ queryKey: ['repos'] });
@@ -251,23 +278,24 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
       <div className="card-head">
         <div className="row">
           <h2>{project.fullName}</h2>
-          {project.isPrivate && <span className="badge">private</span>}
+          {project.isPrivate && <span className="badge">{t('projects.card.private')}</span>}
         </div>
         <button
           className="danger"
           disabled={remove.isPending}
           onClick={() => {
-            if (window.confirm(`Remove ${project.fullName} from orch?`)) remove.mutate();
+            if (window.confirm(t('projects.card.removeConfirm', { name: project.fullName })))
+              remove.mutate();
           }}
         >
-          Remove
+          {t('projects.card.remove')}
         </button>
       </div>
-      {update.error && <p className="error">{update.error.message}</p>}
-      {remove.error && <p className="error">{remove.error.message}</p>}
+      {update.error && <p className="error">{errorMessage(update.error)}</p>}
+      {remove.error && <p className="error">{errorMessage(remove.error)}</p>}
       <div className="grid">
         <label className="field" htmlFor={`vis-${id}`}>
-          Visibility
+          {t('projects.card.visibility')}
           <select
             id={`vis-${id}`}
             value={project.visibility}
@@ -275,13 +303,13 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
               update.mutate({ visibility: e.target.value as ProjectView['visibility'] })
             }
           >
-            <option value="ALL_MEMBERS">All orch users on this server</option>
-            <option value="COLLABORATORS">Collaborators only</option>
-            <option value="ALLOWLIST">Allowlist only</option>
+            <option value="ALL_MEMBERS">{t('projects.card.allUsers')}</option>
+            <option value="COLLABORATORS">{t('projects.card.collaboratorsOnly')}</option>
+            <option value="ALLOWLIST">{t('projects.card.allowlistOnly')}</option>
           </select>
         </label>
         <div className="field">
-          <label htmlFor={`part-${id}`}>Who can participate</label>
+          <label htmlFor={`part-${id}`}>{t('projects.card.whoParticipate')}</label>
           <select
             aria-describedby={`part-help-${id}`}
             id={`part-${id}`}
@@ -292,16 +320,16 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
               })
             }
           >
-            <option value="GITHUB">GitHub collaborators</option>
-            <option value="ALLOWLIST">Allowlist</option>
-            <option value="ALL_MEMBERS">All orch users on this server</option>
+            <option value="GITHUB">{t('projects.card.githubCollaborators')}</option>
+            <option value="ALLOWLIST">{t('projects.card.allowlist')}</option>
+            <option value="ALL_MEMBERS">{t('projects.card.allUsers')}</option>
           </select>
           <span className="hint" id={`part-help-${id}`}>
-            {PARTICIPATE_HELP[project.whoCanParticipate]}
+            {t(PARTICIPATE_HELP[project.whoCanParticipate])}
           </span>
         </div>
         <label className="field" htmlFor={`sub-${id}`}>
-          Who can submit
+          {t('projects.card.whoSubmit')}
           <select
             id={`sub-${id}`}
             value={project.whoCanSubmit}
@@ -309,8 +337,8 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
               update.mutate({ whoCanSubmit: e.target.value as ProjectView['whoCanSubmit'] })
             }
           >
-            <option value="GITHUB">GitHub write access or more</option>
-            <option value="ALLOWLIST">Allowlist</option>
+            <option value="GITHUB">{t('projects.card.githubWrite')}</option>
+            <option value="ALLOWLIST">{t('projects.card.allowlist')}</option>
           </select>
         </label>
         <label className="field">
@@ -320,13 +348,13 @@ export function ProjectCard({ project, phase = 'idle' }: { project: ProjectView;
               checked={project.requireParticipantApproval}
               onChange={(e) => update.mutate({ requireParticipantApproval: e.target.checked })}
             />
-            Require participant approval
+            {t('projects.card.requireApproval')}
           </span>
-          <span className="hint">New participants stay pending until you approve them.</span>
+          <span className="hint">{t('projects.card.requireApprovalHint')}</span>
         </label>
       </div>
       <details className="tpl-details" onToggle={(e) => setTemplatesOpen(e.currentTarget.open)}>
-        <summary>Shared templates</summary>
+        <summary>{t('projects.card.sharedTemplates')}</summary>
         {templatesOpen && (
           <TemplatesManager scope="project" projectId={project.id} heading={false} />
         )}

@@ -7,10 +7,12 @@ import {
 } from '@orch/shared';
 import { useState } from 'react';
 import { createTemplate, deleteTemplate, fetchTemplates, updateTemplate } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { t as tg, useT } from '../i18n/index.ts';
 import { Modal, closeModal } from '../ui/Modal';
 import { presenceProps, usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
-import { SCOPE_LABEL } from './TemplatePicker';
+import { SCOPE_KEY } from './TemplatePicker';
 
 type Draft = {
   name: string;
@@ -25,7 +27,7 @@ type Draft = {
 };
 
 const draftOf = (t?: TaskTemplateView, copy = false): Draft => ({
-  name: t ? (copy ? `${t.name} (copy)` : t.name) : '',
+  name: t ? (copy ? tg('templates.editor.copyName', { name: t.name }) : t.name) : '',
   description: t?.description ?? '',
   titleTemplate: t?.titleTemplate ?? '',
   bodyTemplate: t?.bodyTemplate ?? '',
@@ -57,6 +59,7 @@ function TemplateEditor({
   seed?: TaskTemplateView;
   onClose: () => void;
 }) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [d, setD] = useState<Draft>(() => draftOf(editing ?? seed, !editing && !!seed));
@@ -83,24 +86,26 @@ function TemplateEditor({
         ? updateTemplate(editing.id, fields)
         : createTemplate({ ...fields, scope, ...(projectId ? { projectId } : {}) });
     },
-    onSuccess: async (t) => {
-      toast(`Template "${t.name}" saved`);
+    onSuccess: async (saved) => {
+      toast(t('templates.editor.saved', { name: saved.name }));
       await qc.invalidateQueries({ queryKey: ['templates'] });
       closeModal(onClose);
     },
   });
-  const [invalid, setInvalid] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState<
+    'templates.editor.nameRequired' | 'templates.editor.bodyRequired' | null
+  >(null);
   const submit = () => {
-    if (d.name.trim() === '') return setInvalid('Name is required.');
-    if (d.bodyTemplate.trim() === '') return setInvalid('Description text is required.');
+    if (d.name.trim() === '') return setInvalid('templates.editor.nameRequired');
+    if (d.bodyTemplate.trim() === '') return setInvalid('templates.editor.bodyRequired');
     setInvalid(null);
     save.mutate();
   };
-  const title = editing ? 'Edit template' : 'New template';
+  const title = editing ? t('templates.editor.titleEdit') : t('templates.editor.titleNew');
   return (
     <Modal label={title} title={title} onClose={onClose} wide>
       <label className="field">
-        Name
+        {t('templates.editor.name')}
         <input
           value={d.name}
           maxLength={TEMPLATE_LIMITS.name}
@@ -108,7 +113,7 @@ function TemplateEditor({
         />
       </label>
       <label className="field">
-        Short description (optional)
+        {t('templates.editor.description')}
         <input
           value={d.description}
           maxLength={TEMPLATE_LIMITS.description}
@@ -116,32 +121,36 @@ function TemplateEditor({
         />
       </label>
       <label className="field">
-        Title
+        {t('templates.editor.title')}
         <input
           value={d.titleTemplate}
-          placeholder="Upgrade {{package}} to {{version}}"
+          placeholder={t('templates.editor.titlePlaceholder', {
+            package: '{{package}}',
+            version: '{{version}}',
+          })}
           onChange={(e) => set('titleTemplate', e.target.value)}
         />
       </label>
       <label className="field">
-        Task description (Markdown)
+        {t('templates.editor.body')}
         <textarea
           className="mono"
           rows={9}
           value={d.bodyTemplate}
-          placeholder={'## Goal\n\nUpgrade `{{package}}` to `{{version}}`.'}
+          placeholder={t('templates.editor.bodyPlaceholder', {
+            package: '{{package}}',
+            version: '{{version}}',
+          })}
           onChange={(e) => set('bodyTemplate', e.target.value)}
         />
-        <span className="hint">
-          Write {'{{name}}'} where the author of a task fills in a value.
-        </span>
+        <span className="hint">{t('templates.editor.bodyHint', { slot: '{{name}}' })}</span>
       </label>
       <div className="tpl-slots" aria-live="polite">
         {names.length === 0 ? (
-          <span className="hint">No placeholder yet.</span>
+          <span className="hint">{t('templates.editor.noSlots')}</span>
         ) : (
           <>
-            <span className="hint">Fields to fill in:</span>
+            <span className="hint">{t('templates.editor.slots')}</span>
             {names.map((n) => (
               <mark key={n} className="slot" data-state="filled">{`{{${n}}}`}</mark>
             ))}
@@ -149,12 +158,12 @@ function TemplateEditor({
         )}
       </div>
       <label className="field">
-        Acceptance criteria (one per line)
+        {t('templates.editor.criteria')}
         <textarea rows={3} value={d.criteria} onChange={(e) => set('criteria', e.target.value)} />
       </label>
       <div className="form-grid">
         <label className="field">
-          Size
+          {t('templates.editor.size')}
           <select value={d.size} onChange={(e) => set('size', e.target.value as TaskSize)}>
             <option value="S">S</option>
             <option value="M">M</option>
@@ -162,7 +171,7 @@ function TemplateEditor({
           </select>
         </label>
         <label className="field">
-          Model
+          {t('templates.editor.model')}
           <select value={d.model} onChange={(e) => set('model', e.target.value as Draft['model'])}>
             <option value="SONNET">sonnet</option>
             <option value="OPUS">opus</option>
@@ -170,23 +179,23 @@ function TemplateEditor({
         </label>
       </div>
       <label className="field">
-        GitHub labels (comma separated, up to {TEMPLATE_LIMITS.labels})
+        {t('templates.editor.labels', { max: TEMPLATE_LIMITS.labels })}
         <input value={d.labels} onChange={(e) => set('labels', e.target.value)} />
       </label>
       <label className="check-line">
         <input type="checkbox" checked={d.ask} onChange={(e) => set('ask', e.target.checked)} />
-        Remind to pick dependencies
+        {t('templates.editor.askDependencies')}
       </label>
       {invalid && (
         <p className="error" role="alert">
-          {invalid}
+          {t(invalid)}
         </p>
       )}
-      {save.error && <p className="error">{save.error.message}</p>}
+      {save.error && <p className="error">{errorMessage(save.error)}</p>}
       <div className="modal-actions">
-        <button onClick={() => closeModal(onClose)}>Cancel</button>
+        <button onClick={() => closeModal(onClose)}>{t('common.actions.cancel')}</button>
         <button className="primary" disabled={save.isPending} onClick={submit}>
-          Save template
+          {t('templates.editor.save')}
         </button>
       </div>
     </Modal>
@@ -214,6 +223,7 @@ export function TemplatesManager({
   /** Show the section title (hidden when the parent already provides one). */
   heading?: boolean;
 }) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -222,62 +232,62 @@ export function TemplatesManager({
     queryFn: () => fetchTemplates(projectId),
   });
   const remove = useMutation({
-    mutationFn: (t: TaskTemplateView) => deleteTemplate(t.id),
-    onSuccess: async (_r, t) => {
-      toast(`Template "${t.name}" deleted`);
+    mutationFn: (tpl: TaskTemplateView) => deleteTemplate(tpl.id),
+    onSuccess: async (_r, tpl) => {
+      toast(t('templates.manager.deleted', { name: tpl.name }));
       closeModal(() => setDialog(null));
       await qc.invalidateQueries({ queryKey: ['templates'] });
     },
   });
-  const mine = templates.data?.filter((t) => t.scope === scope);
-  const builtins = templates.data?.filter((t) => t.scope === 'builtin') ?? [];
-  const list = usePresence(mine, (t) => t.id);
+  const mine = templates.data?.filter((x) => x.scope === scope);
+  const builtins = templates.data?.filter((x) => x.scope === 'builtin') ?? [];
+  const list = usePresence(mine, (x) => x.id);
   const close = () => setDialog(null);
   const projectScope = scope === 'project';
 
   return (
     <section
       className="tpl-manager"
-      aria-label={projectScope ? 'Shared templates' : 'My templates'}
+      aria-label={projectScope ? t('templates.manager.shared') : t('templates.manager.mine')}
     >
       <div className={heading ? 'section-title' : 'tpl-actions'}>
-        {heading && <h2>{projectScope ? 'Shared templates' : 'My templates'}</h2>}
+        {heading && (
+          <h2>{projectScope ? t('templates.manager.shared') : t('templates.manager.mine')}</h2>
+        )}
         {canManage && (
           <button className="primary" onClick={() => setDialog({ kind: 'new' })}>
-            New template
+            {t('templates.manager.new')}
           </button>
         )}
       </div>
       <p className="hint">
-        {projectScope
-          ? 'Everyone who can submit to this project can start a task from these. Only you can change them.'
-          : 'Skeletons for work you repeat. Only you see them. The built-ins below can be copied and adapted.'}
+        {projectScope ? t('templates.manager.hintShared') : t('templates.manager.hintMine')}
       </p>
-      {templates.isPending && <p className="hint">Loading templates...</p>}
-      {templates.error && <p className="error">{templates.error.message}</p>}
+      {templates.isPending && <p className="hint">{t('templates.manager.loading')}</p>}
+      {templates.error && <p className="error">{errorMessage(templates.error)}</p>}
       {templates.isSuccess && mine?.length === 0 && (
         <p className="empty">
-          <strong>No template yet.</strong>{' '}
-          {canManage
-            ? 'Create one, or copy a built-in to start from a good base.'
-            : 'The project owner has not shared any.'}
+          <strong>{t('templates.manager.emptyTitle')}</strong>{' '}
+          {canManage ? t('templates.manager.emptyCanManage') : t('templates.manager.emptyReadOnly')}
         </p>
       )}
       <ul className="tpl-items">
-        {list.map(({ key, item: t, phase }) => (
+        {list.map(({ key, item: tpl, phase }) => (
           <TemplateItem
             key={key}
-            t={t}
+            t={tpl}
             phase={phase}
             actions={
               canManage ? (
                 <>
-                  <button onClick={() => setDialog({ kind: 'edit', template: t })}>Edit</button>
+                  <button onClick={() => setDialog({ kind: 'edit', template: tpl })}>
+                    {t('common.actions.edit')}
+                  </button>
                   <button
                     className="danger"
-                    onClick={() => setDialog({ kind: 'delete', template: t })}
+                    onClick={() => setDialog({ kind: 'delete', template: tpl })}
                   >
-                    Delete
+                    {t('common.actions.delete')}
                   </button>
                 </>
               ) : null
@@ -287,15 +297,15 @@ export function TemplatesManager({
       </ul>
       {!projectScope && builtins.length > 0 && (
         <details className="tpl-builtins">
-          <summary>Built-in templates ({builtins.length})</summary>
+          <summary>{t('templates.manager.builtins', { count: builtins.length })}</summary>
           <ul className="tpl-items">
-            {builtins.map((t) => (
+            {builtins.map((tpl) => (
               <TemplateItem
-                key={t.id}
-                t={t}
+                key={tpl.id}
+                t={tpl}
                 actions={
-                  <button onClick={() => setDialog({ kind: 'new', seed: t })}>
-                    Copy to my templates
+                  <button onClick={() => setDialog({ kind: 'new', seed: tpl })}>
+                    {t('templates.manager.copyToMine')}
                   </button>
                 }
               />
@@ -316,25 +326,26 @@ export function TemplatesManager({
       )}
       {dialog?.kind === 'delete' && (
         <Modal
-          label="Delete template"
-          title={`Delete "${dialog.template.name}"?`}
+          label={t('templates.manager.deleteLabel')}
+          title={t('templates.manager.deleteTitle', { name: dialog.template.name })}
           onClose={close}
           closeButton={false}
           tone="danger"
         >
           <p>
-            Tasks already created from it are not affected.
-            {projectScope && ' Members of the project will no longer see it.'}
+            {projectScope
+              ? t('templates.manager.deleteNoteShared')
+              : t('templates.manager.deleteNote')}
           </p>
-          {remove.error && <p className="error">{remove.error.message}</p>}
+          {remove.error && <p className="error">{errorMessage(remove.error)}</p>}
           <div className="modal-actions">
-            <button onClick={() => closeModal(close)}>Cancel</button>
+            <button onClick={() => closeModal(close)}>{t('common.actions.cancel')}</button>
             <button
               className="danger solid"
               disabled={remove.isPending}
               onClick={() => remove.mutate(dialog.template)}
             >
-              Delete template
+              {t('templates.manager.deleteLabel')}
             </button>
           </div>
         </Modal>
@@ -352,6 +363,7 @@ function TemplateItem({
   actions: React.ReactNode;
   phase?: 'idle' | 'enter' | 'exit';
 }) {
+  const tr = useT();
   return (
     <li className="tpl-item" {...presenceProps(phase)}>
       <span className="lamp" data-scope={t.scope} aria-hidden="true" />
@@ -359,9 +371,9 @@ function TemplateItem({
         <strong>{t.name}</strong>
         {t.description && <span className="hint">{t.description}</span>}
         <span className="tpl-item-tags">
-          <span className="tag">{SCOPE_LABEL[t.scope]}</span>
+          <span className="tag">{tr(SCOPE_KEY[t.scope])}</span>
           <span className="tag">
-            size {t.size} / {t.model.toLowerCase()}
+            {tr('templates.manager.sizeModel', { size: t.size, model: t.model.toLowerCase() })}
           </span>
           {t.placeholders.map((p) => (
             <span key={p} className="tag">{`{{${p}}}`}</span>

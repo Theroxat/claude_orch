@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mockApi, renderApp } from '../test/helpers';
+import { mockApi, renderApp, switchToFrench } from '../test/helpers';
 
 const qs = 'response_type=code&client_id=c1&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcb&state=s';
 const params = {
@@ -92,5 +92,15 @@ describe('OAuth consent page', () => {
     expect(await screen.findByText('Authorization request rejected')).toBeTruthy();
     expect(screen.getByText('Bad redirect')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  });
+
+  it('is translated in French', async () => {
+    await switchToFrench();
+    mockApi({ ['GET /oauth/consent?' + qs]: () => ({ json: info }) });
+    renderApp('/oauth/consent?' + qs);
+    expect(await screen.findByRole('heading', { name: 'Autoriser Claude Code' })).toBeTruthy();
+    expect(screen.getByText(/veut utiliser les outils MCP d’orch/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approuver' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refuser' })).toBeTruthy();
   });
 });

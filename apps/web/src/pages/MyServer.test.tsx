@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mockApi, me, renderApp } from '../test/helpers';
+import { mockApi, me, renderApp, switchToFrench } from '../test/helpers';
 
 const agent = (over: Record<string, unknown> = {}) => ({
   id: 'a1',
@@ -254,5 +254,22 @@ describe('My server', () => {
       'Claude login expired: run orch login',
     );
     expect(within(card).queryByText('Claude: connected')).toBeNull();
+  });
+
+  it('renders in French', async () => {
+    await switchToFrench();
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /agents/mine': () => ({ json: [agent({ paused: true })] }),
+    });
+    renderApp('/my-server');
+    expect(await screen.findByRole('heading', { name: 'Mon serveur' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Générer la commande d’installation' })).toBeTruthy();
+    const card = await screen.findByRole('article', { name: 'laptop' });
+    expect(within(card).getByText('En ligne')).toBeTruthy();
+    expect(within(card).getByText('Dernière activité il y a 5 min')).toBeTruthy();
+    expect(within(card).getByRole('switch', { name: 'Mettre laptop en pause' })).toBeTruthy();
+    expect(within(card).getByText('Reprendre')).toBeTruthy();
+    expect(card.textContent).toMatch(/≈ 12\s345 jetons dans la fenêtre de 5\sh/);
   });
 });

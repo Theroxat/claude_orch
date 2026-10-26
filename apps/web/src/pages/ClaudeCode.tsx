@@ -4,7 +4,7 @@ import {
   type OAuthGrantView,
   type PersonalTokenView,
 } from '@orch/shared';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { createToken, fetchTokens, revokeToken } from '../api/endpoints';
 import { CopyButton } from '../components/CopyButton';
@@ -13,19 +13,19 @@ import { relative } from '../time';
 import { Modal, closeModal } from '../ui/Modal';
 import { presenceProps, usePresence, type Phase } from '../ui/presence';
 import { useToast } from '../ui/Toast';
+import { t, useRich, useT } from '../i18n/index.ts';
+import { errorMessage } from '../i18n/errors.ts';
 
 const KEY = ['tokens'];
 const GRANTS_KEY = ['oauth-grants'];
 
-const TOOLS: [string, string][] = [
-  ['view_pool', 'See who is in the pool, their availability and estimated margin.'],
-  ['list_tasks', 'List tasks of your projects, optionally filtered by project or status.'],
-  ['submit_task', 'Create tasks (GitHub issues) and send them to the pool, members or everyone.'],
-  ['take_task', 'Take a task for yourself so your agent runs it.'],
-  ['task_status', 'Check the status of one task (progress, pull request).'],
-];
+const TOOLS = ['view_pool', 'list_tasks', 'submit_task', 'take_task', 'task_status'] as const;
+
+const code = (c: ReactNode) => <code>{c}</code>;
 
 function CreateTokenCard() {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const [name, setName] = useState('');
   const [days, setDays] = useState('');
@@ -43,18 +43,16 @@ function CreateTokenCard() {
   });
   const data = create.data;
   return (
-    <section className="card" aria-label="Create a token">
-      <h3>Create a personal access token</h3>
-      <p className="hint">
-        Create a personal token, then run the generated <code>claude mcp add</code> command.
-      </p>
+    <section className="card" aria-label={t('claudeCode.create.label')}>
+      <h3>{t('claudeCode.create.title')}</h3>
+      <p className="hint">{rich('claudeCode.create.hint', { code })}</p>
       <div className="form-grid">
         <label className="field">
-          Token name
+          {t('claudeCode.create.name')}
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="field">
-          Expires in days (optional)
+          {t('claudeCode.create.days')}
           <input
             type="number"
             min={1}
@@ -70,14 +68,14 @@ function CreateTokenCard() {
           disabled={create.isPending || name.trim() === ''}
           onClick={() => create.mutate()}
         >
-          Create token
+          {t('claudeCode.create.submit')}
         </button>
       </div>
-      {create.error && <p className="error">{create.error.message}</p>}
+      {create.error && <p className="error">{errorMessage(create.error)}</p>}
       {data && (
         <div className="install-result reveal" key={data.mcpAddCommand}>
           <div className="warning" role="alert">
-            Shown once: this command contains your token. Copy it now, it cannot be displayed again.
+            {t('claudeCode.create.shownOnce')}
           </div>
           <pre className="code" data-testid="mcp-command">
             {data.mcpAddCommand}
@@ -92,25 +90,26 @@ function CreateTokenCard() {
 }
 
 function ConnectCard() {
+  const t = useT();
+  const rich = useRich();
   return (
-    <section className="card" aria-label="Connect Claude Code">
-      <h2>Connect Claude Code</h2>
+    <section className="card" aria-label={t('claudeCode.connect.label')}>
+      <h2>{t('claudeCode.connect.title')}</h2>
       <ol className="steps">
         <li>
-          Run this command in your terminal:
+          {t('claudeCode.connect.step1')}
           <McpCommand />
         </li>
-        <li>
-          In Claude Code, run <code>/mcp</code>, choose <code>orch</code>, then Authenticate.
-        </li>
-        <li>Your browser opens: sign in with GitHub and approve. Done.</li>
+        <li>{rich('claudeCode.connect.step2', { code })}</li>
+        <li>{t('claudeCode.connect.step3')}</li>
       </ol>
-      <p className="hint">No token to copy: access is granted through your GitHub sign-in.</p>
+      <p className="hint">{t('claudeCode.connect.hint')}</p>
     </section>
   );
 }
 
 function ConnectedApps() {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [toRevoke, setToRevoke] = useState<OAuthGrantView | null>(null);
@@ -121,7 +120,7 @@ function ConnectedApps() {
   const revoke = useMutation({
     mutationFn: (g: OAuthGrantView) => api<unknown>('DELETE', `/oauth/grants/${g.id}`),
     onSuccess: async (_r, g) => {
-      toast(`${g.clientName} access revoked`);
+      toast(t('claudeCode.apps.revoked', { name: g.clientName }));
       closeModal(() => setToRevoke(null));
       await qc.invalidateQueries({ queryKey: GRANTS_KEY });
     },
@@ -130,18 +129,18 @@ function ConnectedApps() {
   return (
     <>
       <div className="section-title">
-        <h2>Connected apps</h2>
+        <h2>{t('claudeCode.apps.title')}</h2>
       </div>
-      {grants.isPending && <p className="hint">Loading apps...</p>}
-      {grants.error && <p className="error">{grants.error.message}</p>}
+      {grants.isPending && <p className="hint">{t('claudeCode.page.loadingApps')}</p>}
+      {grants.error && <p className="error">{errorMessage(grants.error)}</p>}
       {grants.isSuccess && grants.data.length === 0 && (
-        <p className="hint">No connected app yet.</p>
+        <p className="hint">{t('claudeCode.apps.empty')}</p>
       )}
       {apps.map(({ key, item: g, phase }) => (
         <article
           key={key}
           className="card list-card"
-          aria-label={`App ${g.clientName}`}
+          aria-label={t('claudeCode.apps.label', { name: g.clientName })}
           {...presenceProps(phase)}
         >
           <div>
@@ -150,33 +149,39 @@ function ConnectedApps() {
               <span className="tag">{g.redirectHost}</span>
             </div>
             <div className="agent-meta">
-              <span>Authorized {relative(g.createdAt)}</span>
-              <span>Last used {when(g.lastUsedAt, 'never')}</span>
+              <span>{t('claudeCode.apps.authorized', { when: relative(g.createdAt) })}</span>
+              <span>
+                {t('claudeCode.apps.lastUsed', {
+                  when: g.lastUsedAt ? relative(g.lastUsedAt) : t('claudeCode.page.never'),
+                })}
+              </span>
             </div>
           </div>
           <button className="danger" onClick={() => setToRevoke(g)}>
-            Revoke
+            {t('claudeCode.apps.revoke')}
           </button>
         </article>
       ))}
       {toRevoke && (
         <Modal
-          label="Revoke access"
-          title={`Revoke ${toRevoke.clientName}?`}
+          label={t('claudeCode.apps.revokeLabel')}
+          title={t('claudeCode.apps.revokeTitle', { name: toRevoke.clientName })}
           onClose={() => setToRevoke(null)}
           closeButton={false}
           tone="danger"
         >
-          <p>This app will lose access immediately and must be authorized again.</p>
-          {revoke.error && <p className="error">{revoke.error.message}</p>}
+          <p>{t('claudeCode.apps.revokeBody')}</p>
+          {revoke.error && <p className="error">{errorMessage(revoke.error)}</p>}
           <div className="modal-actions">
-            <button onClick={() => closeModal(() => setToRevoke(null))}>Cancel</button>
+            <button onClick={() => closeModal(() => setToRevoke(null))}>
+              {t('common.actions.cancel')}
+            </button>
             <button
               className="danger solid"
               disabled={revoke.isPending}
               onClick={() => revoke.mutate(toRevoke)}
             >
-              Confirm revoke
+              {t('claudeCode.apps.confirm')}
             </button>
           </div>
         </Modal>
@@ -185,45 +190,46 @@ function ConnectedApps() {
   );
 }
 
-function when(iso: string | null, empty: string): string {
-  return iso ? relative(iso) : empty;
+function when(iso: string | null): string {
+  return iso ? relative(iso) : t('claudeCode.page.never');
 }
 
 function TokenRow({
-  t,
+  token,
   onRevoke,
   phase,
 }: {
-  t: PersonalTokenView;
+  token: PersonalTokenView;
   onRevoke: (t: PersonalTokenView) => void;
   phase: Phase;
 }) {
-  const revoked = t.revokedAt !== null;
+  const t = useT();
+  const revoked = token.revokedAt !== null;
   return (
     <article
       className={`card list-card${revoked ? ' token-revoked' : ''}`}
-      aria-label={`Token ${t.name}`}
+      aria-label={t('claudeCode.tokens.label', { name: token.name })}
       {...presenceProps(phase)}
     >
       <div>
         <div className="row">
-          <strong>{t.name}</strong>
-          <code>{t.prefix}...</code>
+          <strong>{token.name}</strong>
+          <code>{token.prefix}...</code>
           {revoked ? (
-            <span className="badge stop">Revoked</span>
+            <span className="badge stop">{t('claudeCode.tokens.revoked')}</span>
           ) : (
-            <span className="badge ok">Active</span>
+            <span className="badge ok">{t('claudeCode.tokens.active')}</span>
           )}
         </div>
         <div className="agent-meta">
-          <span>Created {relative(t.createdAt)}</span>
-          <span>Last used {when(t.lastUsedAt, 'never')}</span>
-          <span>Expires {when(t.expiresAt, 'never')}</span>
+          <span>{t('claudeCode.tokens.created', { when: relative(token.createdAt) })}</span>
+          <span>{t('claudeCode.tokens.lastUsed', { when: when(token.lastUsedAt) })}</span>
+          <span>{t('claudeCode.tokens.expires', { when: when(token.expiresAt) })}</span>
         </div>
       </div>
       {!revoked && (
-        <button className="danger" onClick={() => onRevoke(t)}>
-          Revoke
+        <button className="danger" onClick={() => onRevoke(token)}>
+          {t('claudeCode.tokens.revoke')}
         </button>
       )}
     </article>
@@ -231,14 +237,16 @@ function TokenRow({
 }
 
 export function ClaudeCode() {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const toast = useToast();
   const [toRevoke, setToRevoke] = useState<PersonalTokenView | null>(null);
   const tokens = useQuery({ queryKey: KEY, queryFn: fetchTokens });
   const revoke = useMutation({
-    mutationFn: (t: PersonalTokenView) => revokeToken(t.id),
-    onSuccess: async (_r, t) => {
-      toast(`${t.name} token revoked`);
+    mutationFn: (tok: PersonalTokenView) => revokeToken(tok.id),
+    onSuccess: async (_r, tok) => {
+      toast(t('claudeCode.tokens.revokedToast', { name: tok.name }));
       closeModal(() => setToRevoke(null));
       await qc.invalidateQueries({ queryKey: KEY });
     },
@@ -249,24 +257,19 @@ export function ClaudeCode() {
       <header className="page-head">
         <div>
           <h1>Claude Code</h1>
-          <p className="lede">
-            Connect Claude Code to orch over MCP, so it can read the pool and send tasks for you.
-          </p>
+          <p className="lede">{t('claudeCode.page.lede')}</p>
         </div>
       </header>
       <div className="split">
         <ConnectCard />
-        <section className="card" aria-label="How to use">
-          <h2>How to use</h2>
-          <p>
-            Once connected, ask Claude Code things like: &quot;split this feature into tasks and
-            send them to the orch pool&quot;.
-          </p>
+        <section className="card" aria-label={t('claudeCode.usage.label')}>
+          <h2>{t('claudeCode.usage.title')}</h2>
+          <p>{t('claudeCode.usage.intro')}</p>
           <ul className="tools">
-            {TOOLS.map(([n, d]) => (
+            {TOOLS.map((n) => (
               <li key={n}>
                 <code>{n}</code>
-                <span>{d}</span>
+                <span>{t(`claudeCode.tools.${n}`)}</span>
               </li>
             ))}
           </ul>
@@ -274,38 +277,45 @@ export function ClaudeCode() {
       </div>
       <ConnectedApps />
       <div className="section-title">
-        <h2>Personal access tokens for scripts</h2>
+        <h2>{t('claudeCode.tokens.title')}</h2>
       </div>
       <p className="hint">
-        For scripts and CI, use a personal access token (<code>orch_pat_...</code>) with the{' '}
-        <code>--header &quot;Authorization: Bearer ...&quot;</code> form of the command.
+        {rich(
+          'claudeCode.tokens.hint',
+          { code },
+          { prefix: 'orch_pat_...', header: '--header "Authorization: Bearer ..."' },
+        )}
       </p>
       <CreateTokenCard />
-      <h3>My tokens</h3>
-      {tokens.isPending && <p className="hint">Loading tokens...</p>}
-      {tokens.error && <p className="error">{tokens.error.message}</p>}
-      {tokens.isSuccess && tokens.data.length === 0 && <p className="hint">No token yet.</p>}
+      <h3>{t('claudeCode.tokens.mine')}</h3>
+      {tokens.isPending && <p className="hint">{t('claudeCode.page.loadingTokens')}</p>}
+      {tokens.error && <p className="error">{errorMessage(tokens.error)}</p>}
+      {tokens.isSuccess && tokens.data.length === 0 && (
+        <p className="hint">{t('claudeCode.tokens.empty')}</p>
+      )}
       {rows.map(({ key, item, phase }) => (
-        <TokenRow key={key} t={item} onRevoke={setToRevoke} phase={phase} />
+        <TokenRow key={key} token={item} onRevoke={setToRevoke} phase={phase} />
       ))}
       {toRevoke && (
         <Modal
-          label="Revoke token"
-          title={`Revoke ${toRevoke.name}?`}
+          label={t('claudeCode.tokens.revokeLabel')}
+          title={t('claudeCode.tokens.revokeTitle', { name: toRevoke.name })}
           onClose={() => setToRevoke(null)}
           closeButton={false}
           tone="danger"
         >
-          <p>Claude Code sessions using this token will lose access immediately.</p>
-          {revoke.error && <p className="error">{revoke.error.message}</p>}
+          <p>{t('claudeCode.tokens.revokeBody')}</p>
+          {revoke.error && <p className="error">{errorMessage(revoke.error)}</p>}
           <div className="modal-actions">
-            <button onClick={() => closeModal(() => setToRevoke(null))}>Cancel</button>
+            <button onClick={() => closeModal(() => setToRevoke(null))}>
+              {t('common.actions.cancel')}
+            </button>
             <button
               className="danger solid"
               disabled={revoke.isPending}
               onClick={() => revoke.mutate(toRevoke)}
             >
-              Confirm revoke
+              {t('claudeCode.tokens.confirm')}
             </button>
           </div>
         </Modal>

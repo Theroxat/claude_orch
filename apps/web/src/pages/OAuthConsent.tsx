@@ -3,6 +3,8 @@ import { OAuthConsentInfoSchema, OAuthConsentResultSchema } from '@orch/shared';
 import { useRef } from 'react';
 import { useLocation } from 'react-router';
 import { ApiError, api } from '../api/client';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT } from '../i18n/index.ts';
 import { Brand } from '../ui/Brand';
 
 const KEYS = [
@@ -17,6 +19,8 @@ const KEYS = [
 ] as const;
 
 export function OAuthConsent() {
+  const t = useT();
+  const rich = useRich();
   const { search } = useLocation();
   const sp = new URLSearchParams(search);
   const params: Record<string, string> = {};
@@ -64,10 +68,10 @@ export function OAuthConsent() {
   if (info.error) {
     return (
       <div className="gate">
-        <section className="card consent" aria-label="Authorize application">
+        <section className="card consent" aria-label={t('auth.consent.ariaLabel')}>
           <Brand />
-          <h2>Authorization request rejected</h2>
-          <p className="error">{info.error.message}</p>
+          <h2>{t('auth.consent.rejected')}</h2>
+          <p className="error">{errorMessage(info.error)}</p>
         </section>
       </div>
     );
@@ -75,8 +79,8 @@ export function OAuthConsent() {
   if (!info.data) {
     return (
       <div className="gate">
-        <section className="card consent" aria-label="Authorize application">
-          <p className="hint">Loading...</p>
+        <section className="card consent" aria-label={t('auth.consent.ariaLabel')}>
+          <p className="hint">{t('common.status.loading')}</p>
         </section>
       </div>
     );
@@ -86,22 +90,24 @@ export function OAuthConsent() {
   const busy = decide.isPending || decide.isSuccess;
   return (
     <div className="gate">
-      <section className="card consent" aria-label="Authorize application">
+      <section className="card consent" aria-label={t('auth.consent.ariaLabel')}>
         <Brand />
-        <h2>Authorize {d.clientName}</h2>
+        <h2>{t('auth.consent.title', { client: d.clientName })}</h2>
         <p>
-          <strong>{d.clientName}</strong> (redirect to <code>{d.redirectHost}</code>) wants to use
-          orch&apos;s MCP tools (view the pool, list, submit and take tasks) as{' '}
-          <strong>{d.login}</strong>.
+          {rich(
+            'auth.consent.body',
+            { strong: (c) => <strong>{c}</strong>, code: (c) => <code>{c}</code> },
+            { client: d.clientName, host: d.redirectHost, login: d.login },
+          )}
         </p>
-        <p className="warning">Only approve if you just started this from Claude Code.</p>
-        {decide.error && <p className="error">{decide.error.message}</p>}
+        <p className="warning">{t('auth.consent.warning')}</p>
+        {decide.error && <p className="error">{errorMessage(decide.error)}</p>}
         <div className="card-foot">
           <button className="primary" disabled={busy} onClick={() => decideOnce(true)}>
-            Approve
+            {t('auth.consent.approve')}
           </button>
           <button disabled={busy} onClick={() => decideOnce(false)}>
-            Deny
+            {t('auth.consent.deny')}
           </button>
         </div>
       </section>

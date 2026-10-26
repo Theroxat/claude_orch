@@ -3,6 +3,8 @@ import { useState } from 'react';
 import type { ApiParticipationMode, DiscoverItem } from '@orch/shared';
 import type { QueryKey } from '@tanstack/react-query';
 import { putParticipation } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { useT } from '../i18n/index.ts';
 import { useChangeCount } from '../ui/presence';
 import { useToast } from '../ui/Toast';
 
@@ -13,16 +15,17 @@ export function validateBudget(raw: string): number | null {
 }
 
 function CannotParticipate({ item }: { item: DiscoverItem }) {
+  const t = useT();
   const { fullName } = item.project;
   const owner = item.owner.githubLogin;
   const reason = item.cannotParticipateReason;
   return (
     <p className="hint" role="note">
       {reason === 'NOT_GITHUB_COLLABORATOR'
-        ? `Only GitHub collaborators of ${fullName} can join. Ask the owner (${owner}) to either add you as a collaborator on GitHub, or set 'Who can participate' to 'All orch users on this server' in Projects.`
+        ? t('projects.form.cannotCollaborator', { name: fullName, owner })
         : reason === 'BLOCKED_BY_OWNER'
-          ? `The owner (${owner}) has blocked you from joining ${fullName}. Ask them to change this in Projects.`
-          : `Only people on the allowlist of ${fullName} can join. Ask the owner (${owner}) to allow you, or set 'Who can participate' to 'All orch users on this server' in Projects.`}
+          ? t('projects.form.cannotBlocked', { name: fullName, owner })
+          : t('projects.form.cannotAllowlist', { name: fullName, owner })}
     </p>
   );
 }
@@ -44,6 +47,7 @@ export function ParticipationForm(props: FormProps) {
 }
 
 function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const p = item.myParticipation;
@@ -60,7 +64,7 @@ function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
       mode: ApiParticipationMode;
     }) => putParticipation(id, v),
     onSuccess: () => {
-      toast(`Participation in ${item.project.fullName} saved`);
+      toast(t('projects.form.saved', { name: item.project.fullName }));
       return Promise.all(
         [['projects', 'discover'], ...invalidateKeys].map((queryKey) =>
           qc.invalidateQueries({ queryKey }),
@@ -87,27 +91,33 @@ function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
             checked={participating}
             onChange={(e) => setParticipating(e.target.checked)}
           />
-          Participate
+          {t('projects.form.participate')}
         </label>
         <span key={statusChanges} className="row" data-changed={statusChanges > 0 || undefined}>
-          {p?.status === 'pending' && <span className="badge pending">Pending owner approval</span>}
-          {p?.status === 'active' && <span className="badge ok">Active</span>}
-          {p?.status === 'rejected' && <span className="badge stop">Rejected by owner</span>}
+          {p?.status === 'pending' && (
+            <span className="badge pending">{t('projects.form.pendingApproval')}</span>
+          )}
+          {p?.status === 'active' && <span className="badge ok">{t('projects.form.active')}</span>}
+          {p?.status === 'rejected' && (
+            <span className="badge stop">{t('projects.form.rejectedByOwner')}</span>
+          )}
         </span>
       </div>
       {p?.status === 'rejected' && (
         <p className="hint" role="note">
-          {p.rejectionReason ? `Owner's reason: ${p.rejectionReason}` : 'The owner gave no reason.'}{' '}
-          Saving with Participate checked asks again.
+          {p.rejectionReason
+            ? t('projects.form.ownerReason', { reason: p.rejectionReason })
+            : t('projects.form.noReason')}{' '}
+          {t('projects.form.askAgain')}
         </p>
       )}
       <div className="grid">
         <div className="field">
-          <label htmlFor={`budget-${id}`}>Budget (% of my Claude capacity)</label>
+          <label htmlFor={`budget-${id}`}>{t('projects.form.budget')}</label>
           <div className="budget">
             <input
               type="range"
-              aria-label="Budget slider"
+              aria-label={t('projects.form.budgetSlider')}
               min={0}
               max={100}
               value={parsed ?? 0}
@@ -125,12 +135,12 @@ function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
           </div>
           {(touched || invalid) && invalid && (
             <span className="error" role="alert">
-              Budget must be a whole number between 0 and 100.
+              {t('projects.form.budgetInvalid')}
             </span>
           )}
         </div>
         <fieldset className="field">
-          <legend>Mode</legend>
+          <legend>{t('projects.form.mode')}</legend>
           <label className="radio">
             <input
               type="radio"
@@ -138,8 +148,8 @@ function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
               checked={mode === 'auto'}
               onChange={() => setMode('auto')}
             />{' '}
-            <strong>Auto</strong>
-            <span className="hint">Tasks start on my machine without asking me.</span>
+            <strong>{t('projects.form.auto')}</strong>
+            <span className="hint">{t('projects.form.autoHint')}</span>
           </label>
           <label className="radio">
             <input
@@ -148,17 +158,15 @@ function ParticipationFields({ item, title, invalidateKeys = [] }: FormProps) {
               checked={mode === 'approval'}
               onChange={() => setMode('approval')}
             />{' '}
-            <strong>Approval</strong>
-            <span className="hint">
-              I approve each request before anything runs. Recommended to start.
-            </span>
+            <strong>{t('projects.form.approval')}</strong>
+            <span className="hint">{t('projects.form.approvalHint')}</span>
           </label>
         </fieldset>
       </div>
-      {save.error && <p className="error">{save.error.message}</p>}
+      {save.error && <p className="error">{errorMessage(save.error)}</p>}
       <div className="card-foot">
         <button className="primary" type="submit" disabled={save.isPending || invalid}>
-          Save
+          {t('common.actions.save')}
         </button>
       </div>
     </form>

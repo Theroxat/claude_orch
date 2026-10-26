@@ -6,6 +6,7 @@ import {
   useRef,
   type ReactNode,
 } from 'react';
+import { useT } from '../i18n/index.ts';
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -35,6 +36,7 @@ export function Modal({
   side?: boolean;
   children: ReactNode;
 }) {
+  const t = useT();
   const panel = useRef<HTMLDivElement>(null);
   const close = () => startTransition(onClose);
   const onKey = useEffectEvent((e: KeyboardEvent) => {
@@ -91,7 +93,7 @@ export function Modal({
             <h2>{title}</h2>
             {closeButton && (
               <button type="button" className="ghost" onClick={close}>
-                Close
+                {t('common.actions.close')}
               </button>
             )}
           </header>
