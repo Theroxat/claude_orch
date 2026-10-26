@@ -24,7 +24,7 @@ import { startControlServer, type ControlServer } from './control/server';
 import { ClaudeAuthState } from './claude-auth';
 import type { ClaudeCheckOutcome } from './claude-check';
 import { InboundDedup } from './dedup';
-import { errorMessage, type Logger } from './log';
+import { agentSecrets, errorMessage, type Logger } from './log';
 import { Outbox } from './outbox';
 import { PauseState } from './pause';
 import { UsageLoop, type UsageSource } from './usage-loop';
@@ -145,6 +145,7 @@ export class Agent {
   constructor(private readonly opts: AgentOptions) {
     this.log = opts.logger;
     this.agentId = opts.agentId;
+    agentSecrets.add('agent', [opts.credential]);
     this.claudeAuth = new ClaudeAuthState(opts.dataDir);
     this.pause = new PauseState(join(opts.dataDir, 'state.json'));
     this.outbox = new Outbox(join(opts.dataDir, 'outbox.json'), {

@@ -15,10 +15,12 @@ import { POLL_MS } from '../time';
 import { TaskCard } from '../components/TaskCard';
 import { presenceProps, usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT, type MessageKey } from '../i18n/index.ts';
 
 function Column({
   status,
-  label,
+  labelKey,
   tasks,
   access,
   approving,
@@ -28,7 +30,7 @@ function Column({
   focusId,
 }: {
   status: TaskStatus;
-  label: string;
+  labelKey: MessageKey;
   tasks: TaskView[] | undefined;
   access: Record<string, ProjectTaskAccess>;
   approving: boolean;
@@ -37,24 +39,26 @@ function Column({
   onRetry: (id: string) => void;
   focusId: string | null;
 }) {
-  const cards = usePresence(tasks, (t) => t.id);
+  const t = useT();
+  const label = t(labelKey);
+  const cards = usePresence(tasks, (x) => x.id);
   return (
     <div className="kanban-col" data-status={status} role="region" aria-label={label}>
       <h2>
         <span className="lamp" aria-hidden="true" />
         {label} <span className="badge">{tasks?.length ?? 0}</span>
       </h2>
-      {tasks?.length === 0 && <p className="col-empty">Nothing here</p>}
-      {cards.map(({ key, item: t, phase }) => (
+      {tasks?.length === 0 && <p className="col-empty">{t('backlog.page.nothingHere')}</p>}
+      {cards.map(({ key, item: task, phase }) => (
         <div key={key} className="task-slot" {...presenceProps(phase)}>
           <TaskCard
-            task={t}
-            canApprove={access[t.projectId]?.canApprove ?? false}
+            task={task}
+            canApprove={access[task.projectId]?.canApprove ?? false}
             approving={approving}
             onApprove={onApprove}
             retrying={retrying}
             onRetry={onRetry}
-            highlighted={t.id === focusId}
+            highlighted={task.id === focusId}
           />
         </div>
       ))}
@@ -62,18 +66,20 @@ function Column({
   );
 }
 
-const COLUMNS: { status: TaskStatus; label: string }[] = [
-  { status: 'PROPOSED', label: 'Proposed' },
-  { status: 'TODO', label: 'To do' },
-  { status: 'BLOCKED', label: 'Blocked' },
-  { status: 'IN_PROGRESS', label: 'In progress' },
-  { status: 'IN_REVIEW', label: 'In review' },
-  { status: 'DONE', label: 'Done' },
+const COLUMNS: { status: TaskStatus; labelKey: MessageKey }[] = [
+  { status: 'PROPOSED', labelKey: 'backlog.columns.proposed' },
+  { status: 'TODO', labelKey: 'backlog.columns.todo' },
+  { status: 'BLOCKED', labelKey: 'backlog.columns.blocked' },
+  { status: 'IN_PROGRESS', labelKey: 'backlog.columns.inProgress' },
+  { status: 'IN_REVIEW', labelKey: 'backlog.columns.inReview' },
+  { status: 'DONE', labelKey: 'backlog.columns.done' },
 ];
 
 const canCreateIn = (a: ProjectTaskAccess | undefined) => !!a && (a.canSubmit || a.canPropose);
 
 export function Backlog() {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const toast = useToast();
   const [filter, setFilter] = useState('');
@@ -92,8 +98,8 @@ export function Backlog() {
   const access = board.data?.access ?? {};
   const approve = useMutation({
     mutationFn: approveTask,
-    onSuccess: (t) => {
-      toast(`#${t.issueNumber} approved and moved to To do`);
+    onSuccess: (task) => {
+      toast(t('backlog.page.approved', { number: String(task.issueNumber) }));
       return qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
@@ -104,7 +110,12 @@ export function Backlog() {
   const imp = useMutation({
     mutationFn: importTasks,
     onSuccess: async (r) => {
-      setNotice(`Imported ${r.imported.length} issue(s), ${r.alreadyImported} already imported.`);
+      setNotice(
+        t('backlog.page.importResult', {
+          count: r.imported.length,
+          already: r.alreadyImported,
+        }),
+      );
       await qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
@@ -121,23 +132,20 @@ export function Backlog() {
     ? canCreateIn(access[filter])
     : projects.some((p) => canCreateIn(access[p.id]));
   const allTasks: TaskView[] = board.data ? COLUMNS.flatMap((c) => board.data[c.status]) : [];
-  const focusMissing = !!focusId && !!board.data && !allTasks.some((t) => t.id === focusId);
+  const focusMissing = !!focusId && !!board.data && !allTasks.some((x) => x.id === focusId);
 
   return (
     <section>
       <header className="page-head">
         <div>
-          <h1>Backlog</h1>
-          <p className="lede">
-            Tasks are GitHub issues. Each one runs in its own container on a teammate&apos;s
-            machine, then orch opens a pull request.
-          </p>
+          <h1>{t('backlog.page.title')}</h1>
+          <p className="lede">{t('backlog.page.lede')}</p>
         </div>
         <div className="page-actions">
           <label className="field inline">
-            Project
+            {t('backlog.page.project')}
             <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-              <option value="">All my projects</option>
+              <option value="">{t('backlog.page.allProjects')}</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.fullName}
@@ -146,14 +154,18 @@ export function Backlog() {
             </select>
           </label>
           <button className="primary" disabled={!newTaskEnabled} onClick={() => setCreating(true)}>
-            New task
+            {t('backlog.page.newTask')}
           </button>
         </div>
       </header>
       <div className="board-tools">
         {importTargets.map((p) => (
           <button key={p.id} disabled={imp.isPending} onClick={() => imp.mutate(p.id)}>
-            Import issues labeled <code>pool</code> ({p.fullName})
+            {rich(
+              'backlog.page.importIssues',
+              { code: (c) => <code>{c}</code> },
+              { project: p.fullName },
+            )}
           </button>
         ))}
       </div>
@@ -164,21 +176,21 @@ export function Backlog() {
       )}
       {focusMissing && (
         <p className="notice" role="status">
-          This task is not on the board (it may belong to a project you cannot see).
+          {t('backlog.page.notOnBoard')}
         </p>
       )}
-      {imp.error && <p className="error">{imp.error.message}</p>}
-      {approve.error && <p className="error">{approve.error.message}</p>}
-      {retry.error && <p className="error">{retry.error.message}</p>}
-      {board.isPending && <p className="hint">Loading...</p>}
-      {board.error && <p className="error">{board.error.message}</p>}
+      {imp.error && <p className="error">{errorMessage(imp.error)}</p>}
+      {approve.error && <p className="error">{errorMessage(approve.error)}</p>}
+      {retry.error && <p className="error">{errorMessage(retry.error)}</p>}
+      {board.isPending && <p className="hint">{t('common.status.loading')}</p>}
+      {board.error && <p className="error">{errorMessage(board.error)}</p>}
       {board.data && (
         <div className="kanban">
           {COLUMNS.map((c) => (
             <Column
               key={c.status}
               status={c.status}
-              label={c.label}
+              labelKey={c.labelKey}
               tasks={board.data[c.status]}
               access={access}
               approving={approve.isPending}

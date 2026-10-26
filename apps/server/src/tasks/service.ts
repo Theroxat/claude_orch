@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { Prisma, type Agent, type Assignment, type User } from '@prisma/client';
+import { Prisma, type Agent, type Assignment, type Participation, type User } from '@prisma/client';
 import {
   TASK_STATUSES,
   classifyFailure,
+  redactSecrets,
   summarizeFailure,
   type FailureClass,
   type AckPayload,
@@ -22,7 +23,7 @@ import type { PrismaClient } from '../db';
 import type { GithubClient, GithubIssue } from '../github';
 import { HttpError } from '../http/errors';
 import { canSubmit as roleCanSubmit, toOrchRole } from '../projects/roles';
-import { getRoleInfo, participationStatus } from '../projects/service';
+import { RoleMemo, getRoleInfo, participationStatus, repoAccessAllows } from '../projects/service';
 import { listHistory, type HistoryFilters } from './history';
 import type { Metrics } from '../observability';
 import { bodyHash, branchNameFor, buildIssueBody, creatorOf, parseIssueBody } from './meta';
@@ -301,8 +302,8 @@ export class TaskService {
 
   // ---------- access ----------
 
-  async accessFor(project: ProjectWithInstallation, user: User): Promise<Access> {
-    const info = await getRoleInfo(this.prisma, this.deps.github, project, user);
+  async accessFor(project: ProjectWithInstallation, user: User, memo?: RoleMemo): Promise<Access> {
+    const info = await getRoleInfo(this.prisma, this.deps.github, project, user, memo);
     // The stored owner keeps owner powers only while GitHub still says ADMIN (cached role).
     if (project.addedById === user.id && (!this.deps.github || info.role === 'ADMIN')) {
       return { isOwner: true, role: 'ADMIN', canSubmit: true, canPropose: true };
@@ -327,14 +328,27 @@ export class TaskService {
   }
 
   /** A project the user may look at: owner, ACTIVE participant or GitHub collaborator. 404 otherwise. */
-  async visibleProject(id: string, user: User): Promise<[ProjectWithInstallation, Access]> {
-    const project = await this.projectFor(id);
-    const access = await this.accessFor(project, user);
+  async visibleProject(
+    id: string,
+    user: User,
+    memo?: RoleMemo,
+    loaded?: ProjectWithInstallation & { participations?: Participation[] },
+  ): Promise<[ProjectWithInstallation, Access]> {
+    const project = loaded ?? (await this.projectFor(id));
+    if (project.archivedAt) throw new HttpError(404, 'not_found', 'Project not found');
+    const access = await this.accessFor(project, user, memo);
     if (!access.isOwner && access.role === 'NONE') {
+      // A private repository GitHub no longer lets this member into (the stored owner included)
+      // shows nothing, whatever participation row is left.
+      if (!(await repoAccessAllows(this.prisma, this.deps.github, project, user, memo))) {
+        throw new HttpError(404, 'not_found', 'Project not found');
+      }
       // A pending, rejected or inactive participation row grants no view of the board.
-      const part = await this.prisma.participation.findUnique({
-        where: { userId_projectId: { userId: user.id, projectId: id } },
-      });
+      const part = loaded?.participations
+        ? (loaded.participations.find((r) => r.userId === user.id) ?? null)
+        : await this.prisma.participation.findUnique({
+            where: { userId_projectId: { userId: user.id, projectId: id } },
+          });
       if (!part || participationStatus(part, project.requireParticipantApproval) !== 'active') {
         throw new HttpError(404, 'not_found', 'Project not found');
       }
@@ -365,17 +379,30 @@ export class TaskService {
         archivedAt: null,
         OR: [{ addedById: user.id }, { participations: { some: { userId: user.id } } }],
       },
-      include: { installation: true },
+      include: { installation: true, participations: { where: { userId: user.id } } },
     });
+    // One query for every cached role, then GitHub only for the stale ones (in parallel).
+    const memo = new RoleMemo();
+    await memo.prime(
+      this.prisma,
+      projects.map((p) => p.id),
+      [user.id],
+    );
+    const checked = await Promise.all(
+      projects.map(async (p) => {
+        try {
+          return { p, access: (await this.visibleProject(p.id, user, memo, p))[1] };
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 404) return null;
+          throw err;
+        }
+      }),
+    );
     const visible: { id: string; fullName: string; access: Access }[] = [];
     const accessMap: Record<string, ProjectTaskAccess> = {};
-    for (const p of projects) {
-      let access: Access;
-      try {
-        [, access] = await this.visibleProject(p.id, user);
-      } catch {
-        continue; // pending, rejected or inactive participation: not visible
-      }
+    for (const c of checked) {
+      if (!c) continue; // pending, rejected or inactive participation, or no access: not visible
+      const { p, access } = c;
       accessMap[p.id] = toProjectAccess(access);
       visible.push({ id: p.id, fullName: p.fullName, access });
     }
@@ -1117,11 +1144,24 @@ export class TaskService {
         active: true,
         project: { archivedAt: null, ...(projectFullName ? { fullName: projectFullName } : {}) },
       },
-      include: { project: true },
+      include: { project: { include: { installation: true } } },
     });
-    const ok = parts.filter(
+    const active = parts.filter(
       (p) => participationStatus(p, p.project.requireParticipantApproval) === 'active',
     );
+    // Private repositories GitHub no longer lets the member into: nothing to take there.
+    const memo = new RoleMemo();
+    await memo.prime(
+      this.prisma,
+      active.filter((p) => p.project.isPrivate).map((p) => p.projectId),
+      [agent.userId],
+    );
+    const allowed = await Promise.all(
+      active.map((p) =>
+        repoAccessAllows(this.prisma, this.deps.github, p.project, agent.user, memo),
+      ),
+    );
+    const ok = active.filter((_, i) => allowed[i]);
     const rows = await this.prisma.task.findMany({
       where: { projectId: { in: ok.map((p) => p.projectId) }, status: 'TODO' },
       include: taskInclude,
@@ -1156,6 +1196,7 @@ export class TaskService {
     if (agent.paused || agent.user.paused) return { ack: refuse('paused', 'The agent is paused') };
     const project = await prisma.project.findUnique({
       where: { fullName: payload.projectFullName },
+      include: { installation: true },
     });
     const task = project
       ? await prisma.task.findUnique({
@@ -1176,6 +1217,11 @@ export class TaskService {
     });
     if (!part || participationStatus(part, project.requireParticipantApproval) !== 'active') {
       return { ack: refuse('not_participating', 'You do not participate in this project') };
+    }
+    if (!(await repoAccessAllows(prisma, this.deps.github, project, agent.user))) {
+      return {
+        ack: refuse('access_denied', 'GitHub no longer gives you access to this repository'),
+      };
     }
     if (!part.allowedModels.includes(task.model)) {
       return { ack: refuse('model_not_allowed', `Model ${task.model} is not allowed for you`) };
@@ -1314,6 +1360,10 @@ export class TaskService {
     }
     if (!this.deps.github) return { ok: false, reason: 'github_not_configured' };
     const project = a.task.project;
+    // No repository token for a member GitHub no longer lets into the private repository.
+    if (!(await repoAccessAllows(this.prisma, this.deps.github, project, agent.user))) {
+      return { ok: false, reason: 'access_denied' };
+    }
     const repository = project.fullName.split('/')[1] ?? '';
     // PLAN 5.5: the server opens the PR itself, so the agent never needs pull_requests:write.
     const permissions: Record<string, 'read' | 'write'> =
@@ -1510,7 +1560,9 @@ export class TaskService {
           status,
           lastSeq: p.seq,
           finishedAt: new Date(),
-          reason: p.error?.slice(0, 1000) ?? (p.outcome === 'no_changes' ? 'no_changes' : null),
+          reason:
+            (p.error ? redactSecrets(p.error).slice(0, 1000) : null) ??
+            (p.outcome === 'no_changes' ? 'no_changes' : null),
           failureClass,
           usageWeighted: BigInt(Math.round(p.usage.weighted)),
         },
@@ -1654,7 +1706,9 @@ function buildPrBody(
   if (task.acceptanceCriteria.length > 0) {
     lines.push('## Acceptance criteria', ...task.acceptanceCriteria.map((c) => `- [ ] ${c}`), '');
   }
-  if (p.summary.trim()) lines.push('## Summary', p.summary.trim().slice(0, 5000), '');
+  // The agent redacts the summary already; formats are masked again here (older agents).
+  if (p.summary.trim())
+    lines.push('## Summary', redactSecrets(p.summary.trim()).slice(0, 5000), '');
   lines.push(
     '---',
     `Opened by orch. Task by @${creatorLogin}, run by @${runnerLogin} (${execMode.toLowerCase()} mode, model ${task.model.toLowerCase()}, size ${task.size}).`,

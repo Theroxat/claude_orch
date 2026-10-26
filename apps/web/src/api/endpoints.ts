@@ -212,6 +212,11 @@ export const fetchNotificationSettings = () =>
   api('GET', '/notifications/settings', { schema: NotificationSettingsViewSchema });
 export const updateNotificationSettings = (body: UpdateNotificationSettingsRequest) =>
   api('PUT', '/notifications/settings', { body, schema: NotificationSettingsViewSchema });
+export const rotateWebhookSecret = () =>
+  api('POST', '/notifications/webhook/rotate-secret', {
+    body: {},
+    schema: NotificationSettingsViewSchema,
+  });
 export const resendEmailConfirmation = () =>
   api('POST', '/notifications/email/resend', { body: {}, schema: OkResponseSchema });
 export const confirmNotificationEmail = (token: string) =>

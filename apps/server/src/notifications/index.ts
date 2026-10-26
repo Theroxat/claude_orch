@@ -26,8 +26,10 @@ import {
   TEST_DRAFT,
   channelTarget,
   effectivePreferences,
+  webhookSecrets,
   type Notifier,
 } from './service';
+import { ROTATION_GRACE_MS, generateWebhookSecret, newWebhookId, secretHint } from './signing';
 import { validatePushEndpoint } from './push';
 import { WebhookUrlError, maskUrl, validateWebhookUrl } from './ssrf';
 
@@ -71,6 +73,7 @@ function toSettingsView(
   s: NotificationSettings | null,
   emailAvailable: boolean,
   push: PushView,
+  revealedSecret?: string,
 ): NotificationSettingsView {
   const target = (enc: Uint8Array | null | undefined, hint: string | null | undefined) => ({
     configured: !!enc,
@@ -80,7 +83,17 @@ function toSettingsView(
     preferences: effectivePreferences(s?.preferences),
     slack: target(s?.slackUrlEnc, s?.slackHint),
     discord: target(s?.discordUrlEnc, s?.discordHint),
-    webhook: target(s?.webhookUrlEnc, s?.webhookHint),
+    webhook: {
+      ...target(s?.webhookUrlEnc, s?.webhookHint),
+      secretHint: s?.webhookUrlEnc ? (s.webhookSecretHint ?? null) : null,
+      previousSecretExpiresAt:
+        s?.webhookPrevSecretEnc &&
+        s.webhookPrevSecretExpiresAt &&
+        s.webhookPrevSecretExpiresAt > new Date()
+          ? s.webhookPrevSecretExpiresAt.toISOString()
+          : null,
+    },
+    ...(revealedSecret ? { webhookSecret: revealedSecret } : {}),
     email: {
       available: emailAvailable,
       address: s?.email ?? null,
@@ -181,6 +194,20 @@ export function registerNotifications(
       data[encCol] = encrypt(u.href, config.ORCH_ENCRYPTION_KEY);
       data[hintCol] = maskUrl(u);
     }
+    let revealedSecret: string | undefined;
+    if (body.webhookUrl === null || body.webhookUrl === '') {
+      data.webhookSecretEnc = null;
+      data.webhookSecretHint = null;
+      data.webhookPrevSecretEnc = null;
+      data.webhookPrevSecretExpiresAt = null;
+    } else if (body.webhookUrl) {
+      // A webhook target gets its signing secret when first set; replacing the URL keeps it.
+      const cur = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
+      if (!cur?.webhookSecretEnc) {
+        revealedSecret = generateWebhookSecret();
+        Object.assign(data, secretColumns(revealedSecret));
+      }
+    }
     let confirmEmail = false;
     if (body.email !== undefined) {
       const next = body.email || null;
@@ -207,8 +234,45 @@ export function registerNotifications(
         : s,
       !!notifier.mailer,
       await pushView(user.id),
+      revealedSecret,
     );
   });
+
+  function secretColumns(secret: string) {
+    return {
+      webhookSecretEnc: encrypt(secret, config.ORCH_ENCRYPTION_KEY!),
+      webhookSecretHint: secretHint(secret),
+    };
+  }
+
+  /**
+   * New signing secret, shown once in this answer. The old one keeps signing for 24 hours so the
+   * receiver can switch without dropping deliveries.
+   */
+  app.post(
+    '/api/notifications/webhook/rotate-secret',
+    async (req): Promise<NotificationSettingsView> => {
+      const user = requireUser(req);
+      const cur = await prisma.notificationSettings.findUnique({ where: { userId: user.id } });
+      if (!cur?.webhookUrlEnc) {
+        throw new HttpError(400, 'not_configured', 'Set a webhook URL first');
+      }
+      if (!config.ORCH_ENCRYPTION_KEY) {
+        throw new HttpError(400, 'encryption_not_configured', 'ORCH_ENCRYPTION_KEY is not set');
+      }
+      const secret = generateWebhookSecret();
+      const previous = cur.webhookSecretEnc; // already encrypted: kept as is
+      const s = await prisma.notificationSettings.update({
+        where: { userId: user.id },
+        data: {
+          ...secretColumns(secret),
+          webhookPrevSecretEnc: previous,
+          webhookPrevSecretExpiresAt: previous ? new Date(Date.now() + ROTATION_GRACE_MS) : null,
+        },
+      });
+      return toSettingsView(s, !!notifier.mailer, await pushView(user.id), secret);
+    },
+  );
 
   /** Issues a fresh token and mails it; silently does nothing past the rate limits. */
   async function sendConfirmation(userId: string): Promise<void> {
@@ -325,12 +389,19 @@ export function registerNotifications(
     const target = channelTarget(s, channel, config, !!notifier.mailer);
     if (!target) return { ok: false, error: 'not_configured' };
     try {
-      await notifier.send(channel, target, {
-        ...TEST_DRAFT,
-        id: 'test',
-        link: absoluteLink(config.ORCH_BASE_URL, TEST_DRAFT.url),
-        createdAt: new Date(),
-      });
+      await notifier.send(
+        channel,
+        target,
+        {
+          ...TEST_DRAFT,
+          id: 'test',
+          link: absoluteLink(config.ORCH_BASE_URL, TEST_DRAFT.url),
+          createdAt: new Date(),
+        },
+        channel === 'webhook'
+          ? { id: newWebhookId(), secrets: webhookSecrets(s, config) }
+          : undefined,
+      );
       return { ok: true };
     } catch (err) {
       const error = err instanceof DeliveryError ? err.message : 'delivery_failed';

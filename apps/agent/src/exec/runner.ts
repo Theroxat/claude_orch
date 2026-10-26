@@ -13,6 +13,8 @@ export interface RunOptions {
   env?: Record<string, string>;
   input?: string;
   timeoutMs?: number;
+  /** Minimal environment (see COMPOSE_ENV) instead of the sanitized agent one. */
+  composeEnv?: boolean;
 }
 
 export interface RunResult {
@@ -42,10 +44,38 @@ export class CommandError extends Error {
 
 const STRIPPED = /^(ORCH_|CLAUDE_CODE_OAUTH_TOKEN$|GIT_ASKPASS$|GIT_CONFIG_)/;
 
-/** process.env without agent secrets/settings, plus `extra`. */
-export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+/**
+ * What a `docker compose` run on a repository's compose file may see of the agent's environment.
+ * Compose interpolates `${VAR}` and fills `environment: [VAR]` from its own environment, so with
+ * the full one a repo could copy any agent variable into a sidecar. Only the docker CLI basics.
+ */
+const COMPOSE_ENV = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'TMPDIR',
+  'XDG_RUNTIME_DIR',
+  'DOCKER_HOST',
+  'DOCKER_CONFIG',
+  'DOCKER_CONTEXT',
+  'DOCKER_CERT_PATH',
+  'DOCKER_TLS_VERIFY',
+  'DOCKER_API_VERSION',
+  'BUILDKIT_PROGRESS',
+]);
+
+/**
+ * process.env without agent secrets/settings, plus `extra`. `compose`: only the variables of
+ * COMPOSE_ENV are kept (for compose runs on repository files).
+ */
+export function childEnv(extra: Record<string, string> = {}, compose = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) if (!STRIPPED.test(k)) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (compose ? COMPOSE_ENV.has(k) : !STRIPPED.test(k)) env[k] = v;
+  }
   return { ...env, ...extra };
 }
 
@@ -54,7 +84,7 @@ export const spawnRunner: CommandRunner = {
     return new Promise((resolve, reject) => {
       const child = spawn(cmd, args, {
         cwd: opts.cwd,
-        env: childEnv(opts.env),
+        env: childEnv(opts.env, opts.composeEnv === true),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';

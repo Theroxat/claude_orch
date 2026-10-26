@@ -46,6 +46,7 @@ export class Metrics {
   readonly clusterMessages: Counter<'direction' | 'kind'>;
   readonly clusterPeers: Gauge;
   readonly notificationJobs: Counter<'channel' | 'result'>;
+  readonly repoAccessChecks: Counter<'result'>;
   private sources: MetricsSources | undefined;
   private tasksFetchedAt = 0;
   private tasksCache: Record<string, number> = {};
@@ -138,6 +139,12 @@ export class Metrics {
       name: 'orch_notification_deliveries_total',
       help: 'External notification delivery attempts, by channel and result (sent, retry, failed).',
       labelNames: ['channel', 'result'],
+      registers,
+    });
+    this.repoAccessChecks = new Counter({
+      name: 'orch_repo_access_checks_total',
+      help: 'Repository access checks that went to GitHub, by result (refreshed, denied, grace, outage_denied, invalidated).',
+      labelNames: ['result'],
       registers,
     });
 

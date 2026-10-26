@@ -36,7 +36,8 @@ import type { Cluster } from '../cluster';
 import type { Metrics } from '../observability';
 import type { Config } from '../config';
 import type { PrismaClient } from '../db';
-import { participationStatus } from '../projects/service';
+import type { GithubClient } from '../github';
+import { participationStatus, repoAccessAllows } from '../projects/service';
 import { buildPrompt } from '../tasks/service';
 import { branchNameFor, creatorOf } from '../tasks/meta';
 import {
@@ -72,6 +73,8 @@ export interface DispatcherDeps {
    * other instance is forwarded to it. Absent: this process is alone and always dispatches.
    */
   cluster?: Cluster;
+  /** Re-checks the GitHub access of members of private repositories (cached roles). */
+  github?: GithubClient;
 }
 
 const LIVE = ['ACCEPTED', 'RUNNING', 'PUSHED'] as const;
@@ -521,6 +524,26 @@ export class Dispatcher {
     return ok;
   }
 
+  /**
+   * Can the member still work on the task's repository? For a private one, GitHub must still let
+   * them in (see `repoAccessAllows`): once per (project, member) and tick, from the roles the
+   * snapshot read in one query; GitHub is only asked for a role whose cache expired.
+   */
+  private async repoAllowed(
+    snap: TickSnapshot,
+    task: DispatchTask,
+    user: Participant['user'],
+  ): Promise<boolean> {
+    if (!task.project.isPrivate) return true;
+    const key = `${task.projectId}:${user.id}`;
+    let ok = snap.repoAccess.get(key);
+    if (ok === undefined) {
+      ok = await repoAccessAllows(this.prisma, this.deps.github, task.project, user, snap.roles);
+      snap.repoAccess.set(key, ok);
+    }
+    return ok;
+  }
+
   /** The first check that keeps one member out, or null after reporting the candidate. */
   private async memberBlocker(
     task: DispatchTask,
@@ -581,6 +604,12 @@ export class Dispatcher {
     // GitHub outage grace period) gets no offer. Checked late: the decision is cached.
     if (!(await this.ownerAllowed(snap, p.user))) {
       return block('access_denied', 'Their access to this server could not be confirmed');
+    }
+    if (!(await this.repoAllowed(snap, task, p.user))) {
+      return block(
+        'access_denied',
+        'GitHub no longer gives them access to this private repository',
+      );
     }
     const usage = snap.latestUsage(p.userId);
     const state = usageState(usage, now, ctx.staleMs);
@@ -1089,6 +1118,19 @@ export class Dispatcher {
     // An auto offer belongs to the agent it was sent to; the web only answers requests.
     if (a.kind === 'AUTO_OFFER' && a.agentId !== (by.agentId ?? null)) {
       return refusal('not_found', 'No such offer');
+    }
+    // Same repository access check as the offer: a member GitHub no longer lets into the private
+    // repository cannot start it, whatever offer is still open (cached role, see the dispatcher).
+    const target = await prisma.task.findUniqueOrThrow({
+      where: { id: a.taskId },
+      include: { project: { include: { installation: true } } },
+    });
+    if (target.project.isPrivate) {
+      const member = await prisma.user.findUniqueOrThrow({ where: { id: a.userId } });
+      if (!(await repoAccessAllows(prisma, this.deps.github, target.project, member))) {
+        await this.closePending([a], 'CANCELLED', 'access_denied', now);
+        return refusal('access_denied', 'GitHub no longer gives you access to this repository');
+      }
     }
     let agentId = by.agentId ?? null;
     if (!agentId) {

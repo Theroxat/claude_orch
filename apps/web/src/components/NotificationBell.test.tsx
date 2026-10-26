@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { me, mockApi, renderApp, type Routes } from '../test/helpers';
+import { me, mockApi, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const item = (over: Record<string, unknown> = {}) => ({
   id: 'n1',
@@ -155,5 +155,17 @@ describe('notification bell', () => {
     expect(screen.getByRole('button', { name: 'Mark all read' }).hasAttribute('disabled')).toBe(
       true,
     );
+  });
+
+  it('speaks French: label with plural, panel texts', async () => {
+    await switchToFrench();
+    mockApi(base(2, [item()]));
+    renderApp('/projects');
+    const bell = await screen.findByRole('button', { name: 'Notifications, 2 non lues' });
+    fireEvent.click(bell);
+    const dialog = await screen.findByRole('dialog', { name: 'Notifications' });
+    expect(within(dialog).getByRole('button', { name: 'Tout marquer comme lu' })).toBeTruthy();
+    expect(await within(dialog).findByRole('img', { name: 'Non lue' })).toBeTruthy();
+    expect(within(dialog).getByRole('link', { name: 'Paramètres des notifications' })).toBeTruthy();
   });
 });

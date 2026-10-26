@@ -208,9 +208,11 @@ describe('checkComposeModel', () => {
       expect(check(svc({ build: { context: root, dockerfile: '../../etc/x' } }))).toHaveLength(1);
       expect(check(svc({ build: { context: root, dockerfile: '/etc/passwd' } }))).toHaveLength(1);
     });
-    it('does not treat URLs / git refs as local paths', () => {
+    it('refuses remote contexts (URLs / git refs are not paths of the repository)', () => {
       const b = { context: 'https://github.com/a/b.git' };
-      expect(check(svc({ build: b }))).toEqual([]);
+      expect(check(svc({ build: b }))).toEqual([
+        'service "db": remote build context "https://github.com/a/b.git" is not allowed',
+      ]);
     });
     it('checks additional_contexts', () => {
       const bad = { context: root, additional_contexts: { x: '/etc' } };

@@ -6,6 +6,7 @@ export * from './domain/permission';
 export * from './domain/participation';
 export * from './domain/version';
 export * from './domain/failure';
+export * from './redact';
 export * from './api/m1';
 export * from './api/m2';
 export * from './api/m3';

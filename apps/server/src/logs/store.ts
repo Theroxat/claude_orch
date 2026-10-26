@@ -8,6 +8,7 @@
  * so its SSE streams read the same store the same way.
  */
 import {
+  StreamRedactor,
   TASK_LOG_TEXT_MAX,
   redactSecrets,
   stripAnsi,
@@ -49,6 +50,8 @@ interface Run {
   startedAt: number;
   /** A mirror of a run owned by another instance. */
   remote: boolean;
+  /** Per entry kind: a token split between two lines or two batches is masked too. */
+  streams: Map<string, StreamRedactor>;
 }
 
 export interface LiveLogStoreOptions {
@@ -124,6 +127,7 @@ export class LiveLogStore {
       lastAt: this.now(),
       startedAt: this.now(),
       remote: false,
+      streams: new Map(),
     };
     this.runs.set(assignmentId, run);
     this.byTask.set(taskId, assignmentId);
@@ -144,11 +148,13 @@ export class LiveLogStore {
     this.nextId = Math.max(this.nextId, Math.floor(this.now()) * 1000);
     const added: LiveLogLine[] = [];
     for (const e of entries) {
+      let stream = run.streams.get(e.kind);
+      if (!stream) run.streams.set(e.kind, (stream = new StreamRedactor()));
       const line: LiveLogLine = {
         id: this.nextId++,
         ts: e.ts,
         kind: e.kind,
-        text: redactSecrets(stripAnsi(e.text)).slice(0, TASK_LOG_TEXT_MAX),
+        text: stream.push(stripAnsi(e.text)).slice(0, TASK_LOG_TEXT_MAX),
         ...(e.tool !== undefined ? { tool: redactSecrets(stripAnsi(e.tool)).slice(0, 80) } : {}),
         ...(e.error ? { error: true } : {}),
       };
@@ -192,6 +198,7 @@ export class LiveLogStore {
         lastAt: this.now(),
         startedAt: info.startedAt,
         remote: true,
+        streams: new Map(),
       };
       this.runs.set(run.assignmentId, run);
       this.byTask.set(run.taskId, run.assignmentId);

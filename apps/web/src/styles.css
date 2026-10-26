@@ -764,6 +764,92 @@ button.ghost:hover:not(:disabled) {
   width: 38px;
   padding: 0;
 }
+/* Language lever: a sunken slot with two positions; the set one sits raised, like a thrown lever. */
+.lang-switch {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface-sunk);
+}
+.lang-switch .lang-option {
+  min-height: 30px;
+  padding: 2px 9px 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.lang-switch .lang-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: transparent;
+  color: var(--ink);
+}
+.lang-switch .lang-option[aria-pressed='true'] {
+  background: var(--surface);
+  border-color: var(--rule-strong);
+  color: var(--ink);
+  font-weight: 750;
+  box-shadow: 0 1px 0 rgb(20 32 41 / 0.08);
+}
+.lang-switch .lang-option[aria-busy='true'] {
+  color: var(--ink-soft);
+  cursor: progress;
+}
+.lang-switch .lang-option:focus-visible {
+  border-radius: 999px;
+}
+.gate-tools {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 2;
+}
+.gate:has(> .gate-tools) {
+  position: relative;
+  padding-top: 72px;
+}
+/* The header is tight on phones: Log out becomes an icon (its label stays for screen readers) and
+   the lever shows only the language to switch to. */
+.logout-button .icon {
+  display: none;
+}
+@media (max-width: 720px) {
+  .logout-button {
+    width: 34px;
+    min-height: 34px;
+    padding: 0;
+  }
+  .logout-button .icon {
+    display: inline;
+  }
+  .logout-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .lang-switch {
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .lang-switch .lang-option {
+    min-height: 34px;
+    padding-inline: 7px;
+  }
+  .lang-switch .lang-option[aria-pressed='true'] {
+    display: none;
+  }
+}
 button.big,
 .btn.big {
   min-height: 50px;
@@ -1266,6 +1352,12 @@ ul.plain li {
   flex-wrap: wrap;
   gap: 8px;
   margin: -8px 0 16px;
+}
+/* Labels run longer in some languages: let an import button wrap instead of widening the page. */
+.board-tools button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
 }
 .kanban {
   display: grid;
@@ -1838,6 +1930,15 @@ progress::-moz-progress-bar {
   align-items: center;
   gap: 10px;
   margin-top: 8px;
+}
+
+.notify-secret {
+  margin-bottom: 16px;
+  border-color: var(--caution, currentColor);
+}
+.notify-secret-value {
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 /* ---------- Access admin ---------- */

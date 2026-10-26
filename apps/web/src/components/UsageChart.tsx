@@ -7,6 +7,7 @@ import {
   type PointerEvent,
 } from 'react';
 import type { UsageDayPoint } from '@orch/shared';
+import { useT } from '../i18n/index.ts';
 import { formatDay, formatTokens } from '../usageFormat';
 
 const H = 232;
@@ -53,6 +54,7 @@ function barPath(x: number, y: number, w: number, h: number): string {
  * numbers are available as a table next to the chart.
  */
 export function UsageChart({ series }: { series: UsageDayPoint[] }) {
+  const t = useT();
   const [box, width] = useWidth();
   const [active, setActive] = useState<number | null>(null);
   const n = series.length;
@@ -99,17 +101,20 @@ export function UsageChart({ series }: { series: UsageDayPoint[] }) {
           <>
             <strong>{formatDay(at.day, true)}</strong>
             <span>
-              {formatTokens(at.weighted)} tokens, {at.runs} {at.runs === 1 ? 'run' : 'runs'}
-              {at.failed > 0 && `, ${at.failed} failed`}
+              {t('usage.chart.readout', { tokens: formatTokens(at.weighted), count: at.runs })}
+              {at.failed > 0 && `, ${t('usage.runs.failed', { count: at.failed })}`}
             </span>
           </>
         ) : (
           <>
-            <strong>{formatTokens(total)} tokens</strong>
+            <strong>{t('usage.chart.total', { tokens: formatTokens(total) })}</strong>
             <span>
               {total > 0
-                ? `peak ${formatTokens(peak.weighted)} on ${formatDay(peak.day, true)}`
-                : 'nothing recorded in this range'}
+                ? t('usage.chart.peak', {
+                    tokens: formatTokens(peak.weighted),
+                    day: formatDay(peak.day, true),
+                  })
+                : t('usage.chart.nothing')}
             </span>
           </>
         )}
@@ -119,7 +124,7 @@ export function UsageChart({ series }: { series: UsageDayPoint[] }) {
         height={H}
         viewBox={`0 0 ${width} ${H}`}
         role="group"
-        aria-label={`Weighted tokens per day over ${n} days. Use the left and right arrow keys to read each day.`}
+        aria-label={t('usage.chart.aria', { count: n })}
         tabIndex={0}
         onKeyDown={onKey}
         onBlur={() => setActive(null)}

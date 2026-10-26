@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { t } from '../i18n/index.ts';
 import { useToast } from '../ui/Toast';
 import { registerServiceWorker, reloadOnStaleChunk } from './register';
 
@@ -8,9 +9,9 @@ export function UpdatePrompt() {
   useEffect(() => reloadOnStaleChunk(), []);
   useEffect(() => {
     const reload = registerServiceWorker(() =>
-      toast('New version available', 'info', {
+      toast(t('layout.pwa.updateReady'), 'info', {
         sticky: true,
-        action: { label: 'Reload', onClick: () => reload() },
+        action: { label: t('layout.pwa.reload'), onClick: () => reload() },
       }),
     );
   }, [toast]);

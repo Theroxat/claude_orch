@@ -1,5 +1,6 @@
 import { placeholdersOf, sanitizeValue, splitTemplate, type TaskTemplateView } from '@orch/shared';
 import { useId, type ReactNode } from 'react';
+import { useT } from '../i18n/index.ts';
 
 const humanize = (name: string) => {
   const words = name
@@ -39,6 +40,7 @@ export function TemplateFill({
   values: Record<string, string>;
   onChange: (name: string, value: string) => void;
 }) {
+  const t = useT();
   const uid = useId();
   const names = placeholdersOf(template);
   const inTitle = new Set(
@@ -50,8 +52,11 @@ export function TemplateFill({
       {names.length > 0 && (
         <fieldset className="tpl-fields">
           <legend>
-            Fill in the template{' '}
-            <span className="tpl-count" aria-label={`${filled} of ${names.length} filled`}>
+            {t('templates.fill.legend')}{' '}
+            <span
+              className="tpl-count"
+              aria-label={t('templates.fill.filledOf', { filled, total: names.length })}
+            >
               {filled}/{names.length}
             </span>
           </legend>
@@ -79,7 +84,7 @@ export function TemplateFill({
           })}
         </fieldset>
       )}
-      <section className="tpl-preview" aria-label="Preview">
+      <section className="tpl-preview" aria-label={t('templates.fill.preview')}>
         <h3>{<Slots text={template.titleTemplate || template.name} values={values} />}</h3>
         <pre>
           <Slots text={template.bodyTemplate} values={values} />

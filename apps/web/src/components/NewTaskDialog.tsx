@@ -15,6 +15,8 @@ import { Modal, closeModal } from '../ui/Modal';
 import { TemplateFill } from './TemplateFill';
 import { TemplatePicker } from './TemplatePicker';
 import { useToast } from '../ui/Toast';
+import { errorMessage } from '../i18n/errors.ts';
+import { useT } from '../i18n/index.ts';
 
 export type BoardProject = {
   id: string;
@@ -34,6 +36,7 @@ export function NewTaskDialog({
   tasks: TaskView[];
   onClose: () => void;
 }) {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -65,12 +68,12 @@ export function NewTaskDialog({
   const poolMembers = (pool.data?.members ?? []).filter((m) =>
     m.projects.some((p) => p.projectId === projectId),
   );
-  const projectTasks = tasks.filter((t) => t.projectId === projectId);
-  const pickTemplate = (t: TaskTemplateView) => {
-    setTemplate(t);
+  const projectTasks = tasks.filter((x) => x.projectId === projectId);
+  const pickTemplate = (tpl: TaskTemplateView) => {
+    setTemplate(tpl);
     setVars({});
-    setSize(t.size);
-    setModel(t.model);
+    setSize(tpl.size);
+    setModel(tpl.model);
     setInvalid(null);
   };
   /** Keeps what the template produced so far as plain text the user can edit freely. */
@@ -106,8 +109,8 @@ export function NewTaskDialog({
             : {}),
       });
     },
-    onSuccess: async (t) => {
-      toast(`#${t.issueNumber} created`);
+    onSuccess: async (created) => {
+      toast(t('backlog.newTask.created', { number: String(created.issueNumber) }));
       await qc.invalidateQueries({ queryKey: ['tasks'] });
       closeModal(onClose);
     },
@@ -120,28 +123,33 @@ export function NewTaskDialog({
         if (err instanceof TemplateError) {
           setInvalid(
             err.code === 'missing_variables'
-              ? `Fill in every field of the template: ${err.names.join(', ')}.`
-              : err.message,
+              ? t('backlog.newTask.fillAll', { names: err.names.join(', ') })
+              : errorMessage(err),
           );
           return;
         }
         throw err;
       }
     } else if (title.trim() === '') {
-      setInvalid('Title is required.');
+      setInvalid(t('backlog.newTask.titleRequired'));
       return;
     }
     if (mode === 'members' && memberIds.length === 0) {
-      setInvalid('Select at least one member.');
+      setInvalid(t('backlog.newTask.selectMember'));
       return;
     }
     setInvalid(null);
     create.mutate();
   };
   return (
-    <Modal label="New task" title="New task" onClose={onClose} wide>
+    <Modal
+      label={t('backlog.newTask.title')}
+      title={t('backlog.newTask.title')}
+      onClose={onClose}
+      wide
+    >
       <label className="field">
-        Project
+        {t('backlog.newTask.project')}
         <select
           value={projectId}
           onChange={(e) => {
@@ -159,9 +167,7 @@ export function NewTaskDialog({
         </select>
       </label>
       {projectAccess && !projectAccess.canSubmit && projectAccess.canPropose && (
-        <p className="hint">
-          This task will be created as Proposed until a maintainer approves it.
-        </p>
+        <p className="hint">{t('backlog.newTask.proposedHint')}</p>
       )}
       <TemplatePicker
         projectId={projectId}
@@ -179,7 +185,7 @@ export function NewTaskDialog({
           <div className="tpl-meta">
             {template.labels.length > 0 && (
               <span>
-                Labels:{' '}
+                {t('backlog.newTask.labels')}{' '}
                 {template.labels.map((l) => (
                   <span key={l} className="tag">
                     {l}
@@ -188,32 +194,32 @@ export function NewTaskDialog({
               </span>
             )}
             <button type="button" className="ghost" onClick={detachTemplate}>
-              Edit as plain text
+              {t('backlog.newTask.editPlain')}
             </button>
           </div>
           {template.dependenciesMode === 'ask' && (
-            <p className="hint">This kind of task usually depends on others: pick them below.</p>
+            <p className="hint">{t('backlog.newTask.dependenciesHint')}</p>
           )}
         </>
       ) : (
         <>
           <label className="field">
-            Title
+            {t('backlog.newTask.titleField')}
             <input value={title} onChange={(e) => setTitle(e.target.value)} />
           </label>
           <label className="field">
-            Description
+            {t('backlog.newTask.description')}
             <textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} />
           </label>
           <label className="field">
-            Acceptance criteria (one per line)
+            {t('backlog.newTask.criteria')}
             <textarea rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
           </label>
         </>
       )}
       <div className="form-grid">
         <label className="field">
-          Size
+          {t('backlog.newTask.size')}
           <select value={size} onChange={(e) => setSize(e.target.value as TaskSize)}>
             <option value="S">S</option>
             <option value="M">M</option>
@@ -221,7 +227,7 @@ export function NewTaskDialog({
           </select>
         </label>
         <label className="field">
-          Model
+          {t('backlog.newTask.model')}
           <select value={model} onChange={(e) => setModel(e.target.value as 'SONNET' | 'OPUS')}>
             <option value="SONNET">sonnet</option>
             <option value="OPUS">opus</option>
@@ -229,42 +235,40 @@ export function NewTaskDialog({
         </label>
       </div>
       <label className="field">
-        Dependencies
+        {t('backlog.newTask.dependencies')}
         <select
           multiple
           value={deps}
           onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))}
         >
-          {projectTasks.map((t) => (
-            <option key={t.id} value={t.id}>
-              #{t.issueNumber} {t.title}
+          {projectTasks.map((x) => (
+            <option key={x.id} value={x.id}>
+              #{x.issueNumber} {x.title}
             </option>
           ))}
         </select>
       </label>
       <div className="form-grid">
         <label className="field">
-          Integration branch (optional)
+          {t('backlog.newTask.branch')}
           <input value={branch} onChange={(e) => setBranch(e.target.value)} />
         </label>
         <label className="field">
-          Send to
+          {t('backlog.newTask.sendTo')}
           <select
             value={mode}
             onChange={(e) => setSendTo(e.target.value as DispatchRequest['mode'])}
           >
-            <option value="pool">Pool</option>
-            <option value="members">Specific members</option>
-            {isOwner && <option value="broadcast">Everyone</option>}
+            <option value="pool">{t('backlog.newTask.toPool')}</option>
+            <option value="members">{t('backlog.newTask.toMembers')}</option>
+            {isOwner && <option value="broadcast">{t('backlog.newTask.toEveryone')}</option>}
           </select>
         </label>
       </div>
-      {mode === 'pool' && (
-        <p className="hint">The best available member in the pool gets the task.</p>
-      )}
+      {mode === 'pool' && <p className="hint">{t('backlog.newTask.poolHint')}</p>}
       {mode === 'members' && (
-        <div className="checks" role="group" aria-label="Members">
-          {pool.isLoading && <span className="hint">Loading members...</span>}
+        <div className="checks" role="group" aria-label={t('backlog.newTask.members')}>
+          {pool.isLoading && <span className="hint">{t('backlog.newTask.loadingMembers')}</span>}
           {poolMembers.map((m) => (
             <label key={m.userId}>
               <input
@@ -281,21 +285,16 @@ export function NewTaskDialog({
           ))}
         </div>
       )}
-      {mode === 'broadcast' && (
-        <p className="hint">
-          Everyone: starts automatically for auto-mode members and sends a request to the others.
-          The first acceptance wins.
-        </p>
-      )}
+      {mode === 'broadcast' && <p className="hint">{t('backlog.newTask.broadcastHint')}</p>}
       {invalid && (
         <p className="error" role="alert">
           {invalid}
         </p>
       )}
-      {create.error && <p className="error">{create.error.message}</p>}
+      {create.error && <p className="error">{errorMessage(create.error)}</p>}
       <div className="modal-actions">
         <button className="primary" disabled={create.isPending} onClick={submit}>
-          Create task
+          {t('backlog.newTask.create')}
         </button>
       </div>
     </Modal>

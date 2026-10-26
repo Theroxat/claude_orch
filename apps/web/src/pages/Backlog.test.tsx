@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { mockApi, me, project, renderApp, type Routes } from '../test/helpers';
+import { mockApi, me, project, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const user = { id: 'u2', githubLogin: 'alice', avatarUrl: 'https://img/a.png' };
 
@@ -389,5 +389,44 @@ describe('Backlog', () => {
     renderApp('/backlog?task=ghost');
     expect(await screen.findByText(/not on the board/)).toBeTruthy();
     expect(document.querySelector('[data-highlighted]')).toBeNull();
+  });
+
+  it('is available in French: columns, plurals and the new task dialog', async () => {
+    await switchToFrench();
+    mockApi(
+      base({
+        'GET /tasks': () => ({
+          json: board({
+            TODO: [
+              task({ failedAttempts: 2, lastError: 'boom', needsAttention: true, canRetry: true }),
+              task({ id: 't5', issueNumber: 5, title: 'Single', failedAttempts: 1 }),
+            ],
+            PROPOSED: [task({ id: 't6', issueNumber: 6, status: 'PROPOSED' })],
+          }),
+        }),
+        'GET /pool': () => ({ json: { projects: [], members: [] } }),
+      }),
+    );
+    renderApp('/backlog');
+    expect(await screen.findByRole('heading', { name: 'Backlog' })).toBeTruthy();
+    const todo = await screen.findByRole('region', { name: 'À faire' });
+    for (const name of ['Proposées', 'Bloquées', 'En cours', 'En relecture', 'Terminées']) {
+      expect(screen.getByRole('region', { name })).toBeTruthy();
+    }
+    const card = within(todo).getByRole('article', { name: 'Tâche #1' });
+    expect(within(card).getByText(/Échec\s: 2 tentatives, dernière erreur\s: boom/)).toBeTruthy();
+    expect(within(card).getByText('Attention requise')).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Relancer #1' })).toBeTruthy();
+    const single = within(todo).getByRole('article', { name: 'Tâche #5' });
+    expect(within(single).getByText(/Échec\s: 1 tentative,/)).toBeTruthy();
+    expect(screen.getAllByText('Rien ici').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Approuver #6' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle tâche' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Nouvelle tâche' });
+    expect(within(dialog).getByLabelText('Titre')).toBeTruthy();
+    expect(within(dialog).getByLabelText('Branche d’intégration (facultatif)')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Créer la tâche' }));
+    expect(await within(dialog).findByText('Le titre est obligatoire.')).toBeTruthy();
   });
 });

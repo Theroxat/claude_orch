@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { mockApi, me, renderApp, type Routes } from '../test/helpers';
+import { mockApi, me, renderApp, switchToFrench, type Routes } from '../test/helpers';
 import { filtersOf, formatDuration, formatTokens } from './History';
 
 const alice = { id: 'u2', githubLogin: 'alice', avatarUrl: null };
@@ -235,5 +235,58 @@ describe('History', () => {
     fail = false;
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('Nothing has run yet.');
+  });
+});
+
+describe('History in French', () => {
+  it('translates filters, plurals, durations and dates', async () => {
+    mockApi(
+      base({
+        'GET /tasks/history': () => ({
+          json: {
+            items: [
+              item(),
+              item({ id: 't2', title: 'Une seule', attempts: 1, lastFailureClass: null }),
+            ],
+            nextCursor: null,
+            facets,
+          },
+        }),
+      }),
+    );
+    await switchToFrench();
+    renderApp('/history');
+    expect(await screen.findByRole('heading', { name: 'Historique' })).toBeTruthy();
+    const row = (await screen.findByText('Fix login redirect')).closest('tr')!;
+    const r = within(row);
+    expect(r.getByText('2 exécutions')).toBeTruthy();
+    expect(r.getByText('Délai dépassé')).toBeTruthy();
+    expect(r.getByText(/^1\sh\s15\smin$/)).toBeTruthy();
+    expect(r.getByText(/^1,25\sM$/)).toBeTruthy();
+    expect(r.getByText(/^1\smars\s2026$/)).toBeTruthy();
+    expect(r.getByText(/exécutée par/)).toBeTruthy();
+    expect(screen.getByText('1 exécution')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('2 tâches chargées');
+    expect(screen.getByRole('button', { name: 'Terminée' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Plus de filtres/ })).toBeTruthy();
+    expect(screen.getByLabelText('Rechercher')).toBeTruthy();
+    expect(screen.getByLabelText('Créée par')).toBeTruthy();
+    expect(screen.getByText('Voilà toutes les tâches correspondantes.')).toBeTruthy();
+  });
+
+  it('translates the empty state', async () => {
+    mockApi(
+      base({
+        'GET /tasks/history?status=DONE': () => ({
+          json: { items: [], nextCursor: null, facets },
+        }),
+      }),
+    );
+    await switchToFrench();
+    renderApp('/history?status=DONE');
+    expect(await screen.findByText('Aucune tâche ne correspond à ces filtres.')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Effacer les filtres' }).length).toBeGreaterThan(
+      0,
+    );
   });
 });

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { RATE_LIMITED_EVENT } from '../api/client';
+import { t } from '../i18n/index.ts';
 import { EXIT_MS, motionAllowed } from './motion';
 
 type Tone = 'ok' | 'info';
@@ -45,9 +46,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       lastLimited.current = now;
       const secs = (e as CustomEvent<{ retryAfterSec?: number }>).detail?.retryAfterSec;
       push(
-        secs
-          ? `Too many requests. Please wait ${secs} s and try again.`
-          : 'Too many requests. Please wait a moment and try again.',
+        secs ? t('common.toast.rateLimitedFor', { seconds: secs }) : t('common.toast.rateLimited'),
         'info',
       );
     };

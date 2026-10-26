@@ -10,10 +10,13 @@ import { TemplatesManager } from '../components/TemplatesManager';
 import { Modal, closeModal } from '../ui/Modal';
 import { usePresence } from '../ui/presence';
 import { useToast } from '../ui/Toast';
+import { useT } from '../i18n/index.ts';
+import { errorMessage } from '../i18n/errors.ts';
 
 const KEY = AGENTS_KEY;
 
 export function MyServer() {
+  const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [toRevoke, setToRevoke] = useState<AgentView | null>(null);
@@ -32,14 +35,19 @@ export function MyServer() {
     },
     onError: (_e, _a, ctx) => qc.setQueryData(KEY, ctx?.previous),
     onSuccess: (_r, a) =>
-      toast(a.paused ? `${a.machineName} resumed` : `${a.machineName} paused`, 'info'),
+      toast(
+        a.paused
+          ? t('server.toast.resumed', { machine: a.machineName })
+          : t('server.toast.paused', { machine: a.machineName }),
+        'info',
+      ),
     onSettled: () => qc.invalidateQueries({ queryKey: KEY }),
   });
 
   const revoke = useMutation({
     mutationFn: (a: AgentView) => revokeAgent(a.id),
     onSuccess: async (_r, a) => {
-      toast(`${a.machineName} revoked`);
+      toast(t('server.toast.revoked', { machine: a.machineName }));
       closeModal(() => setToRevoke(null));
       await qc.invalidateQueries({ queryKey: KEY });
     },
@@ -52,23 +60,18 @@ export function MyServer() {
     <div>
       <header className="page-head">
         <div>
-          <h1>My server</h1>
-          <p className="lede">
-            The machines that run tasks with your Claude subscription. Pause one to stop new tasks
-            from starting there.
-          </p>
+          <h1>{t('server.page.title')}</h1>
+          <p className="lede">{t('server.page.lede')}</p>
         </div>
       </header>
       <InstallAgentCard />
       <div className="section-title">
-        <h2>My machines</h2>
+        <h2>{t('server.page.machines')}</h2>
       </div>
-      {agents.isPending && <p className="hint">Loading machines...</p>}
-      {agents.error && <p className="error">{agents.error.message}</p>}
-      {toggle.error && <p className="error">{toggle.error.message}</p>}
-      {agents.isSuccess && live?.length === 0 && (
-        <p className="empty">No machine yet. Generate an install command above.</p>
-      )}
+      {agents.isPending && <p className="hint">{t('server.page.loading')}</p>}
+      {agents.error && <p className="error">{errorMessage(agents.error)}</p>}
+      {toggle.error && <p className="error">{errorMessage(toggle.error)}</p>}
+      {agents.isSuccess && live?.length === 0 && <p className="empty">{t('server.page.empty')}</p>}
       {list.map(({ key, item: a, phase }) => (
         <AgentCard
           key={key}
@@ -83,25 +86,24 @@ export function MyServer() {
       <NotificationSettings />
       {toRevoke && (
         <Modal
-          label="Revoke machine"
-          title={`Revoke ${toRevoke.machineName}?`}
+          label={t('server.revoke.label')}
+          title={t('server.revoke.title', { machine: toRevoke.machineName })}
           onClose={() => setToRevoke(null)}
           closeButton={false}
           tone="danger"
         >
-          <p>
-            The agent will be disconnected and its credentials invalidated. To use this machine
-            again you must install the agent again.
-          </p>
-          {revoke.error && <p className="error">{revoke.error.message}</p>}
+          <p>{t('server.revoke.body')}</p>
+          {revoke.error && <p className="error">{errorMessage(revoke.error)}</p>}
           <div className="modal-actions">
-            <button onClick={() => closeModal(() => setToRevoke(null))}>Cancel</button>
+            <button onClick={() => closeModal(() => setToRevoke(null))}>
+              {t('common.actions.cancel')}
+            </button>
             <button
               className="danger solid"
               disabled={revoke.isPending}
               onClick={() => revoke.mutate(toRevoke)}
             >
-              Confirm revoke
+              {t('server.revoke.confirm')}
             </button>
           </div>
         </Modal>

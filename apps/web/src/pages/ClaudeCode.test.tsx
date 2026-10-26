@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { mockApi, me, renderApp } from '../test/helpers';
+import { mockApi, me, renderApp, switchToFrench } from '../test/helpers';
 
 const view = (over: Record<string, unknown> = {}) => ({
   id: 'k1',
@@ -159,5 +159,23 @@ describe('Claude Code page', () => {
         within(screen.getByRole('article', { name: 'Token laptop' })).getByText('Revoked'),
       ).toBeTruthy(),
     );
+  });
+
+  it('renders in French', async () => {
+    await switchToFrench();
+    mockApi({
+      'GET /me': () => ({ json: me }),
+      'GET /offers/mine': () => ({ json: [] }),
+      ...setupRoute,
+      'GET /tokens': () => ({ json: [view()] }),
+    });
+    renderApp('/claude-code');
+    expect(await screen.findByRole('heading', { name: 'Connecter Claude Code' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Copier la commande' })).toBeTruthy();
+    expect(await screen.findByText('Aucune application connectée pour l’instant.')).toBeTruthy();
+    const row = await screen.findByRole('article', { name: 'Jeton laptop' });
+    expect(within(row).getByText('Actif')).toBeTruthy();
+    expect(within(row).getByText('Expiration : jamais')).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'Révoquer' })).toBeTruthy();
   });
 });

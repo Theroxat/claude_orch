@@ -2,6 +2,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { createEnrollmentToken } from '../api/endpoints';
 import { CopyButton } from './CopyButton';
+import { useRich, useT } from '../i18n/index.ts';
+import { errorMessage } from '../i18n/errors.ts';
 
 export const LOGIN_COMMAND = 'orch login';
 
@@ -12,6 +14,8 @@ export function formatCountdown(ms: number): string {
 
 /** Generates the single-use install command and shows it with a copy button and countdown. */
 export function InstallCommandBlock({ big }: { big?: boolean }) {
+  const t = useT();
+  const rich = useRich();
   const qc = useQueryClient();
   const gen = useMutation({
     mutationFn: createEnrollmentToken,
@@ -25,8 +29,8 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
     // Sync the clock when a new token arrives, before the first interval tick.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
   }, [data]);
 
   const remaining = data ? new Date(data.expiresAt).getTime() - now : 0;
@@ -41,18 +45,16 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
           gen.mutate();
         }}
       >
-        {data ? 'Generate a new command' : 'Generate install command'}
+        {data ? t('server.install.generateNew') : t('server.install.generate')}
       </button>
-      {gen.error && <p className="error">{gen.error.message}</p>}
+      {gen.error && <p className="error">{errorMessage(gen.error)}</p>}
       {data && (
         <div className="install-result reveal" key={data.installCommand}>
           <div className="warning" role="alert">
-            Shown once: this command contains a single-use token. Copy it now, it cannot be
-            displayed again.
+            {t('server.install.shownOnce')}
           </div>
           <p className="hint">
-            This installs the agent, connects your Claude account, and adds the <code>orch</code>{' '}
-            command.
+            {rich('server.install.installs', { code: (c) => <code>{c}</code> })}
           </p>
           <pre className="code" data-testid="install-command">
             {data.installCommand}
@@ -61,8 +63,8 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
             <CopyButton text={data.installCommand} disabled={expired} big={big} />
             <span className={expired ? 'error' : 'hint'} role="timer">
               {expired
-                ? 'Token expired. Generate a new one.'
-                : `Expires in ${formatCountdown(remaining)}`}
+                ? t('server.install.expired')
+                : t('server.install.expiresIn', { time: formatCountdown(remaining) })}
             </span>
           </div>
         </div>
@@ -72,18 +74,21 @@ export function InstallCommandBlock({ big }: { big?: boolean }) {
 }
 
 export function InstallAgentCard() {
+  const t = useT();
+  const rich = useRich();
   return (
-    <section className="card" aria-label="Install the agent">
-      <h2>Install the agent</h2>
-      <p className="hint">
-        Run one command on the machine that has your Claude subscription. Docker is required.
-      </p>
+    <section className="card" aria-label={t('server.install.label')}>
+      <h2>{t('server.install.title')}</h2>
+      <p className="hint">{t('server.install.intro')}</p>
       <InstallCommandBlock />
       <div className="subpanel">
-        <h3>Afterwards</h3>
+        <h3>{t('server.install.afterwards')}</h3>
         <p className="hint">
-          Use <code>orch status</code> to check the agent, <code>orch take &lt;n&gt;</code> to take
-          a task, and <code>{LOGIN_COMMAND}</code> if you need to sign in to Claude again.
+          {rich(
+            'server.install.afterwardsHint',
+            { code: (c) => <code>{c}</code> },
+            { take: 'orch take <n>', login: LOGIN_COMMAND },
+          )}
         </p>
       </div>
     </section>

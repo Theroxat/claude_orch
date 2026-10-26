@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { me, mockApi, renderApp, type Routes } from '../test/helpers';
+import { me, mockApi, renderApp, switchToFrench, type Routes } from '../test/helpers';
 
 const settings = (over: Record<string, unknown> = {}) => ({
   preferences: {
@@ -14,7 +14,7 @@ const settings = (over: Record<string, unknown> = {}) => ({
   },
   slack: { configured: true, hint: 'https://hooks.slack.com/…a1b2' },
   discord: { configured: false, hint: null },
-  webhook: { configured: false, hint: null },
+  webhook: { configured: false, hint: null, secretHint: null, previousSecretExpiresAt: null },
   email: { available: true, address: 'octo@example.com', status: 'verified' },
   push: { available: false, publicKey: null, subscriptions: 0 },
   ...over,
@@ -121,6 +121,32 @@ describe('notification settings', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Slack' })).toBeNull());
   });
 
+  it('shows the signing secret hint and reveals a rotated secret once', async () => {
+    const hooked = (secretHint: string | null) => ({
+      configured: true,
+      hint: 'https://hooks.example.com/…z',
+      secretHint,
+      previousSecretExpiresAt: null,
+    });
+    const shown = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+    const calls = mockApi({
+      ...base(settings({ webhook: hooked('••••abcd') })),
+      'POST /notifications/webhook/rotate-secret': () => ({
+        json: { ...settings({ webhook: hooked('••••LaSw') }), webhookSecret: shown },
+      }),
+    });
+    renderApp('/my-server#notifications');
+    expect(await screen.findByText('••••abcd')).toBeTruthy();
+    expect(screen.queryByText(shown)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate secret' }));
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Copy secret/ })).toBeTruthy();
+    expect(calls.some((c) => c.method === 'POST')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'I have saved it' }));
+    await waitFor(() => expect(screen.queryByText(shown)).toBeNull());
+    expect(await screen.findByText('••••LaSw')).toBeTruthy();
+  });
+
   it('sends a test and toasts the result', async () => {
     const calls = mockApi({
       ...base(),
@@ -184,5 +210,21 @@ describe('notification settings', () => {
     renderApp('/my-server');
     fireEvent.click(await screen.findByRole('button', { name: 'Resend confirmation' }));
     expect(await screen.findByText('Too many confirmation e-mails')).toBeTruthy();
+  });
+
+  it('speaks French: events, channels and targets', async () => {
+    await switchToFrench();
+    mockApi(base());
+    renderApp('/my-server#notifications');
+    expect(await screen.findByText('Où envoyer')).toBeTruthy();
+    expect(screen.getByText('Quoi envoyer')).toBeTruthy();
+    expect(box('Tâche terminée\u00a0: Slack').checked).toBe(true);
+    expect(box('Tâche terminée\u00a0: Dans l’application').checked).toBe(true);
+    expect(screen.getByLabelText('Adresse e-mail')).toBeTruthy();
+    expect(screen.getByLabelText('URL du webhook Discord')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Envoyer un test à Slack' })).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Enregistrer les paramètres de notification' }),
+    ).toBeTruthy();
   });
 });

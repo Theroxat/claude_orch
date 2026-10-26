@@ -1,0 +1,2374 @@
+{
+  "postgres with healthcheck and named volume": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "db": {
+          "restart": "unless-stopped",
+          "command": null,
+          "entrypoint": null,
+          "environment": {
+            "POSTGRES_DB": "app",
+            "POSTGRES_PASSWORD": "secret",
+            "POSTGRES_USER": "app"
+          },
+          "image": "postgres:17",
+          "networks": {
+            "default": null
+          },
+          "shm_size": "268435456",
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "pgdata",
+              "target": "/var/lib/postgresql/data",
+              "volume": {}
+            },
+            {
+              "type": "bind",
+              "source": "@ROOT@/db/init.sql",
+              "target": "/docker-entrypoint-initdb.d/init.sql",
+              "read_only": true,
+              "bind": {}
+            }
+          ],
+          "healthcheck": {
+            "test": ["CMD-SHELL", "pg_isready -U app -d app"],
+            "timeout": "5s",
+            "interval": "5s",
+            "retries": 10
+          },
+          "ports": [
+            {
+              "mode": "ingress",
+              "target": 5432,
+              "published": "5432",
+              "protocol": "tcp"
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "pgdata": {
+          "name": "orch-task-corpus_pgdata"
+        }
+      }
+    }
+  },
+  "redis with command, sysctl and tmpfs": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "cache": {
+          "command": ["redis-server", "--appendonly", "yes"],
+          "entrypoint": null,
+          "image": "redis:8-alpine",
+          "networks": {
+            "default": null
+          },
+          "sysctls": {
+            "net.core.somaxconn": "1024"
+          },
+          "tmpfs": ["/tmp:size=64m,mode=1777"],
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "redis",
+              "target": "/data",
+              "volume": {}
+            }
+          ],
+          "healthcheck": {
+            "test": ["CMD", "redis-cli", "ping"],
+            "interval": "2s"
+          }
+        }
+      },
+      "volumes": {
+        "redis": {
+          "name": "orch-task-corpus_redis"
+        }
+      }
+    }
+  },
+  "mysql with ulimits, cap_add SYS_NICE (dropped) and env_file": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "mysql": {
+          "container_name": "myapp-mysql",
+          "cap_add": ["SYS_NICE"],
+          "command": null,
+          "entrypoint": null,
+          "environment": {
+            "MYSQL_DATABASE": "app",
+            "MYSQL_ROOT_PASSWORD": "root"
+          },
+          "image": "mysql:8.4",
+          "networks": {
+            "default": null
+          },
+          "ulimits": {
+            "nofile": {
+              "soft": 65536,
+              "hard": 65536
+            }
+          },
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "mysql",
+              "target": "/var/lib/mysql",
+              "volume": {}
+            }
+          ],
+          "healthcheck": {
+            "test": ["CMD", "mysqladmin", "ping", "-h", "localhost"],
+            "interval": "5s",
+            "retries": 20
+          },
+          "ports": [
+            {
+              "mode": "ingress",
+              "host_ip": "127.0.0.1",
+              "target": 3306,
+              "published": "3306",
+              "protocol": "tcp"
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "mysql": {
+          "name": "orch-task-corpus_mysql"
+        }
+      }
+    }
+  },
+  "minio with console and mc healthcheck": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "minio": {
+          "deploy": {
+            "resources": {
+              "limits": {
+                "memory": "536870912"
+              }
+            },
+            "placement": {}
+          },
+          "command": ["server", "/data", "--console-address", ":9001"],
+          "entrypoint": null,
+          "environment": {
+            "MINIO_ROOT_PASSWORD": "minio123",
+            "MINIO_ROOT_USER": "minio"
+          },
+          "image": "minio/minio:latest",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "minio",
+              "target": "/data",
+              "volume": {}
+            }
+          ],
+          "healthcheck": {
+            "test": ["CMD", "mc", "ready", "local"],
+            "interval": "5s"
+          },
+          "ports": [
+            {
+              "mode": "ingress",
+              "target": 9000,
+              "published": "9000",
+              "protocol": "tcp"
+            },
+            {
+              "mode": "ingress",
+              "target": 9001,
+              "published": "9001",
+              "protocol": "tcp"
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "minio": {
+          "name": "orch-task-corpus_minio"
+        }
+      }
+    }
+  },
+  "localstack without the docker socket": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "localstack": {
+          "command": null,
+          "entrypoint": null,
+          "environment": {
+            "DEBUG": "0",
+            "SERVICES": "s3,sqs,dynamodb"
+          },
+          "image": "localstack/localstack:4",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/localstack/init",
+              "target": "/etc/localstack/init/ready.d",
+              "bind": {}
+            },
+            {
+              "type": "volume",
+              "source": "localstack",
+              "target": "/var/lib/localstack",
+              "volume": {}
+            }
+          ],
+          "healthcheck": {
+            "test": ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"],
+            "interval": "10s"
+          },
+          "ports": [
+            {
+              "mode": "ingress",
+              "host_ip": "127.0.0.1",
+              "target": 4566,
+              "published": "4566",
+              "protocol": "tcp"
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "localstack": {
+          "name": "orch-task-corpus_localstack"
+        }
+      }
+    }
+  },
+  "mailhog with published ports": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "mailhog": {
+          "command": null,
+          "entrypoint": null,
+          "image": "mailhog/mailhog:v1.0.1",
+          "networks": {
+            "default": null
+          },
+          "healthcheck": {
+            "test": ["CMD-SHELL", "wget -q -O- http://localhost:8025 > /dev/null"],
+            "interval": "5s"
+          },
+          "ports": [
+            {
+              "mode": "ingress",
+              "target": 1025,
+              "published": "1025",
+              "protocol": "tcp"
+            },
+            {
+              "mode": "ingress",
+              "target": 8025,
+              "published": "8025",
+              "protocol": "tcp"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "app built from the repo Dockerfile with depends_on, networks, profiles and x- anchors": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "back": {
+          "name": "orch-task-corpus_back",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "app": {
+          "restart": "on-failure",
+          "cap_add": ["NET_BIND_SERVICE"],
+          "cap_drop": ["ALL"],
+          "cpus": 1.5,
+          "command": null,
+          "dns": ["1.1.1.1"],
+          "entrypoint": null,
+          "environment": {
+            "DATABASE_URL": "postgres://app:secret@db:5432/app"
+          },
+          "extra_hosts": ["api.local=10.0.0.5"],
+          "image": "ghcr.io/acme/app:dev",
+          "init": true,
+          "logging": {
+            "driver": "json-file",
+            "options": {
+              "max-size": "50m"
+            }
+          },
+          "mem_limit": "1073741824",
+          "networks": {
+            "back": null
+          },
+          "pids_limit": 512,
+          "read_only": true,
+          "security_opt": ["no-new-privileges:true"],
+          "stop_grace_period": "10s",
+          "tmpfs": ["/tmp"],
+          "user": "1000:1000",
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@",
+              "target": "/app",
+              "bind": {}
+            }
+          ],
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "docker/Dockerfile",
+            "args": {
+              "NODE_ENV": "development"
+            },
+            "target": "dev"
+          },
+          "depends_on": {
+            "db": {
+              "condition": "service_healthy",
+              "required": true
+            }
+          }
+        },
+        "db": {
+          "restart": "on-failure",
+          "command": null,
+          "entrypoint": null,
+          "environment": {
+            "POSTGRES_PASSWORD": "secret"
+          },
+          "image": "postgres:17",
+          "logging": {
+            "driver": "json-file",
+            "options": {
+              "max-size": "50m"
+            }
+          },
+          "networks": {
+            "back": null
+          },
+          "healthcheck": {
+            "test": ["CMD-SHELL", "pg_isready"],
+            "interval": "2s"
+          }
+        }
+      },
+      "x-common": {
+        "logging": {
+          "driver": "json-file",
+          "options": {
+            "max-size": "50m"
+          }
+        },
+        "restart": "on-failure"
+      }
+    }
+  },
+  "privileged": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "privileged": true
+        }
+      }
+    }
+  },
+  "cap_add SYS_ADMIN": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cap_add": ["SYS_ADMIN"],
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "cap_add NET_RAW (lowercase, CAP_ prefix)": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cap_add": ["cap_net_raw"],
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "cap_add ALL": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cap_add": ["ALL"],
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "seccomp unconfined": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "security_opt": ["seccomp:unconfined"]
+        }
+      }
+    }
+  },
+  "apparmor unconfined": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "security_opt": ["apparmor=unconfined"]
+        }
+      }
+    }
+  },
+  "selinux label disable": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "security_opt": ["label=disable"]
+        }
+      }
+    }
+  },
+  "devices": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "devices": [
+            {
+              "source": "/dev/sda",
+              "target": "/dev/sda",
+              "permissions": "rwm"
+            }
+          ],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "device_cgroup_rules": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "device_cgroup_rules": ["b *:* rwm"],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "pid host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "pid": "host"
+        }
+      }
+    }
+  },
+  "ipc host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "ipc": "host",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "uts host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "uts": "host"
+        }
+      }
+    }
+  },
+  "userns_mode host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "userns_mode": "host"
+        }
+      }
+    }
+  },
+  "cgroup host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cgroup": "host",
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "cgroup_parent": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cgroup_parent": "system.slice",
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "network_mode host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "network_mode": "host"
+        }
+      }
+    }
+  },
+  "network_mode container": {
+    "model": {
+      "name": "orch-task-corpus",
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "network_mode": "container:orch-task-12-other"
+        }
+      }
+    }
+  },
+  "external network of another task": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "other": {
+          "name": "orch-net-other-task",
+          "ipam": {},
+          "external": true
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "other": null
+          }
+        }
+      }
+    }
+  },
+  "network attached to the host bridge": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "lan": {
+          "name": "orch-task-corpus_lan",
+          "driver_opts": {
+            "com.docker.network.bridge.name": "docker0"
+          },
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "lan": null
+          }
+        }
+      }
+    }
+  },
+  "macvlan network": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "lan": {
+          "name": "orch-task-corpus_lan",
+          "driver": "macvlan",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "lan": null
+          }
+        }
+      }
+    }
+  },
+  "docker socket bind mount": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "/var/run/docker.sock",
+              "target": "/var/run/docker.sock",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "host root bind mount": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "/",
+              "target": "/host",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "bind mount of the parent directory": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@PARENT@",
+              "target": "/up",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "bind mount with shared propagation": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/data",
+              "target": "/d",
+              "bind": {
+                "propagation": "rshared"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "local volume driver bind trick": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "etc",
+              "target": "/x",
+              "volume": {}
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "etc": {
+          "name": "orch-task-corpus_etc",
+          "driver": "local",
+          "driver_opts": {
+            "device": "/etc",
+            "o": "bind",
+            "type": "none"
+          }
+        }
+      }
+    }
+  },
+  "external volume": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "data",
+              "target": "/x",
+              "volume": {}
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "data": {
+          "name": "orch-agent-data",
+          "external": true
+        }
+      }
+    }
+  },
+  "volume of another task's project": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "volume",
+              "source": "data",
+              "target": "/x",
+              "volume": {}
+            }
+          ]
+        }
+      },
+      "volumes": {
+        "data": {
+          "name": "orch-task-other_data"
+        }
+      }
+    }
+  },
+  "volumes_from a container": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes_from": ["container:orch-task-12-other"]
+        }
+      }
+    }
+  },
+  "tmpfs with dev option": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "tmpfs": ["/x:dev,size=10m"]
+        }
+      }
+    }
+  },
+  "ulimit rtprio": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "ulimits": {
+            "rtprio": 99
+          }
+        }
+      }
+    }
+  },
+  "ulimit core dumps": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "ulimits": {
+            "core": -1
+          }
+        }
+      }
+    }
+  },
+  "ulimit nofile above the cap": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "ulimits": {
+            "nofile": 99999999
+          }
+        }
+      }
+    }
+  },
+  "host-wide sysctl": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "sysctls": {
+            "kernel.core_pattern": "|/tmp/x"
+          }
+        }
+      }
+    }
+  },
+  "extra_hosts host-gateway": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "extra_hosts": ["host.docker.internal=host-gateway"],
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "oom_score_adj negative": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "oom_score_adj": -1000
+        }
+      }
+    }
+  },
+  "oom_kill_disable": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "oom_kill_disable": true
+        }
+      }
+    }
+  },
+  "runtime": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "runtime": "nvidia"
+        }
+      }
+    }
+  },
+  "isolation": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "isolation": "hyperv",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "gpus": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "gpus": [
+            {
+              "count": -1
+            }
+          ],
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "use_api_socket": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "use_api_socket": true
+        }
+      }
+    }
+  },
+  "cpu_rt_runtime": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "cpu_rt_runtime": 950000,
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "blkio_config": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "blkio_config": {
+            "weight": 1000
+          },
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "storage_opt": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "storage_opt": {
+            "size": "1T"
+          }
+        }
+      }
+    }
+  },
+  "external_links": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "external_links": ["orch-task-12-other:db"],
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "syslog logging to the host socket": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "logging": {
+            "driver": "syslog",
+            "options": {
+              "syslog-address": "unix:///dev/log"
+            }
+          },
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "privileged post_start hook": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "post_start": [
+            {
+              "command": ["id"],
+              "privileged": true
+            }
+          ],
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "label impersonating orch": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "labels": {
+            "orch.task": "asg_other"
+          },
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "label impersonating another compose project": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "labels": {
+            "com.docker.compose.project": "orch-task-other"
+          },
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "scale above the cap": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "scale": 50,
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "deploy replicas above the cap": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "deploy": {
+            "replicas": 100,
+            "resources": {},
+            "placement": {}
+          },
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "too many services": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "s0": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s1": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s10": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s11": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s12": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s13": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s14": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s15": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s16": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s2": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s3": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s4": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s5": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s6": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s7": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s8": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        },
+        "s9": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "build context outside the repository": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@PARENT@",
+            "dockerfile": "Dockerfile"
+          }
+        }
+      }
+    }
+  },
+  "remote build context": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "https://github.com/acme/evil.git#main",
+            "dockerfile": "Dockerfile"
+          }
+        }
+      }
+    }
+  },
+  "build ssh forwarding": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "ssh": ["default"]
+          }
+        }
+      }
+    }
+  },
+  "build secrets": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "token": {
+          "name": "orch-task-corpus_token",
+          "file": "@ROOT@/token.txt"
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "secrets": [
+              {
+                "source": "token"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "additional build context outside the repository": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "additional_contexts": {
+              "etc": "/etc"
+            }
+          }
+        }
+      }
+    }
+  },
+  "build network host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "network": "host"
+          }
+        }
+      }
+    }
+  },
+  "build cache from a host directory": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "cache_from": ["type=local,src=/root"]
+          }
+        }
+      }
+    }
+  },
+  "build entitlements": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "build": {
+            "context": "@ROOT@",
+            "dockerfile": "Dockerfile",
+            "entitlements": ["security.insecure"]
+          }
+        }
+      }
+    }
+  },
+  "secret file outside the repository": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "shadow": {
+          "name": "orch-task-corpus_shadow",
+          "file": "/etc/shadow"
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "shadow",
+              "target": "/run/secrets/shadow"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "secret from the agent's environment": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "tok": {
+          "name": "orch-task-corpus_tok",
+          "environment": "GITHUB_TOKEN"
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "tok",
+              "target": "/run/secrets/tok"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "config file outside the repository": {
+    "model": {
+      "configs": {
+        "pw": {
+          "name": "orch-task-corpus_pw",
+          "file": "/etc/passwd"
+        }
+      },
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "configs": [
+            {
+              "source": "pw"
+            }
+          ],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "env_file outside the repository": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "evil": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "remote include": {
+    "error": true
+  },
+  "include outside the repository": {
+    "error": true
+  },
+  "interpolated include": {
+    "error": true
+  },
+  "extends a file outside the repository": {
+    "error": true
+  },
+  "writable bind mount redirecting another sidecar to the host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "planter": {
+          "command": ["sh", "-c", "ln -sfn /etc /repo/data"],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@",
+              "target": "/repo",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/data",
+              "target": "/host",
+              "read_only": true,
+              "bind": {}
+            }
+          ],
+          "depends_on": {
+            "planter": {
+              "condition": "service_completed_successfully",
+              "required": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "app with a secrets file, read-only source and a writable data dir": {
+    "model": {
+      "configs": {
+        "app_conf": {
+          "name": "orch-task-corpus_app_conf",
+          "file": "@ROOT@/config/app.conf"
+        }
+      },
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "db_password": {
+          "name": "orch-task-corpus_db_password",
+          "file": "@ROOT@/secrets/db_password.txt"
+        }
+      },
+      "services": {
+        "app": {
+          "command": ["node", "/src/server.js"],
+          "configs": [
+            {
+              "source": "app_conf",
+              "target": "/etc/app.conf"
+            }
+          ],
+          "entrypoint": null,
+          "image": "node:24-alpine",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "db_password",
+              "target": "/run/secrets/db_password"
+            }
+          ],
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/src",
+              "target": "/src",
+              "read_only": true,
+              "bind": {}
+            },
+            {
+              "type": "bind",
+              "source": "@ROOT@/data",
+              "target": "/data",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  },
+  "writable bind mount redirecting a secret file to the host": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "tok": {
+          "name": "orch-task-corpus_tok",
+          "file": "@ROOT@/secrets/tok.txt"
+        }
+      },
+      "services": {
+        "planter": {
+          "command": ["sh", "-c", "ln -sfn /etc/shadow /repo/secrets/tok.txt"],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@",
+              "target": "/repo",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "tok",
+              "target": "/run/secrets/tok"
+            }
+          ],
+          "depends_on": {
+            "planter": {
+              "condition": "service_completed_successfully",
+              "required": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "writable bind mount redirecting a config file to the host": {
+    "model": {
+      "configs": {
+        "app": {
+          "name": "orch-task-corpus_app",
+          "file": "@ROOT@/conf/app.conf"
+        }
+      },
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "services": {
+        "planter": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/conf",
+              "target": "/conf",
+              "bind": {}
+            }
+          ]
+        },
+        "victim": {
+          "command": null,
+          "configs": [
+            {
+              "source": "app"
+            }
+          ],
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          }
+        }
+      }
+    }
+  },
+  "writable bind mount of the secret file itself": {
+    "model": {
+      "name": "orch-task-corpus",
+      "networks": {
+        "default": {
+          "name": "orch-task-corpus_default",
+          "ipam": {}
+        }
+      },
+      "secrets": {
+        "tok": {
+          "name": "orch-task-corpus_tok",
+          "file": "@ROOT@/tok.txt"
+        }
+      },
+      "services": {
+        "app": {
+          "command": null,
+          "entrypoint": null,
+          "image": "alpine:3",
+          "networks": {
+            "default": null
+          },
+          "secrets": [
+            {
+              "source": "tok",
+              "target": "/run/secrets/tok"
+            }
+          ],
+          "volumes": [
+            {
+              "type": "bind",
+              "source": "@ROOT@/tok.txt",
+              "target": "/tok.txt",
+              "bind": {}
+            }
+          ]
+        }
+      }
+    }
+  }
+}

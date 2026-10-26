@@ -1,65 +1,67 @@
 import type { NotificationChannel, NotificationEvent } from '@orch/shared';
+import type { MessageKey } from '../i18n/index.ts';
 import type { IconName } from './Icon';
 
-/** Human wording, icon and signal lamp for each notification event. */
-export const EVENT_META: Record<
-  NotificationEvent,
-  {
-    label: string;
-    description: string;
-    icon: IconName;
-    lamp: 'proceed' | 'caution' | 'stop' | 'route';
-  }
-> = {
+/** Wording keys (translated at render), icon and signal lamp for each notification event. */
+export const EVENT_META = {
   task_done: {
-    label: 'Task done',
-    description: 'The pull request of a task was merged.',
+    label: 'notifications.event.task_done.label',
+    description: 'notifications.event.task_done.description',
     icon: 'check',
     lamp: 'proceed',
   },
   task_failed: {
-    label: 'Task failed',
-    description: 'A run failed or was lost.',
+    label: 'notifications.event.task_failed.label',
+    description: 'notifications.event.task_failed.description',
     icon: 'alert',
     lamp: 'stop',
   },
   task_needs_attention: {
-    label: 'Needs attention',
-    description: 'A task stopped starting, or your Claude login is no longer valid.',
+    label: 'notifications.event.task_needs_attention.label',
+    description: 'notifications.event.task_needs_attention.description',
     icon: 'alert',
     lamp: 'caution',
   },
   pr_review: {
-    label: 'Pull request to review',
-    description: 'A pull request was opened for a task and waits for review.',
+    label: 'notifications.event.pr_review.label',
+    description: 'notifications.event.pr_review.description',
     icon: 'pr',
     lamp: 'route',
   },
   consent_request: {
-    label: 'Task offered to you',
-    description: 'A task waits for your approval on your machines.',
+    label: 'notifications.event.consent_request.label',
+    description: 'notifications.event.consent_request.description',
     icon: 'user',
     lamp: 'route',
   },
   access_request: {
-    label: 'Access request',
-    description: 'Someone asked for access to this server. Admins only.',
+    label: 'notifications.event.access_request.label',
+    description: 'notifications.event.access_request.description',
     icon: 'user',
     lamp: 'caution',
   },
   participation_request: {
-    label: 'Participation request',
-    description: 'Someone asked to join the pool of one of your projects. Project owners only.',
+    label: 'notifications.event.participation_request.label',
+    description: 'notifications.event.participation_request.description',
     icon: 'user',
     lamp: 'caution',
   },
-};
+} as const satisfies Record<
+  NotificationEvent,
+  {
+    label: MessageKey;
+    description: MessageKey;
+    icon: IconName;
+    lamp: 'proceed' | 'caution' | 'stop' | 'route';
+  }
+>;
 
-export const CHANNEL_LABEL: Record<NotificationChannel, string> = {
-  in_app: 'In the app',
-  email: 'E-mail',
-  slack: 'Slack',
-  discord: 'Discord',
-  webhook: 'Webhook',
-  push: 'Browser',
-};
+/** Message keys of the channel names; translate at render. */
+export const CHANNEL_LABEL = {
+  in_app: 'notifications.channel.in_app',
+  email: 'notifications.channel.email',
+  slack: 'notifications.channel.slack',
+  discord: 'notifications.channel.discord',
+  webhook: 'notifications.channel.webhook',
+  push: 'notifications.channel.push',
+} as const satisfies Record<NotificationChannel, MessageKey>;

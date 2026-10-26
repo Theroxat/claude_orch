@@ -2,6 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { BlockReason, TaskView } from '@orch/shared';
 import { useEffect, useRef, useState } from 'react';
 import { fetchWhyNotRunning } from '../api/endpoints';
+import { errorMessage } from '../i18n/errors.ts';
+import { useRich, useT } from '../i18n/index.ts';
 import { relative } from '../time';
 import { TaskLogsButton, hasLogs } from './TaskLogs';
 
@@ -19,6 +21,7 @@ function Reason({ r }: { r: BlockReason }) {
 }
 
 function WhyNotRunning({ taskId }: { taskId: string }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const q = useQuery({
     queryKey: ['why-not-running', taskId],
@@ -27,9 +30,9 @@ function WhyNotRunning({ taskId }: { taskId: string }) {
   });
   return (
     <details onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary>Why isn&apos;t this running?</summary>
-      {open && q.isPending && <p className="hint">Loading...</p>}
-      {open && q.error && <p className="error">{q.error.message}</p>}
+      <summary>{t('backlog.why.summary')}</summary>
+      {open && q.isPending && <p className="hint">{t('common.status.loading')}</p>}
+      {open && q.error && <p className="error">{errorMessage(q.error)}</p>}
       {q.data && (
         <>
           {q.data.taskReasons.length > 0 && (
@@ -41,13 +44,13 @@ function WhyNotRunning({ taskId }: { taskId: string }) {
               ))}
             </ul>
           )}
-          {q.data.members.length === 0 && <p className="hint">No active participant.</p>}
+          {q.data.members.length === 0 && <p className="hint">{t('backlog.why.noParticipant')}</p>}
           <ul className="plain">
             {q.data.members.map((m) => (
               <li key={m.user.id}>
                 @{m.user.githubLogin}:{' '}
                 {m.eligible
-                  ? 'eligible'
+                  ? t('backlog.why.eligible')
                   : m.reasons.map((r, i) => (
                       <span key={i}>
                         {i > 0 && '; '}
@@ -81,7 +84,13 @@ export function TaskCard({
   /** Targeted by `/backlog?task=<id>`: scrolled into view, focused and outlined. */
   highlighted?: boolean;
 }) {
+  const t = useT();
+  const rich = useRich();
   const unmet = unmetDeps(task);
+  const failedText = t('backlog.card.failed', {
+    count: task.failedAttempts ?? 0,
+    error: task.lastError ?? t('backlog.card.unknown'),
+  });
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!highlighted) return;
@@ -92,7 +101,7 @@ export function TaskCard({
     <article
       ref={ref}
       className="task-card"
-      aria-label={`Task #${task.issueNumber}`}
+      aria-label={t('backlog.card.label', { number: String(task.issueNumber) })}
       data-highlighted={highlighted || undefined}
       tabIndex={highlighted ? -1 : undefined}
     >
@@ -101,10 +110,10 @@ export function TaskCard({
           #{task.issueNumber}
         </a>
         <span className="row">
-          <span className="tag" title="Size">
+          <span className="tag" title={t('backlog.card.size')}>
             {task.size}
           </span>
-          <span className="tag" title="Model">
+          <span className="tag" title={t('backlog.card.model')}>
             {task.model.toLowerCase()}
           </span>
         </span>
@@ -116,66 +125,79 @@ export function TaskCard({
           <img
             className="avatar small"
             src={task.createdBy.avatarUrl}
-            alt={`Created by ${task.createdBy.githubLogin}`}
+            alt={t('backlog.card.createdBy', { login: task.createdBy.githubLogin })}
           />
         ) : (
           <span
             className="avatar small"
             data-initial={task.createdBy.githubLogin.slice(0, 1)}
             role="img"
-            aria-label={`Created by ${task.createdBy.githubLogin}`}
+            aria-label={t('backlog.card.createdBy', { login: task.createdBy.githubLogin })}
           />
         )}
-        {task.assignee && <span className="hint">assigned to {task.assignee.githubLogin}</span>}
-        {task.assigneeMachineName && <span className="hint">on {task.assigneeMachineName}</span>}
+        {task.assignee && (
+          <span className="hint">
+            {t('backlog.card.assignedTo', { login: task.assignee.githubLogin })}
+          </span>
+        )}
+        {task.assigneeMachineName && (
+          <span className="hint">
+            {t('backlog.card.onMachine', { machine: task.assigneeMachineName })}
+          </span>
+        )}
       </div>
       {task.prUrl && (
         <a href={task.prUrl} target="_blank" rel="noreferrer">
-          PR #{task.prNumber}
+          {t('backlog.card.pr', { number: String(task.prNumber) })}
         </a>
       )}
       {unmet.length > 0 && (
         <span className="badge stop">
-          blocked by {unmet.map((d) => `#${d.issueNumber}`).join(', ')}
+          {t('backlog.card.blockedBy', {
+            list: unmet.map((d) => `#${d.issueNumber}`).join(', '),
+          })}
         </span>
       )}
       {(task.failedAttempts ?? 0) > 0 && (
-        <p
-          className="hint task-error"
-          title={`Failed ${task.failedAttempts} times: last error: ${task.lastError ?? 'unknown'}`}
-        >
-          Failed {task.failedAttempts} times: last error: {task.lastError ?? 'unknown'}
+        <p className="hint task-error" title={failedText}>
+          {failedText}
         </p>
       )}
       {task.needsAttention && (
         <p className="warning" role="alert">
-          Needs attention{task.needsAttentionReason ? `: ${task.needsAttentionReason}` : ''}
+          {task.needsAttentionReason
+            ? t('backlog.card.needsAttentionReason', { reason: task.needsAttentionReason })
+            : t('backlog.card.needsAttention')}
         </p>
       )}
       {hasLogs(task) && <TaskLogsButton task={task} />}
       {task.canRetry && onRetry && (
         <button
           disabled={retrying}
-          aria-label={`Retry #${task.issueNumber}`}
+          aria-label={t('backlog.card.retryLabel', { number: String(task.issueNumber) })}
           onClick={() => onRetry(task.id)}
         >
-          Retry
+          {t('backlog.card.retry')}
         </button>
       )}
       {(task.status === 'TODO' || task.status === 'BLOCKED') && <WhyNotRunning taskId={task.id} />}
       {task.status === 'TODO' && (
         <p className="hint task-take">
-          Take it: <code>orch take {task.issueNumber}</code>
+          {rich(
+            'backlog.card.takeIt',
+            { code: (c) => <code>{c}</code> },
+            { number: String(task.issueNumber) },
+          )}
         </p>
       )}
       {task.status === 'PROPOSED' && canApprove && (
         <button
           className="primary"
           disabled={approving}
-          aria-label={`Approve #${task.issueNumber}`}
+          aria-label={t('backlog.card.approveLabel', { number: String(task.issueNumber) })}
           onClick={() => onApprove(task.id)}
         >
-          Approve
+          {t('backlog.card.approve')}
         </button>
       )}
     </article>
