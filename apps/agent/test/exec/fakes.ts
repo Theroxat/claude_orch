@@ -154,7 +154,9 @@ export class FakeDocker implements DockerOps {
   async composeConfig(project: string, files: string[], cwd: string) {
     this.calls.push(['composeConfig', project, files, cwd]);
     if (this.composeConfigError) throw this.composeConfigError;
-    return this.composeModel;
+    // Like docker: `-p` names the project, whatever the file says.
+    const m = this.composeModel;
+    return typeof m === 'object' && m !== null && 'name' in m ? { ...m, name: project } : m;
   }
   async composeUp(project: string, files: string[], cwd: string) {
     this.calls.push(['composeUp', project, files, cwd]);

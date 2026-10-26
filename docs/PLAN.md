@@ -25,7 +25,7 @@ chose to join. Think of it as a shared to-do list with automation. Priorities: s
 
 The task sandbox protects the member's machine from accidents and from a bad prompt, not from a hostile
 teammate. **Kept:** each task runs in its own container; only the task's clone is mounted; no docker socket;
-no host home; non-root; isolated clone per task. **Dropped for v1:** egress allowlist proxy, devcontainer/compose
+no host home; non-root; isolated clone per task. **Dropped for v1:** egress allowlist proxy, devcontainer
 sanitizing, token-injecting proxy, snapshot export (listed in section 11).
 
 **Who can sign in.** "Trusted" must be enforced: production requires `ORCH_ALLOWED_GITHUB_LOGINS` and/or
@@ -33,8 +33,8 @@ sanitizing, token-injecting proxy, snapshot export (listed in section 11).
 visibility value `ALL_MEMBERS` means "all orch users on this server", i.e. everyone the allowlist lets in. A task
 board is visible only to the owner, active participants and GitHub collaborators; owner rights follow the GitHub
 ADMIN role. Enrollment tokens are passed to `install.sh` as `ORCH_TOKEN=<token>`, never as an argument.
-The repo's compose file is validated by the agent (privileged, host binds, docker.sock, host network, `cap_add`
-rejected), and git metadata stays outside the task container.
+The repo's compose file is validated by the agent with allowlists on the resolved model and run as a hardened
+copy (see the compose guard in the security docs), and git metadata stays outside the task container.
 
 ---
 
@@ -415,8 +415,9 @@ Precedence: `.devcontainer/devcontainer.json` → `Dockerfile` at the root → t
   `securityOpt`, `features`, `initializeCommand`, `forwardPorts`) are not supported in v1 and are ignored with a
   warning in the task log. This is a simplicity choice, not a sanitizer: `sandbox.ts` always builds the container spec itself.
 - **compose.yaml sidecars** (DB, cache): v1 supports the repo's own `compose.yaml` for the task's dev environment,
-  used as-is (teams are trusted, section 0). Only the task's clone is mounted into the dev container. Sanitizing
-  compose files is future hardening (section 11).
+  validated by the compose guard (allowlists on the `docker compose config` output, nothing outside the clone, no
+  host namespaces or privileges) and run as a hardened copy (`cap_drop: ALL`, resource caps, no published ports).
+  Only the task's clone is mounted into the dev container.
 - The image build uses BuildKit with the clone as the build context and normal network access.
 
 ### 5.3 Sandbox guarantees (built only in `exec/sandbox.ts`)
@@ -700,7 +701,7 @@ from their Claude account.
 trusted teams. The agent image is pinned by digest and tasks never get the socket. Rootless Docker is documented as an option.
 
 **R6 Repo-defined containers.** Only simple devcontainer keys are honored in v1, so some repos will need tweaks to run under orch.
-The repo's own `compose.yaml` is used as-is.
+The repo's own `compose.yaml` must pass the compose guard.
 
 **R7** Moot: there is no egress control in v1, so build-time network is not a separate concern.
 
@@ -738,7 +739,7 @@ installation token can push to any branch, so branch protection is required. Org
 
 - Egress allowlist proxy container for task containers (default registries plus a per-project `egressAllow`).
 - Token-injecting proxy so the Claude credential never enters the task container.
-- Sanitizing devcontainer and compose files (the repo's own compose.yaml is used as-is in v1).
+- Sanitizing devcontainer files (compose files are validated and hardened by the compose guard).
 - Restricted `buildkitd` for build-time network.
 - Snapshot export into a fresh trusted checkout instead of pushing the task's own `.git`.
 - Rootless Docker or gVisor as a required option.
